@@ -1,0 +1,9 @@
+logs/
+venv/
+__pycache__/
+*.txt
+*.out
+*.log
+.idea/
+.git/
+config.py

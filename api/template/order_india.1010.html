@@ -1,0 +1,1681 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>پاکستان پے - ایزی پیسہ</title>
+  <style>
+    /*
+      ** Base Styles **
+    */
+    :root {
+      --primary-green: #60efbc;
+      --dark-green: #064e3b;
+      --btn-gradient: linear-gradient(90deg, #5cebb6, #4ade80);
+      --bg: #f9fafb;
+      --accent1: #10b981;
+      --accent2: #34d399;
+      --success: #16a34a;
+      --muted: #6b7280;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: #f3f4f6;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-start;
+      min-height: 100vh;
+    }
+    .wrap {
+      width: 92%;
+      max-width: 400px;
+      background: #fff;
+      border-radius: 24px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+      overflow: hidden;
+      margin-top: 10px;
+    }
+    
+    /* Header Section */
+    .header {
+      background: linear-gradient(180deg, #62f1bd 0%, #58e6b2 100%);
+      padding: 30px 20px;
+      text-align: center;
+      color: #000;
+    }
+    .brand-line {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .brand-logo {
+      width: 50px;
+      height: 50px;
+      background: #fff;
+      border-radius: 12px;
+      padding: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .brand-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .brand-name {
+      font-size: 24px;
+      font-weight: 800;
+      color: #fff;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+    }
+    .amount {
+      font-size: 44px;
+      font-weight: 900;
+      color: var(--dark-green);
+      margin: 10px 0;
+    }
+    #countdown-timer {
+      color: #ef4444;
+      font-weight: 800;
+      font-size: 18px;
+    }
+    .fee-badge {
+      display: inline-block;
+      background: rgba(255, 255, 255, 0.4);
+      padding: 8px 25px;
+      border-radius: 50px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--dark-green);
+    }
+
+    /* Body Section */
+    .body {
+      padding: 25px 20px;
+      background: #fff;
+    }
+    .input-row { margin-bottom: 20px; }
+    .input-row label {
+      display: block;
+      font-size: 15px;
+      font-weight: 700;
+      color: #374151;
+      margin-bottom: 10px;
+    }
+    .input-row input {
+      width: 100%;
+      padding: 16px;
+      border-radius: 14px;
+      border: 1px solid #e5e7eb;
+      font-size: 16px;
+    }
+
+    /* 
+      ** 重点：动态按钮样式 ** 
+    */
+    .pay-btn {
+      width: 100%;
+      padding: 16px;
+      border-radius: 16px;
+      background: var(--btn-gradient) !important;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      color: var(--dark-green);
+      font-weight: 800;
+      font-size: 18px;
+      border: 0;
+      cursor: pointer;
+      box-shadow: 0 8px 15px rgba(74, 222, 128, 0.2);
+      transition: all 0.2s;
+      position: relative;
+    }
+
+    /* 箭头图标样式 */
+    .pay-btn svg {
+      width: 22px;
+      height: 22px;
+      /* 绑定动画 */
+      animation: arrowSlide 1.2s ease-in-out infinite;
+    }
+
+    /* 定义箭头左右滑动的动态效果 */
+    @keyframes arrowSlide {
+      0%, 100% {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      50% {
+        transform: translateX(6px); /* 向右滑动6像素 */
+        opacity: 0.8;
+      }
+    }
+
+    .pay-btn:active {
+      transform: scale(0.97);
+    }
+    .guide-entry {
+      margin-top: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border: 1px solid #d7f0e4;
+      border-radius: 16px;
+      padding: 14px 16px;
+      background: linear-gradient(180deg, #f4fff9 0%, #ffffff 100%);
+    }
+    .guide-entry-copy {
+      min-width: 0;
+      flex: 1;
+    }
+    .guide-entry-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: #14532d;
+    }
+    .guide-entry-desc {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #4b5563;
+    }
+    .guide-entry-btn {
+      border: none;
+      border-radius: 999px;
+      background: #0f8f63;
+      color: #fff;
+      padding: 10px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      box-shadow: 0 8px 20px rgba(15, 143, 99, 0.18);
+    }
+    .pay-tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 16px;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 2px solid var(--accent1, #2fbf66);
+      direction: rtl;
+    }
+    .pay-tab {
+      flex: 1;
+      padding: 10px 0;
+      text-align: center;
+      font-size: 14px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fff;
+      color: var(--accent1, #2fbf66);
+    }
+    .pay-tab.active {
+      background: var(--accent1, #2fbf66);
+      color: #fff;
+    }
+    .pay-panel {
+      width: 100%;
+    }
+    .result-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.97);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 9999;
+      direction: rtl;
+    }
+    .result-box {
+      text-align: center;
+      padding: 40px 30px;
+    }
+    .result-icon {
+      width: 72px; height: 72px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 36px;
+      margin: 0 auto 16px;
+      color: #fff;
+    }
+    .result-icon.success { background: var(--accent1, #2fbf66); }
+    .result-icon.fail { background: #dc3545; }
+    .result-box h3 { font-size: 22px; margin-bottom: 8px; }
+    .result-box p { font-size: 14px; color: #666; margin-bottom: 4px; }
+    .redirect-hint { font-size: 12px; color: #999; margin-top: 12px; }
+
+    .qr-code-section { display: none; margin-top: 20px; flex-direction: column; align-items: center; }
+    .account-details-container {
+        padding: 20px; border: 1px solid #e5e7eb; border-radius: 16px;
+        background-color: #f9fafb; width: 100%; text-align: center;
+    }
+    .account-number { font-size: 28px; font-weight: 800; color: #ef4444; display: block; margin: 10px 0; }
+    .copy-btn { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 10px 20px; cursor: pointer; }
+    .rtl-text { direction: rtl; text-align: right; line-height: 1.8; font-size: 14px; color: #374151; margin-top: 15px; }
+  
+    .support {
+      padding:14px 18px;
+      background:#fff;
+      border-top:1px solid #f0f2f8;
+      font-size:13px;
+      color:var(--muted);
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:10px;
+    }
+    .logos{display:flex;gap:12px;align-items:center}
+    .logo-item{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      font-size:11px;
+      color:#444;
+    }
+    .logo-sq{
+      width:44px;height:34px;border-radius:8px;
+      display:flex;align-items:center;justify-content:center;
+      box-shadow:0 6px 18px rgba(10,10,20,0.04);
+      background:#fff;border:1px solid #eee;
+      margin-bottom:6px;
+    }
+    @media (max-width:420px){
+      .wrap{width:100%}
+    }
+
+    /*
+      ** Modal Styles **
+    */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.4);
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-content {
+      background-color: #fefefe;
+      border-radius: 18px;
+      box-shadow: 0 18px 40px rgba(20,20,40,0.08);
+      max-width: 320px;
+      width: 90%;
+      overflow: hidden;
+      animation: fadeIn 0.3s;
+      position: relative;
+    }
+    .modal-header {
+      padding: 15px 20px;
+      background: linear-gradient(135deg,var(--accent1), var(--accent2));
+      color: #fff;
+      text-align:center;
+      position: relative;
+    }
+    .modal-header.success {
+      background: var(--success);
+    }
+    .modal-header h2 {
+      font-size: 1.2rem;
+      font-weight: normal;
+      margin: 0;
+    }
+    .modal-header .close-btn {
+      position: absolute;
+      right: 15px;
+      top: 15px;
+      font-size: 20px;
+      cursor: pointer;
+      color: #fff;
+    }
+    .modal-body {
+      padding: 15px 0 0;
+    }
+    /* Adjusted modal pages for dynamic height */
+    .modal-pages {
+      height: auto;
+      max-height: 75vh;
+      overflow-y: auto;
+      position: relative;
+    }
+    .modal-page {
+      position: relative;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: auto;
+      padding: 20px;
+      overflow-y: auto;
+      display: none;
+      text-align: left;
+    }
+    .modal-page.active {
+      display: block;
+    }
+    .modal-page h3 {
+      font-size: 1.1rem;
+      margin-top: 0;
+      margin-bottom: 15px;
+    }
+    .modal-page p {
+      margin-bottom: 15px;
+      line-height: 1.5;
+    }
+    .modal-page img {
+      display: block;
+      margin: 0 auto;
+      max-width: 100%;
+      height: auto;
+      margin-bottom: 15px;
+    }
+    .modal-page ul {
+      list-style-type: none;
+      padding: 0;
+      margin: 0;
+    }
+    .modal-page li {
+      display: flex;
+      align-items: flex-start;
+      margin-bottom: 12px;
+      color: #555;
+    }
+    .modal-page li .step-num {
+      background-color: var(--accent1);
+      color: #fff;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 12px;
+      flex-shrink: 0;
+      margin-right: 10px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 15px 20px;
+      border-top: 1px solid #f0f2f8;
+    }
+    .modal-footer .page-indicator {
+      color: var(--muted);
+    }
+    .modal-footer .nav-btn {
+      padding: 8px 15px;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      background: #f8f8f8;
+      cursor: pointer;
+    }
+    .modal-footer .nav-btn.hidden {
+      visibility: hidden;
+    }
+    .modal-footer .next-btn {
+      background: var(--accent1);
+      color: #fff;
+      border: none;
+    }
+    .modal-footer .finish-btn {
+      background: var(--success);
+      color: #fff;
+      border: none;
+    }
+    .page-1-content {
+      text-align: center;
+      padding-top: 15px;
+    }
+    .page-1-content h4 {
+      margin-bottom: 5px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .page-1-content p {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-top: 0;
+      margin-bottom: 15px;
+    }
+    .guide-list-view,
+    .guide-viewer-view {
+      display: none;
+      padding: 16px;
+    }
+    .guide-list-view.active,
+    .guide-viewer-view.active {
+      display: block;
+    }
+    .guide-list-intro {
+      margin: 0 0 14px;
+      color: #4b5563;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .guide-step-list {
+      display: grid;
+      gap: 10px;
+    }
+    .guide-step-btn {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 16px;
+      background: #fff;
+      padding: 10px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .guide-step-index {
+      width: 30px;
+      height: 30px;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      background: var(--accent1);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 800;
+    }
+    .guide-step-thumb {
+      width: 58px;
+      height: 74px;
+      object-fit: cover;
+      flex-shrink: 0;
+      border-radius: 10px;
+      border: 1px solid #e5e7eb;
+      background: #f3f4f6;
+    }
+    .guide-step-texts {
+      min-width: 0;
+      flex: 1;
+    }
+    .guide-step-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: #111827;
+    }
+    .guide-step-desc {
+      margin-top: 4px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #6b7280;
+    }
+    .guide-viewer-progress {
+      margin-bottom: 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--accent1);
+      text-align: center;
+    }
+    .guide-viewer-image {
+      width: 100%;
+      max-height: 62vh;
+      object-fit: contain;
+      border-radius: 14px;
+      border: 1px solid #e5e7eb;
+      background: #fff;
+      display: block;
+      margin: 0 auto;
+    }
+    .guide-viewer-title {
+      margin-top: 12px;
+      font-size: 16px;
+      font-weight: 800;
+      color: #111827;
+      text-align: center;
+    }
+    .guide-viewer-desc {
+      margin-top: 6px;
+      font-size: 13px;
+      line-height: 1.7;
+      color: #4b5563;
+      text-align: center;
+    }
+    .guide-viewer-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+    .guide-viewer-action-btn {
+      flex: 1;
+      min-width: 120px;
+      border: none;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .guide-viewer-action-btn.primary {
+      background: var(--accent1);
+      color: #fff;
+    }
+    .guide-viewer-action-btn.secondary {
+      background: #edfdf5;
+      color: #065f46;
+      border: 1px solid #a7f3d0;
+    }
+    .guide-viewer-action-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    .warning {
+      color: red;
+      font-weight: 600;
+    }
+    .warning-text {
+      color: #555;
+      font-size: 0.9rem;
+    }
+
+    /*
+      ** QR Code Section Styles **
+    */
+    .qr-code-section {
+        display: none; /* 默认隐藏 */
+        flex-direction: column;
+        align-items: center;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #f0f2f8;
+    }
+    .qr-code-content {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center; /* 确保内容居中 */
+    }
+    .qr-code-content p {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 0 0 15px; /* 添加下边距以增加距离 */
+    }
+    .qr-box {
+        background: #fff;
+        padding: 12px;
+        border: 1px solid #e6e9f0;
+        border-radius: 12px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+    }
+    .qr-box img {
+        display: block;
+        width: 180px;
+        height: 180px;
+    }
+    .download-qr-btn {
+        margin-top: 15px;
+        padding: 10px 20px;
+        border-radius: 8px;
+        border: 1px solid var(--accent1);
+        background: #fff;
+        color: var(--accent1);
+        font-weight: 600;
+        cursor: pointer;
+        font-size: 14px;
+    }
+    .qr-alt-info {
+        margin-top: 15px;
+        font-size: 14px;
+        color: #555;
+    }
+    .qr-alt-info .phone-number {
+        font-weight: 700;
+        color: var(--accent1);
+        display: block;
+        font-size: 16px;
+        margin-top: 5px;
+    }
+    .qr-alt-info .copy-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+    }
+    .qr-alt-info .copy-btn {
+        background: none;
+        border: none;
+        cursor: pointer;
+        padding: 0;
+        font-size: 16px;
+        color: var(--accent1);
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: scale(0.95); }
+      to { opacity: 1; transform: scale(1); }
+    }
+	/* 弹窗激活时主界面的样式 */
+	.modal-active .wrap {
+		transition: margin-top 0.3s ease;
+	}
+    #qrcode-container canvas {
+        padding: 20px;
+        background: #fff;
+    }
+    
+    /* Updated styles to match the new image designs */
+    .account-details-container {
+        padding: 20px;
+        border: 1px solid #e0e0e0; 
+        border-radius: 12px;
+        background-color: #ffffff; 
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); 
+        font-family: Arial, sans-serif;
+        margin-bottom: 7px;
+        text-align: center;
+    }
+    .account-details-header {
+        margin-bottom: 20px;
+    }
+    .digital-account-title {
+        display: inline-block;
+        padding: 10px 20px;
+        background-color: white;
+        color: #444;
+        border-radius: 20px;
+        font-size: 16px;
+        font-weight: bold;
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+        border: none;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .account-info-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0; 
+        background-color: transparent; 
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+    }
+    .account-number {
+        font-family: Arial, sans-serif;
+        font-size: 26px; 
+        font-weight: 700; 
+        color: red;
+    }
+
+    /* 样式修改以匹配新的按钮 */
+    .copy-btn {
+        background: #007aff; 
+        color: #fff; 
+        border: none;
+        border-radius: 8px;
+        padding: 10px 14px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 15px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+    }
+    .copy-btn:hover {
+        opacity: 0.9; 
+    }
+    .copy-btn img {
+        width: 16px; /* 调整大小 */
+        height: 16px;
+        filter: brightness(0) invert(1); /* 使图片颜色变为白色 */
+    }
+    
+    /* New style for the info icon to match the image */
+    .info-icon {
+        display: inline-flex;
+        justify-content: center;
+        align-items: center;
+        width: 18px;
+        height: 18px;
+        border: 1px solid #c0c0c0; /* Light grey border */
+        background-color: #f0f0f0; /* Light grey background */
+        border-radius: 50%; /* Makes it a perfect circle */
+        font-size: 11px;
+        font-weight: bold;
+        color: #555;
+        cursor: pointer;
+    }
+
+    /* Guide Title Style */
+    .easypaisa-transfer-guide {
+        padding-top: 0px;
+    }
+
+    .guide-title {
+        text-align: center;
+        font-size: 16px;
+        font-weight: 600;
+        color: #444;
+        margin-bottom: 10px;
+    }
+
+
+    /* Step-by-Step Guide Styles */
+    .easypaisa-steps-container {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .easypaisa-step-item {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        background: #fff;
+        padding: 18px;
+        border-radius: 12px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+    }
+
+    .easypaisa-step-number {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        width: 32px;
+        height: 32px;
+        background-color: #3b82f6;
+        color: #fff;
+        border-radius: 50%;
+        font-size: 16px;
+        font-weight: 600;
+        flex-shrink: 0;
+    }
+
+    .easypaisa-step-text {
+        flex-grow: 1;
+        font-size: 15px;
+        color: #333;
+        line-height: 1.4;
+    }
+
+    .easypaisa-note {
+        display: inline-block;
+        background-color: #e6f2ff;
+        color: #007aff;
+        font-size: 12px;
+        font-weight: 500;
+        padding: 3px 8px;
+        border-radius: 8px;
+        margin-left: 8px;
+    }
+
+    .easypaisa-account-number,
+    .easypaisa-amount {
+        font-weight: 700;
+    }
+    .rtl-text {
+          direction: rtl;
+          text-align: right;
+          font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Tahoma", sans-serif;
+          line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap" id="mainUI">
+    <div class="header">
+      <div class="brand-line">
+        <div class="brand-logo">
+            <img src="{{ static_url('images/pakistan/easypaisan1.jpg') }}" alt="EP">
+        </div>
+        <div class="brand-name">EasyPaisa</div>
+      </div>
+      
+      <div style="font-weight: 700; color: var(--dark-green);">ادائیگی کی رقم</div>
+      <div id="countdown-timer">6:00</div>
+      <div class="amount">PKR. {{ amount }}</div>
+      <div class="fee-badge">کوئی ٹرانزیکشن فیس نہیں</div>
+    </div>
+
+    <div class="body">
+      <div class="section-title" style="display:none;">
+        <div>Select Payment Method</div>
+        <div style="font-size:13px;color:var(--muted)">ادائیگی کا طریقہ منتخب کریں</div>
+      </div>
+
+      <div class="methods" role="tablist" aria-label="Payment methods" style="display:none;">
+        <div class="method active" data-method="easypaisa" tabindex="0" role="tab" aria-selected="true">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <rect rx="6" width="100" height="40" fill="#ffffff" />
+            <path d="M8 32 L26 10 L44 32 Z" fill="#2fbf66"></path>
+            <text x="54" y="24" font-size="14" fill="#2fbf66" font-family="Arial">Easypaisa</text>
+          </svg>
+          <div class="meta">Easypaisa</div>
+        </div>
+
+        <div class="method" data-method="jazzcash" tabindex="0" role="tab" aria-selected="false">
+          <svg viewBox="0 0 100 40" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+            <rect rx="6" width="100" height="40" fill="#fff"/>
+            <circle cx="20" cy="20" r="14" fill="#ffd05b"/>
+            <text x="52" y="24" font-size="14" fill="#ff6b00" font-family="Arial">JazzCash</text>
+          </svg>
+          <div class="meta">JazzCash</div>
+        </div>
+      </div>
+
+      <div class="input-row" id="inputRow">
+        <label>والیٹ اکاؤنٹ</label>
+        <input id="acct" placeholder="اکاؤنٹ نمبر: 03XXXXXXXXXX" />
+      </div>
+
+	      <button class="pay-btn" id="payBtn">
+	          <!-- 箭头图标 -->
+	          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+	              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+	          </svg>
+	          <span>ادائیگی کریں</span>
+	      </button>
+	      <div class="pay-tabs" id="payTabs" style="display:none;">
+	          <button class="pay-tab active" data-tab="qr" id="tabQr" type="button">اسکین کریں</button>
+	          <button class="pay-tab" data-tab="copy" id="tabCopy" type="button">اکاؤنٹ کاپی کریں</button>
+	      </div>
+
+	      <div class="qr-code-section" id="qrSection">
+	          <div class="pay-panel" data-panel="qr" id="payPanelQr" style="display:none;">
+	              <div class="qr-code-content" id="qrContentDiv" style="display:none;">
+	                  <p>یا اسکین کرکے ادائیگی کریں:</p>
+	                  <div class="qr-box" id="qrcode-container" style="padding: 20px;">
+	                      <img id="qrCodeImg" src="" alt="کیو آر کوڈ" />
+	                  </div>
+	                  <button class="download-qr-btn" id="downloadQrBtn">کیو آر کوڈ ڈاؤن لوڈ کریں</button>
+	              </div>
+	          </div>
+	          <div class="pay-panel" data-panel="copy" id="payPanelCopy" style="display:none;">
+	              <div class="easypaisa-transfer-guide" id="qrShow" style="display: none;">
+	                  <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
+
+	                  <div class="account-details-container">
+	                      <div class="account-details-header">
+	                          <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
+	                      </div>
+	                      <div class="account-info-row">
+	                          <span class="account-number">{{ account_iban }}</span>
+	                          <button class="copy-btn" id="copyBtn0" aria-label="اکاؤنٹ نمبر کاپی کریں">
+	                              <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
+	                              <span>کاپی کریں</span>
+	                          </button>
+	                      </div>
+	                  </div>
+	              </div>
+	              <div id="transById" style="display: none;">
+	                  <div class="easypaisa-transfer-guide">
+	                      <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
+
+	                      <div class="account-details-container">
+	                          <div class="account-details-header">
+	                              <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
+	                          </div>
+	                          <div class="account-info-row">
+	                              <span class="account-number" id="receiveAccount">{{ account_iban }}</span>
+	                              <button class="copy-btn" id="copyBtn" aria-label="اکاؤنٹ نمبر کاپی کریں">
+	                                  <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
+	                                  <span>کاپی کریں</span>
+	                              </button>
+	                          </div>
+	                      </div>
+
+	                      <div class="easypaisa-steps-container">
+	                        <div class="easypaisa-step-item rtl-text">
+	                            <div class="easypaisa-step-text">
+	                                اپنی گیم ایپ کے اکاؤنٹ میں پیسے جمع کروانا اب بہت آسان ہے۔ سب سے پہلے اپنی ایزی پیسہ ایپ کھولیں اور سینڈ منی پر کلک کریں۔ اس کے بعد دو آپشن آئیں گے: موبائل نمبر اور ڈیجیٹل اکاؤنٹ نمبر۔ آپ نے ڈیجیٹل اکاؤنٹ نمبر والا آپشن منتخب کرنا ہے۔ پھر آپ کو دیا گیا اکاؤنٹ نمبر وہاں درج کریں (<span style="color: red;">{{ account_iban }}</span>)، مطلوبہ رقم لکھیں اور سینڈ پر کلک کریں۔ ۵ سے ۱۰ سیکنڈز کے اندر اندر آپ کے پیسے براہِ راست آپ کی گیم ایپ کے اکاؤنٹ میں منتقل ہو جائیں گے۔
+	                            </div>
+	                        </div>
+	                        <div style="display: none;">
+	                          <div class="easypaisa-step-item" >
+	                              <div class="easypaisa-step-number">1</div>
+	                              <div class="easypaisa-step-text">ایزی پیسہ ایپ کھولیں → سینڈ منی</div>
+	                          </div>
+	                          <div class="easypaisa-step-item">
+	                              <div class="easypaisa-step-number">2</div>
+	                              <div class="easypaisa-step-text">
+	                                  "ڈیجیٹل اکاؤنٹ نمبر" منتخب کریں<br>
+	                                  <span class="easypaisa-note">موبائل نمبر منتخب نہ کریں</span>
+	                              </div>
+	                          </div>
+	                          <div class="easypaisa-step-item">
+	                              <div class="easypaisa-step-number">3</div>
+	                              <div class="easypaisa-step-text">اکاؤنٹ نمبر پیسٹ کریں: <strong class="easypaisa-account-number">{{ account_iban }}</strong></div>
+	                          </div>
+	                          <div class="easypaisa-step-item">
+	                              <div class="easypaisa-step-number">4</div>
+	                              <div class="easypaisa-step-text">رقم درج کریں: <strong class="easypaisa-amount">PKR {{ amount }}</strong></div>
+	                          </div>
+	                        </div>
+	                    </div>
+	                  </div>
+	              </div>
+	              <div class="guide-entry" id="guideEntry">
+	                  <div class="guide-entry-copy">
+	                      <div class="guide-entry-title">ادائیگی میں مدد چاہیے؟</div>
+	                      <div class="guide-entry-desc">ایزی پیسہ کے 5 مراحل دیکھیں اور کسی بھی مرحلے پر ٹیپ کرکے بڑی تصویر کھولیں۔</div>
+	                  </div>
+	                  <button class="guide-entry-btn" id="guideEntryBtn" type="button">گائیڈ دیکھیں</button>
+	              </div>
+	          </div>
+	      </div>
+
+    </div>
+
+    <div class="support" style="display: none;">
+      <div style="font-weight:700">Supported Payment Methods</div>
+      <div style="font-size:13px;color:var(--muted)">تعاون یافتہ ادائیگی کے طریقے</div>
+    </div>
+
+    <div style="display:none;gap:12px;padding:12px 18px 20px;align-items:center;justify-content:space-between">
+      <div class="logos">
+        <div class="logo-item">
+          <div class="logo-sq" title="Easypaisa">
+			<img src="{{ static_url('images/pakistan/easypaisa.png') }}" style="width:40px;height:40px;"/>
+          </div>
+          <div>Easypaisa</div>
+        </div>
+
+        <div class="logo-item">
+          <div class="logo-sq" title="JazzCash">
+            <img src="{{ static_url('images/pakistan/jazz.png') }}" style="width:40px;height:40px;"/>
+          </div>
+          <div>Jazzcash</div>
+        </div>
+
+        <div class="logo-item">
+          <div class="logo-sq" title="Raast">
+			<img src="{{ static_url('images/pakistan/raast.png') }}" style="width:40px;height:40px;"/>
+          </div>
+          <div>Raast</div>
+        </div>
+      </div>
+
+      <div style="font-size:12px;color:#888;text-align:right">
+        <div>تعاون یافتہ ادائیگی کے طریقے</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="helpModal">
+    <div class="modal-content">
+      <div class="modal-header" id="modalHeader">
+        <h2 id="modalTitle"></h2>
+        <span class="close-btn" id="closeBtn">&times;</span>
+      </div>
+
+      <div class="modal-pages" id="modalPages">
+        <div class="guide-list-view active" id="guideListView">
+          <p class="guide-list-intro">پہلے تمام 5 مراحل دیکھیں، پھر کسی بھی مرحلے پر ٹیپ کرکے بڑی تصویر کھولیں۔ بڑی تصویر میں آپ پچھلا مرحلہ، اگلا مرحلہ یا فہرست پر واپس جا سکتے ہیں۔</p>
+          <div class="guide-step-list">
+            <button class="guide-step-btn" type="button" data-step-index="0" data-title="مرحلہ 1: اپنا موبائل نمبر درج کریں" data-desc="اسی صفحے پر اپنا موبائل نمبر درج کریں اور ادائیگی کے بٹن کو دبائیں۔" data-image="{{ static_url('images/pakistan/guide/1001/step1.png') }}">
+              <span class="guide-step-index">1</span>
+              <img class="guide-step-thumb" src="{{ static_url('images/pakistan/guide/1001/step1.png') }}" alt="Guide Step 1">
+              <span class="guide-step-texts">
+                <span class="guide-step-title">مرحلہ 1: اپنا موبائل نمبر درج کریں</span>
+                <span class="guide-step-desc">اسی صفحے پر اپنا موبائل نمبر درج کریں اور ادائیگی کے بٹن کو دبائیں۔</span>
+              </span>
+            </button>
+            <button class="guide-step-btn" type="button" data-step-index="1" data-title="مرحلہ 2: اکاؤنٹ نمبر کاپی کریں" data-desc="ڈیجیٹل اکاؤنٹ نمبر کاپی کریں اور اسے ایزی پیسہ میں استعمال کریں۔" data-image="{{ static_url('images/pakistan/guide/1001/step2.png') }}">
+              <span class="guide-step-index">2</span>
+              <img class="guide-step-thumb" src="{{ static_url('images/pakistan/guide/1001/step2.png') }}" alt="Guide Step 2">
+              <span class="guide-step-texts">
+                <span class="guide-step-title">مرحلہ 2: اکاؤنٹ نمبر کاپی کریں</span>
+                <span class="guide-step-desc">ڈیجیٹل اکاؤنٹ نمبر کاپی کریں اور اسے ایزی پیسہ میں استعمال کریں۔</span>
+              </span>
+            </button>
+            <button class="guide-step-btn" type="button" data-step-index="2" data-title="مرحلہ 3: ٹرانسفر یا سینڈ منی کھولیں" data-desc="آگے بڑھنے کے لیے ایزی پیسہ میں ٹرانسفر یا سینڈ منی اسکرین کھولیں۔" data-image="{{ static_url('images/pakistan/guide/1001/step3.png') }}">
+              <span class="guide-step-index">3</span>
+              <img class="guide-step-thumb" src="{{ static_url('images/pakistan/guide/1001/step3.png') }}" alt="Guide Step 3">
+              <span class="guide-step-texts">
+                <span class="guide-step-title">مرحلہ 3: ٹرانسفر یا سینڈ منی کھولیں</span>
+                <span class="guide-step-desc">آگے بڑھنے کے لیے ایزی پیسہ میں ٹرانسفر یا سینڈ منی اسکرین کھولیں۔</span>
+              </span>
+            </button>
+            <button class="guide-step-btn" type="button" data-step-index="3" data-title="مرحلہ 4: ڈیجیٹل اکاؤنٹ نمبر منتخب کریں" data-desc="ڈیجیٹل اکاؤنٹ نمبر منتخب کریں اور کاپی کیا گیا اکاؤنٹ نمبر پیسٹ کریں۔" data-image="{{ static_url('images/pakistan/guide/1001/step4.png') }}">
+              <span class="guide-step-index">4</span>
+              <img class="guide-step-thumb" src="{{ static_url('images/pakistan/guide/1001/step4.png') }}" alt="Guide Step 4">
+              <span class="guide-step-texts">
+                <span class="guide-step-title">مرحلہ 4: ڈیجیٹل اکاؤنٹ نمبر منتخب کریں</span>
+                <span class="guide-step-desc">ڈیجیٹل اکاؤنٹ نمبر منتخب کریں اور کاپی کیا گیا اکاؤنٹ نمبر پیسٹ کریں۔</span>
+              </span>
+            </button>
+            <button class="guide-step-btn" type="button" data-step-index="4" data-title="مرحلہ 5: رقم درج کریں اور تصدیق کریں" data-desc="رقم چیک کریں، پھر ادائیگی مکمل کرنے کے لیے اگلے مرحلے یا تصدیقی بٹن کو دبائیں۔" data-image="{{ static_url('images/pakistan/guide/1001/step5.png') }}">
+              <span class="guide-step-index">5</span>
+              <img class="guide-step-thumb" src="{{ static_url('images/pakistan/guide/1001/step5.png') }}" alt="Guide Step 5">
+              <span class="guide-step-texts">
+                <span class="guide-step-title">مرحلہ 5: رقم درج کریں اور تصدیق کریں</span>
+                <span class="guide-step-desc">رقم چیک کریں، پھر ادائیگی مکمل کرنے کے لیے اگلے مرحلے یا تصدیقی بٹن کو دبائیں۔</span>
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <div class="guide-viewer-view" id="guideViewerView">
+          <div class="guide-viewer-progress" id="guidePageIndicator">مرحلہ 1 / 5</div>
+          <img class="guide-viewer-image" id="guideViewerImage" src="{{ static_url('images/pakistan/guide/1001/step1.png') }}" alt="Guide Viewer">
+          <div class="guide-viewer-title" id="guideViewerTitle">مرحلہ 1: اپنا موبائل نمبر درج کریں</div>
+          <div class="guide-viewer-desc" id="guideViewerDesc">اسی صفحے پر اپنا موبائل نمبر درج کریں اور ادائیگی کے بٹن کو دبائیں۔</div>
+          <div class="guide-viewer-actions">
+            <button class="guide-viewer-action-btn secondary" id="guidePrevBtn" type="button">پچھلا</button>
+            <button class="guide-viewer-action-btn secondary" id="guideBackToListBtn" type="button">فہرست پر واپس جائیں</button>
+            <button class="guide-viewer-action-btn primary" id="guideNextBtn" type="button">اگلا</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/layui-layer/dist/layer.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+  <script>
+    // JavaScript to show tooltip on mobile devices
+    const infoIcon = document.querySelector('.info-icon');
+    if (infoIcon) {
+        infoIcon.addEventListener('click', () => {
+            const tooltipText = infoIcon.getAttribute('title');
+            if (tooltipText) {
+                // Use layer.msg to display the text as a pop-up
+                layer.msg(tooltipText, {
+                    time: 3000, // Display for 3 seconds
+                    shift: 0    // Optional: Controls the animation
+                });
+            }
+        });
+    }
+    // Phone number processing function
+    function processPhoneNumber(phoneString) {
+        let cleaned = phoneString.replace(/\D/g, '');
+        const pattern = /^(\+?92|0092|92)/;
+        let processed = cleaned.replace(pattern, '');
+        if (processed.startsWith('0')) {
+            processed = processed.substring(1);
+        }
+        return processed;
+    }
+
+    // Detect mobile
+    function isMobile() {
+        return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+    }
+
+    // Detect iOS (for save fallback)
+    function isIOS() {
+        return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    }
+
+    // A new function to consistently add padding to any image URL.
+    function addPaddingToImage(dataUrl, callback) {
+        const padding = 40; 
+        const img = new Image();
+        img.crossOrigin = "anonymous"; 
+        img.onload = () => {
+            const paddedCanvas = document.createElement('canvas');
+            paddedCanvas.width = img.width + (padding * 2);
+            paddedCanvas.height = img.height + (padding * 2);
+            const ctx = paddedCanvas.getContext('2d');
+            ctx.fillStyle = '#ffffff';  // ✅ 改成白色背景
+            ctx.fillRect(0, 0, paddedCanvas.width, paddedCanvas.height);
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(img, padding, padding, img.width, img.height);
+            // callback(paddedCanvas.toDataURL("image/png"));
+            callback(paddedCanvas.toDataURL("image/jpeg", 1.0)); 
+        };
+        img.onerror = () => callback(dataUrl);
+        img.src = dataUrl;
+    }
+
+    function saveQRCodeBox() {
+        const qrBox = document.getElementById("qrcode-container");
+        html2canvas(qrBox, {backgroundColor: "#ffffff"}).then(canvas => {
+            const dataUrl = canvas.toDataURL("image/png");
+            if (isIOS()) {
+                window.open(dataUrl, "_blank");
+            } else {
+                const link = document.createElement("a");
+                link.href = dataUrl;
+                link.download = "qrcode.png";
+                link.click();
+            }
+        });
+    }
+
+    // The modified saveQRCode() function
+    function saveQRCode() {
+        const qrCanvas = document.querySelector('#qrcode-container canvas');
+        let dataUrl;
+
+        if (qrCanvas) {
+            dataUrl = qrCanvas.toDataURL("image/png");
+        } else {
+            const qrImg = document.querySelector('#qrcode-container img');
+            if (qrImg) {
+                dataUrl = qrImg.src;
+            }
+        }
+
+        if (!dataUrl) {
+            layer.msg('QR code not available to save', { icon: 5 });
+            return;
+        }
+
+        // ✅ 始终通过 addPaddingToImage 增加留白
+        addPaddingToImage(dataUrl, (paddedDataUrl) => {
+        if (isIOS()) {
+                // window.open(paddedDataUrl, '_blank');
+                // layer.msg('Long press the image and select "Add to Photos" to save', { time: 3000 });
+                const img = document.createElement('img');
+                img.src = paddedDataUrl;
+                img.style.width = "80%";
+                img.style.margin = "20px auto";
+                img.style.display = "block";
+
+                const overlay = document.createElement('div');
+                overlay.style.position = "fixed";
+                overlay.style.top = 0;
+                overlay.style.left = 0;
+                overlay.style.right = 0;
+                overlay.style.bottom = 0;
+                overlay.style.background = "rgba(0,0,0,0.7)";
+                overlay.style.zIndex = 9999;
+                overlay.appendChild(img);
+
+                document.body.appendChild(overlay);
+
+                layer.msg('Long press the QR code to save', { time: 4000 });
+
+                overlay.addEventListener('click', () => {
+                    document.body.removeChild(overlay);
+                });
+        } else {
+                const link = document.createElement('a');
+                link.href = paddedDataUrl;
+                link.download = 'qrcode.png';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            layer.msg('QR code downloaded (check your downloads folder if not saved automatically)', { time: 2000 });
+        }
+        });
+    }
+
+
+    // PC popup preview (not used but kept as option)
+    function showQRCodeInPopup() {
+        const qrCanvas = document.querySelector('#qrcode-container canvas');
+        const qrImg = document.querySelector('#qrcode-container img');
+        let dataUrl;
+
+        if (qrCanvas) {
+            try {
+                dataUrl = qrCanvas.toDataURL("image/png");
+            } catch (e) {
+                console.warn('canvas toDataURL failed', e);
+            }
+        }
+        if (!dataUrl && qrImg) {
+            dataUrl = qrImg.src;
+        }
+
+        if (dataUrl) {
+            layer.open({
+                type: 1,
+                title: false,
+                closeBtn: 1,
+                shadeClose: true,
+                area: ['auto', 'auto'],
+                content: `<div style="padding:15px;text-align:center">
+                            <img src="${dataUrl}" style="max-width:90%;border-radius:10px;" />
+                            <p style="color:#666;margin-top:10px;">Right-click the image → Save As</p>
+                            </div>`
+            });
+        } else {
+            layer.msg('QR code not available', { icon: 5 });
+        }
+    }
+
+    // Init page
+    document.addEventListener('DOMContentLoaded', () => {
+        const countdownEl = document.getElementById('countdown-timer');
+        const totalSeconds = "{{ time_diff }}";
+        let secondsRemaining = totalSeconds;
+
+        function updateCountdown() {
+            const minutes = Math.floor(secondsRemaining / 60);
+            const seconds = secondsRemaining % 60;
+            countdownEl.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+
+            if (secondsRemaining <= 0) {
+                clearInterval(countdownInterval);
+                countdownEl.textContent = 'Time expired';
+                if (showQrBtn) {
+                    showQrBtn.disabled = true;
+                }
+                if (window.orderPollInterval) clearInterval(window.orderPollInterval);
+                document.getElementById('timeoutOverlay').style.display = 'flex';
+            } else {
+                secondsRemaining--;
+            }
+        }
+
+        const countdownInterval = setInterval(updateCountdown, 1000);
+        updateCountdown();
+    });
+
+    (function(){
+      let orderPollInterval = null;
+      window.orderPollInterval = orderPollInterval;
+
+      function trackOrderStatus() {
+          if (orderPollInterval) clearInterval(orderPollInterval);
+          orderPollInterval = setInterval(function() {
+              $.ajax({
+                  type: 'post',
+                  url: '{{reverse_url("orderStatus", token)}}',
+                  data: {},
+                  dataType: 'json',
+                  success: function(res) {
+                      if (res.code === 0) {
+                          // Payment success
+                          clearInterval(orderPollInterval);
+                          document.getElementById('successOverlay').style.display = 'flex';
+                          setTimeout(function() {
+                              if (res.url && res.url !== 'sys') {
+                                  location.href = res.url;
+                              }
+                          }, 3000);
+                      }
+                      if (res.code === 10002) {
+                          // Order timeout/failed
+                          clearInterval(orderPollInterval);
+                          document.getElementById('timeoutOverlay').style.display = 'flex';
+                          setTimeout(function() {
+                              var cb = "{{ callback }}";
+                              if (cb && cb !== 'sys') {
+                                  location.href = cb;
+                              }
+                          }, 3000);
+                      }
+                  }
+              });
+          }, 3000);
+          window.orderPollInterval = orderPollInterval;
+      }
+
+      const mainUI = document.getElementById('mainUI');
+      const helpModal = document.getElementById('helpModal');
+      const qrSection = document.getElementById('qrSection');
+      const qrContentDiv = document.getElementById('qrContentDiv');
+	      const transById = document.getElementById('transById');
+	      const qrShow = document.getElementById('qrShow');
+	      const qrCodeImg = document.getElementById('qrCodeImg');
+	      const downloadQrBtn = document.getElementById('downloadQrBtn');
+	      const copyBtn = document.getElementById('copyBtn');
+	      const copyBtn0 = document.getElementById('copyBtn0');
+	      const receiveAccountSpan = document.getElementById('receiveAccount');
+	      const payTabs = document.getElementById('payTabs');
+	      const guideEntry = document.getElementById('guideEntry');
+	      const tabBtns = payTabs ? payTabs.querySelectorAll('.pay-tab') : [];
+	      const payPanels = document.querySelectorAll('[data-panel]');
+
+
+      const methods = document.querySelectorAll('.method');
+      const inputRow = document.getElementById('inputRow');
+      const acctInput = document.getElementById('acct');
+      const payBtn = document.getElementById('payBtn');
+      const guideEntryBtn = document.getElementById('guideEntryBtn');
+      const modalHeader = document.getElementById('modalHeader');
+      const modalTitle = document.getElementById('modalTitle');
+      const closeBtn = document.getElementById('closeBtn');
+      const guideListView = document.getElementById('guideListView');
+      const guideViewerView = document.getElementById('guideViewerView');
+      const guideStepButtons = document.querySelectorAll('.guide-step-btn');
+      const guideViewerImage = document.getElementById('guideViewerImage');
+      const guideViewerTitle = document.getElementById('guideViewerTitle');
+      const guideViewerDesc = document.getElementById('guideViewerDesc');
+      const guidePageIndicator = document.getElementById('guidePageIndicator');
+      const guidePrevBtn = document.getElementById('guidePrevBtn');
+      const guideNextBtn = document.getElementById('guideNextBtn');
+      const guideBackToListBtn = document.getElementById('guideBackToListBtn');
+      const is_show_qr_val = "{{ is_show_qr }}";
+
+      let selectedMethod = 'easypaisa';
+      let currentGuideIndex = 0;
+      const guideSteps = Array.from(guideStepButtons).map((button) => ({
+        title: button.getAttribute('data-title'),
+        desc: button.getAttribute('data-desc'),
+        image: button.getAttribute('data-image')
+      }));
+
+      function showGuideList() {
+        if (!guideListView || !guideViewerView) {
+          return;
+        }
+        modalHeader.classList.remove('success');
+        modalTitle.textContent = 'ایزی پیسہ ادائیگی گائیڈ';
+        guideListView.classList.add('active');
+        guideViewerView.classList.remove('active');
+      }
+
+      function updateGuideViewer() {
+        const step = guideSteps[currentGuideIndex];
+        if (!step || !guideViewerImage || !guideViewerTitle || !guideViewerDesc || !guidePageIndicator) {
+          return;
+        }
+        modalHeader.classList.add('success');
+        modalTitle.textContent = 'بڑی رہنمائی تصویر';
+        guideViewerImage.src = step.image;
+        guideViewerTitle.textContent = step.title;
+        guideViewerDesc.textContent = step.desc;
+        guidePageIndicator.textContent = `مرحلہ ${currentGuideIndex + 1} / ${guideSteps.length}`;
+        if (guidePrevBtn) {
+          guidePrevBtn.disabled = currentGuideIndex === 0;
+        }
+        if (guideNextBtn) {
+          guideNextBtn.disabled = currentGuideIndex === guideSteps.length - 1;
+        }
+      }
+
+      function showGuideViewer(index) {
+        if (!guideListView || !guideViewerView) {
+          return;
+        }
+        currentGuideIndex = index;
+        guideListView.classList.remove('active');
+        guideViewerView.classList.add('active');
+        updateGuideViewer();
+      }
+
+	      function openGuideModal() {
+	        if (!helpModal) {
+	          return;
+	        }
+	        document.body.classList.add('modal-active');
+	        helpModal.style.display = 'flex';
+	        showGuideList();
+	      }
+
+	      function switchPayTab(tab) {
+	        tabBtns.forEach((button) => {
+	          button.classList.toggle('active', button.getAttribute('data-tab') === tab);
+	        });
+	        payPanels.forEach((panel) => {
+	          panel.style.display = 'none';
+	        });
+	        const target = document.querySelector('[data-panel="' + tab + '"]');
+	        if (target) {
+	          target.style.display = 'block';
+	        }
+	      }
+
+	      if (helpModal) {
+	        closeBtn.addEventListener('click', () => {
+	          closeModalAndHideElements();
+	        });
+      }
+
+      if (guideEntryBtn) {
+        guideEntryBtn.addEventListener('click', openGuideModal);
+      }
+
+	      guideStepButtons.forEach((button, index) => {
+	        button.addEventListener('click', () => {
+	          showGuideViewer(index);
+	        });
+	      });
+
+	      tabBtns.forEach((btn) => {
+	        btn.addEventListener('click', () => {
+	          switchPayTab(btn.getAttribute('data-tab'));
+	        });
+	      });
+
+      if (guidePrevBtn) {
+        guidePrevBtn.addEventListener('click', () => {
+          if (currentGuideIndex > 0) {
+            currentGuideIndex--;
+            updateGuideViewer();
+          }
+        });
+      }
+
+      if (guideNextBtn) {
+        guideNextBtn.addEventListener('click', () => {
+          if (currentGuideIndex < guideSteps.length - 1) {
+            currentGuideIndex++;
+            updateGuideViewer();
+          }
+        });
+      }
+
+      if (guideBackToListBtn) {
+        guideBackToListBtn.addEventListener('click', () => {
+          showGuideList();
+        });
+      }
+
+
+      methods.forEach(m => {
+        m.addEventListener('click', ()=> {
+          methods.forEach(x=>x.classList.remove('active'));
+          m.classList.add('active');
+          selectedMethod = m.getAttribute('data-method');
+          methods.forEach(x => x.setAttribute('aria-selected', x===m ? 'true' : 'false'));
+        });
+        m.addEventListener('keydown', e => {
+          if(e.key === 'Enter' || e.key === ' ') { e.preventDefault(); m.click(); }
+        });
+      });
+
+      // Copy to clipboard functionality
+      if (copyBtn && receiveAccountSpan) {
+          copyBtn.addEventListener('click', () => {
+              const textToCopy = receiveAccountSpan.textContent.trim();
+              navigator.clipboard.writeText(textToCopy).then(() => {
+                  layer.msg('Copied successfully!');
+              }).catch(err => {
+                  console.error('Failed to copy text: ', err);
+                  layer.msg('Failed to copy.', { icon: 5 });
+              });
+          });
+      }
+
+      // Copy to clipboard functionality
+      if (copyBtn0 && receiveAccountSpan) {
+          copyBtn0.addEventListener('click', () => {
+              const textToCopy = receiveAccountSpan.textContent.trim();
+              navigator.clipboard.writeText(textToCopy).then(() => {
+                  layer.msg('Copied successfully!');
+              }).catch(err => {
+                  console.error('Failed to copy text: ', err);
+                  layer.msg('Failed to copy.', { icon: 5 });
+              });
+          });
+      }
+
+      payBtn.addEventListener('click', ()=> {
+        const account = acctInput.value.trim();
+        if (!account) {
+            layer.error('Please enter an account number.');
+            return;
+        }
+        
+        const phoneNumberRaw = account;
+        const phoneNumber = processPhoneNumber(phoneNumberRaw);
+
+        if (!phoneNumber || phoneNumber.trim().length < 6) {
+            layer.msg('Please enter a valid phone number', { icon: 5, time: 2000 });
+            return;
+        }
+
+        $.ajax({
+            type: "POST",
+            url: '{{reverse_url("card_num_submit", token)}}',
+            data: {
+                card_num: phoneNumber
+            },
+            dataType: "json",
+            success: function (msg) {
+                console.log(msg, msg.code);
+	                if (msg.code == 0) {
+	                    layer.msg(msg.message || 'Submission successful');
+
+	                    // 成功后隐藏输入框和按钮
+	                    inputRow.style.display = 'none';
+	                    payBtn.style.display = 'none';
+
+	                    const paymentCode = "{{ upi }}";
+	                    const hasPaymentCode = !!paymentCode.trim();
+	                    const canShowQr = hasPaymentCode && is_show_qr_val !== "0";
+	                    const qrcodeContainer = document.getElementById('qrcode-container');
+
+	                    qrcodeContainer.innerHTML = '';
+	                    if (canShowQr) {
+	                        new QRCode(qrcodeContainer, {
+	                            text: paymentCode,
+	                            width: 256,
+	                            height: 256,
+	                            colorDark: "#000000",
+	                            colorLight: "#ffffff",
+	                            correctLevel: QRCode.CorrectLevel.M
+	                        });
+	                    }
+
+	                    // order_india.1010.html (变更后的部分代码)
+	                    const saveBtn = document.getElementById('downloadQrBtn');
+	                    if (saveBtn) {
+	                        if (canShowQr && isMobile()) {
+	                            saveBtn.style.display = 'inline-block';
+	                            // 变更后，添加一个匿名函数来同时处理下载和接口调用
+	                            saveBtn.onclick = function() {
+                                // 1. 调用下载二维码的函数
+                                saveQRCode();
+
+                                // 2. 向后端发送下载统计请求
+                                const orderId = document.getElementById('orderId').textContent.trim();
+                                if (orderId) {
+                                    $.ajax({
+                                        type: "POST",
+                                        // 假设你的接口地址是这个
+                                        url: '/api/api/ord/download_count_submit',
+                                        data: {
+                                            code: orderId
+                                        },
+                                        dataType: "json",
+                                        success: function (msg) {
+                                            console.log("Download count submitted:", msg);
+                                            // 可以选择在这里显示一个提示
+                                        },
+                                        error: function (err) {
+                                            console.error("Failed to submit download count:", err);
+                                        }
+                                    });
+                                }
+                            };
+                        } else {
+                            saveBtn.style.display = 'none';
+                        }
+                    }
+
+                    // 成功后显示收款账号和二维码部分
+	                    if (qrSection) {
+	                        qrSection.style.display = 'flex';
+	                    }
+
+	                    if (qrContentDiv) {
+	                        qrContentDiv.style.display = canShowQr ? 'flex' : 'none';
+	                    }
+	                    if (qrShow) {
+	                        qrShow.style.display = 'none';
+	                    }
+	                    if (transById) {
+	                        transById.style.display = 'none';
+	                    }
+	                    if (guideEntry) {
+	                        guideEntry.style.display = 'flex';
+	                    }
+
+	                    if (is_show_qr_val !== "0") {
+	                        qrShow.style.display = 'block';
+	                    } else {
+	                        transById.style.display = 'flex';
+	                    }
+
+	                    if (canShowQr) {
+	                        if (payTabs) {
+	                            payTabs.style.display = 'flex';
+	                        }
+	                        switchPayTab('qr');
+	                    } else {
+	                        if (payTabs) {
+	                            payTabs.style.display = 'none';
+	                        }
+	                        switchPayTab('copy');
+	                    }
+
+	                    trackOrderStatus();
+	                } else {
+                    layer.msg(msg.message || 'Submission failed, please try again');
+                }
+            },
+            error: function (msg) {
+                layer.msg('Network error or server exception');
+                console.log(msg);
+            },
+        });
+	
+      });
+
+      // Function to handle modal closure and hide elements
+      function closeModalAndHideElements() {
+        if(helpModal) {
+          document.body.classList.remove('modal-active');
+          helpModal.style.display = 'none';
+        }
+      }
+      
+    })();
+  </script>
+
+  <!-- Success Overlay -->
+  <div class="result-overlay" id="successOverlay" style="display:none;">
+    <div class="result-box">
+      <div class="result-icon success">&#10004;</div>
+      <h3 style="color: var(--accent1);">ادائیگی کامیاب</h3>
+      <p>آپ کی ادائیگی کامیابی سے مکمل ہو گئی۔</p>
+      <p class="redirect-hint">3 سیکنڈ میں خودکار واپسی...</p>
+    </div>
+  </div>
+
+  <!-- Timeout Overlay -->
+  <div class="result-overlay" id="timeoutOverlay" style="display:none;">
+    <div class="result-box">
+      <div class="result-icon fail">&#10008;</div>
+      <h3 style="color: #dc3545;">ادائیگی کا وقت ختم</h3>
+      <p>براہ کرم نیا آرڈر بنائیں۔</p>
+    </div>
+  </div>
+
+</body>
+</html>

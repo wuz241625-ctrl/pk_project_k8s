@@ -1,0 +1,18 @@
+msg = {
+    10000: {'code': 80000, 'data': None, 'message': '登录失败'},
+    10001: {'code': 80001, 'data': None, 'message': '账号密码错误'},
+    10002: {'code': 80002, 'data': None, 'message': '账号已禁用，请联系管理员'},
+    10003: {'code': 80003, 'data': None, 'message': '谷歌验证码错误'},
+    10004: {'code': 80004, 'data': None, 'message': '添加失败'},
+    10005: {'code': 80005, 'data': None, 'message': '更新失败'},
+    10006: {'code': 80006, 'data': None, 'message': '删除失败'},
+    10007: {'code': 80007, 'data': None, 'message': '操作失败'},
+    10008: {'code': 80008, 'data': None, 'message': '账号已存在'},
+    10009: {'code': 80009, 'data': None, 'message': '费率设置错误'},
+    10010: {'code': 80010, 'data': None, 'message': '余额不足'},
+    10011: {'code': 80011, 'data': None, 'message': '代付异常'},
+    10012: {'code': 80012, 'data': None, 'message': '账户不存在或冻结，请联系管理员'},
+    10013: {'code': 80013, 'data': None, 'message': '请勿频繁操作'},
+    0:     {'code': 0, 'data': None, 'message': '操作失败'},
+    20000: {'code': 20000, 'data': None, 'message': '操作成功'},
+}

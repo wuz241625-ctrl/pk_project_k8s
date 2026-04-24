@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>789Pay-Payment</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="keywords" content="">
+    <meta name="description" content="">
+    <link rel="stylesheet" href="{{ static_url('css/reset.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/index_v2.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/template_1001.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/utils.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/iconfont.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/layer.css') }}" id="layuicss-layer">
+    <script src="{{ static_url('v2/plugins/jquery/jquery-2.1.4.min.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/qrcode.min.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/fastclick.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/common.js') }}"></script>
+    <script src="{{ static_url('js/bootbox.all.js') }}"></script>
+    <script src="{{ static_url('js/layer3.js') }}"></script>
+    <script src="{{ static_url('js/bootbox.all.js') }}"></script>
+    <script src="{{ static_url('js/layer3.js') }}"></script>
+</head>
+<body>
+    <div class="os-logo flex justify-content-center align-items-center fs-18" style="background-color: #3c9cff; color: white;">
+        789Pay
+    </div>
+    <div id="app" style="background-color: #9acafc; color: white;">
+        <header class="flex flex-direction-column align-items-center justify-content-center">
+            <div id="countdown-container" class="pb-30 pt-30" style="width: 100%; display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                <div style="width: 100%;">
+                    <div class="amount-title text-align-left">Transfer Amount</div>
+                    <div class="text-align-left amount-num fs-18" style="color: #3c9cff; font-weight: bold;"><span>₹</span><span>{{ '{0:.2f}'.format(amount) }}</span></div>
+                </div>
+                <div style="padding: 6px 12px; display: flex; justify-content: space-between; gap: 6px; background: #fff; border-radius: 999px;">
+                    <img width="14px" src="/static/images/789pay/clock.svg" alt="">
+                    <div id="countdown-time" style="font-size: 18px; color: #3c9cff;">
+                        07:00
+                    </div>
+                </div>
+            </div>
+            
+            <div class="upi-id flex justify-content-between align-items-center mb-20 fs-14" style="
+                background-color: #fff;
+                padding: 6px 12px;
+                color: #000;
+            ">
+                <span class="fw-600">UPI ID</span>
+                <span class="upi-id-desc flex justify-content-between align-items-center">
+                    <span class="mr-5 fw-600" style="color: #d53247;">{{ upi }}</span>
+                    <button class="copy-icon" style="background-color: #3c9cff; color: white; border-radius: 999px;">copy</button>
+                </span>
+            </div>
+        </header>
+
+        <main class="flex flex-direction-column align-items-center mb-20"
+            style="background: #fff;box-shadow: 0 0 10px rgba(0,0,0,0.2);color: #000;padding: 10px 10px;border-radius: 28px;"
+        >
+            <div class="mb-20 flex align-items-center fs-16 step-wrapper">
+                <div class="mr-10 step">
+                </div>
+                    <p class="fs-14">1.Please scan the QR code with your favorite UPI append copy the UTR code</p>
+                </div>
+<!--            {% if is_hidden_qrcode %} style="display: none;" {% end %}dt-->
+            <div class="qrcode p-10 mb-20"
+            ></div>
+            <ul class="upi-list mb-20 pl-10 pr-10 flex" style="background-color: #9acafc; color: #fff; border-radius: 0.05rem; width: 100%; justify-content: space-around;">
+                <li class="upi-item p-10 flex flex-direction-column align-items-center justify-content-center mr-10">
+                    <img class="upi-icon mb-5" src="{{ static_url('images/india_transaction/Paytm.svg') }}" alt="">
+                    <span class="upi-name fs-12">Paytm</span>
+                </li>
+                <li class="upi-item p-10 flex flex-direction-column align-items-center justify-content-center mr-10">
+                    <img class="upi-icon mb-5" src="{{ static_url('images/india_transaction/PhonePe.svg') }}" alt="">
+                    <span class="upi-name fs-12">PhonePe</span>
+                </li>
+                <li class="upi-item p-10 flex flex-direction-column align-items-center justify-content-center mr-10">
+                    <img class="upi-icon mb-5" src="{{ static_url('images/india_transaction/Google.svg') }}" alt="">
+                    <span class="upi-name fs-12">GooglePay</span>
+                </li>
+                <li class="upi-item p-10 flex flex-direction-column align-items-center justify-content-center">
+                    <img class="upi-icon mb-5" src="{{ static_url('images/india_transaction/Bank UPI.svg') }}" alt="">
+                    <span class="upi-name fs-12">UPI</span>
+                </li>
+            </ul>
+            <div class="mb-20 flex align-items-center fs-14 step-wrapper">
+                <p>2.Please fill in the Ref No./ UTR No. after your transaction completed</p>
+            </div>
+        </main>
+    </div>
+
+    <div class="floating-bottom fs-16" style="background-color: #fff;">
+        <form class="popup-form p-20" action="" onsubmit="return false">
+            <div class="popup-form-item-label mb-5">IMPORTANT!Fill in Ref No./ UTR No.</div>
+            <div class="popup-form-item mb-10">
+                <input type="number" maxlength="12" autocomplete="off" placeholder="Input-12-digit here"
+                    class="popup-form-item-input" />
+            </div>
+
+            <button type="submit" class="submit-btn text-align-center pt-15 pb-15" style="position: relative; background: #3c9cff; color: white; border-radius: 99px;">
+                submit Ref No./ UTR No.
+                <img style="    position: absolute;
+                width: 80px;
+                top: 10px;" src="/static/images/789pay/finger.gif" alt="">
+            </button>
+        </form>
+    </div>
+
+
+    <script type="text/javascript">
+        
+        function startCountdown() {
+            let time = {{ time_diff }};
+            // 检查 time 的值
+            console.log("Initial time value in seconds:", time);
+            let alertShown = false; // 确保警告只显示一次
+            const countdownTimeEl = document.getElementById('countdown-time');
+            // const countdownLabelEl = document.getElementById('countdown-label');
+            
+            // 在函数内部声明 countdownInterval，避免全局重复声明
+            let countdownInterval;
+
+    function updateCountdown() {
+        if (time >= 0) {
+            const minutes = Math.floor(time / 60);
+            const seconds = time % 60;
+            countdownTimeEl.innerHTML = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            time--;
+        } else if (!alertShown) {
+            // 停止倒计时，显示“已过期”，并弹出警告框
+            alertShown = true;
+            countdownTimeEl.innerHTML = "Expired";
+            // countdownLabelEl.innerHTML = "Payment time has expired.";
+            layer.msg("The payment session has expired. Please create a new order.", {
+                time: 30000 // 设置停留时间为30秒（30000毫秒）
+            });
+            
+            // 停止倒计时，防止进一步执行
+            clearInterval(countdownInterval);
+        }
+    }
+
+    // 清除已有的倒计时间隔（如果存在）
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+    }
+
+    // 设置新的倒计时间隔
+    countdownInterval = setInterval(updateCountdown, 1000);
+}
+
+// 调用函数启动倒计时
+startCountdown();
+
+
+
+        const loading = {
+            show: () => {
+                $(".loading").css("display", "block");
+            },
+            hide: () => {
+                $(".loading").css("display", "none");
+            },
+        };
+
+        let countdownInterval;
+        let upiInfo = null;
+
+        const main = () => {
+            loading.show();
+            bindEvent();
+            let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+            generateQrcode($(".qrcode")[0], "upi://pay?" + upi_params_url_encode);
+            track_order_status();
+            loading.hide();
+        };
+
+        main();
+
+        function htmlDecode(input) {
+            let e = document.createElement('textarea');
+            e.innerHTML = input;
+            // handle case of empty input
+            return e.childNodes.length === 0 ? "" : e.childNodes[0].nodeValue;
+        }
+
+        function bindEvent() {
+            $(".qrcode").on("click", function (e) {
+                e.stopPropagation();
+                $(this).html("");
+                let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+                generateQrcode(this, "upi://pay?" + upi_params_url_encode);
+            });
+            window.addEventListener("resize", function () {
+                $(".qrcode").html("");
+                let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+                generateQrcode($(".qrcode")[0], "upi://pay?" + upi_params_url_encode);
+            });
+            $(".floating-bottom .popup-form").on("click", handleFormClick);
+            $(".popup-form-item-input").on("input", handleInputFormat);
+            $(".upi-id-desc").on("click", copyText);
+        }
+
+        function track_order_status() {
+            let orderInterval;
+            orderInterval = setInterval(function () {
+                $.ajax({
+                    type: 'post',
+                    url: '{{reverse_url("orderStatus", token)}}',
+                    data: {},
+                    dataType: 'json',
+                    success: function (str) {
+                        console.log(str);
+                        if (str.code === 0) {
+                            location.href = str.url;
+                        }
+                        if (str.code === 10002) {
+                            layer.msg('Order timeout!', {
+                                icon: 5,
+                                time: 2000,
+                                end: function () {
+                                    location.href = "{{ callback }}";
+                                }
+                            });
+                            clearInterval(orderInterval);
+                        }
+                    }
+                });
+            }, 3000);
+        }
+
+
+        function handleInputFormat(e) {
+            const input = e.target;
+            input.value = input.value.replace(/\D/g, "").slice(0, 12);
+        }
+
+        function generateQrcode(el, text) {
+            const scale = window
+                .getComputedStyle(document.documentElement)
+                .fontSize.replace("px", "");
+            new QRCode(el, {
+                text,
+                width: scale * 1.28,
+                height: scale * 1.28,
+                correctLevel: QRCode.CorrectLevel.L,
+            });
+        }
+
+        function handleFormClick(e) {
+            e.stopPropagation();
+            const submitBtn = e.target.closest(".submit-btn");
+            if (submitBtn) {
+                const inputValue = $(".popup-form-item-input").val();
+                const isValid = /^\d{12}$/.test(inputValue);
+                if (isValid) {
+                    handleSubmitForm();
+                } else {
+                    layer.msg('Please enter REF NO.<br>Ref NO. is 12 digits', { icon: 5, time: 2000 });
+                }
+            }
+        }
+
+        function copyText(e) {
+            e.stopPropagation();
+            const copyIcon = e.target.closest(".copy-icon");
+            if (copyIcon) {
+                const upiId = copyIcon.previousElementSibling.textContent;
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(upiId).then(() => {
+                        layer.msg('Copied!', { icon: 1, time: 2000 });
+                    }).catch(err => {
+                        console.error('Failed to copy: ', err);
+                    });
+                } else {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = upiId;
+                    document.body.appendChild(textArea);
+                    textArea.select();
+                    try {
+                        document.execCommand('copy');
+                        layer.msg('Copied!', { icon: 1, time: 2000 });
+                    } catch (err) {
+                        console.error('Failed to copy: ', err);
+                    }
+                    document.body.removeChild(textArea);
+                }
+            }
+        }
+
+        // 提交表单
+        function handleSubmitForm() {
+            loading.show();
+            let upi_utr = $('.popup-form-item-input').val();
+            $.ajax({
+                type: "POST",
+                url: '{{reverse_url("card_num_submit", token)}}',
+                data: {
+                    card_num: upi_utr,
+                },
+                dataType: "json",
+                success: function (msg) {
+                    console.log(msg, msg.code);
+                    if (msg.code == 0) {
+                        layer.msg(msg.message, { icon: 6, time: 2000 });
+                        console.log("success");
+                        if (msg.url) {
+                            try {
+                                new URL(msg.url); // Attempt to create a new URL object
+                                location.href = msg.url; // Redirect if valid
+                            } catch (error) {
+                                console.error("Invalid URL:", msg.url); // Handle invalid URL case
+                            }
+                        }
+                    } else {
+                        layer.msg(msg.message);
+                        setTimeout(function () {
+                            $(".popup-form-item-input").val("");
+                        }, 2000);
+                    }
+                    loading.hide();
+                },
+                error: function (msg) {
+                    layer.msg(msg);
+                    console.log(msg);
+                    loading.hide();
+                },
+            });
+        }
+    </script>
+</body>
+</html>

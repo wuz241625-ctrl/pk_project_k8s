@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+    <title>Ospay-Payment</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="keywords" content="">
+    <meta name="description" content="">
+    <link rel="stylesheet" href="{{ static_url('css/reset.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/index_v2.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/template_1002.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/utils.min.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/iconfont.css') }}">
+    <link rel="stylesheet" href="{{ static_url('css/layer.css') }}" id="layuicss-layer">
+    <script src="{{ static_url('v2/plugins/jquery/jquery-2.1.4.min.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/qrcode.min.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/fastclick.js') }}"></script>
+    <script crossorigin src="{{ static_url('js/common.js') }}"></script>
+    <script src="{{ static_url('js/bootbox.all.js') }}"></script>
+    <script src="{{ static_url('js/layer3.js') }}"></script>
+    <script src="{{ static_url('js/bootbox.all.js') }}"></script>
+    <script src="{{ static_url('js/layer3.js') }}"></script>
+    <!-- Hotjar Tracking Code for https://hotjar.co -->
+    <script>
+        (function(h,o,t,j,a,r){
+            h.hj=h.hj||function(){(h.hj.q=h.hj.q||[]).push(arguments)};
+            h._hjSettings={hjid:5060858,hjsv:6};
+            a=o.getElementsByTagName('head')[0];
+            r=o.createElement('script');r.async=1;
+            r.src=t+h._hjSettings.hjid+j+h._hjSettings.hjsv;
+            a.appendChild(r);
+        })(window,document,'https://static.hotjar.com/c/hotjar-','.js?sv=');
+    </script>
+</head>
+<body>
+<!-- <div class="os-logo flex justify-content-center align-items-center fs-26"> -->
+    <!-- OSPay -->
+    <!-- <img src="/static/images/ospay-logo.png" alt="OSPay"> -->
+<!-- </div> -->
+<div id="app">
+    <header class="flex flex-direction-column align-items-center justify-content-center mb-10">
+        <div style="background-color: #5ac18a; width: 100%; padding: 0.12rem;">
+            <div id="countdown-container" style="text-align: center; margin-top: 10px; display: flex; justify-content: space-between;" >
+                <div id="countdown-label" style="color: #fff; font-size: 14px; font-weight: bold;">
+                    Time remaining:
+                </div>
+                <div id="countdown-time" style="color: #fff; font-size: 14px; font-weight: bold;">
+                    07:00
+                </div>
+            </div>
+            <!-- <div class="pt-30 pb-30 text-align-center amount-title">Transfer Amount</div> -->
+            <div class="mb-10 fs-26 amount-num" style="font-weight: bold; color: #fff;"> <span>₹</span><span>{{ '{0:.2f}'.format(amount) }}</span></div>
+        </div>
+        <div class="divider-with-text">
+            <span class="divider-text" style="font-weight: bold;">QR</span>
+        </div>
+        <div class="pb-30  fs-12 " style="font-weight: bold;">Scan Code To Pay</div>
+        <div class="qrcode"></div>
+        <div class="pt-30  fs-12" style="font-weight: bold;">Do not use same QR code to pay multiple times</div>
+        <div class="divider-with-text">
+            <span class="divider-text" style="font-weight: bold;">QR</span>
+        </div>
+    </header>
+    <main class="mb-20 flex flex-direction-column align-items-center">
+        <ul class="upi-list mb-10 pl-10 pr-10">
+            <!--Paytm-->
+            <li data-url="paytmmp://cash_wallet?{{upi_params_paytm_url_encode}}" class="upi-item p-10">
+                <div class="upi-info flex justify-content-between align-items-center mb-5">
+                    <img src="{{ static_url('images/india_transaction/Paytm.svg') }}" class="upi-icon mr-10">
+                    <span class="upi-name">Paytm</span>
+                    <img class="arrow-right ml-10" src="{{ static_url('images/india_transaction/arrow-right.svg')}}">
+                </div>
+            </li>
+            <!--PhonePe-->
+            <li data-url="phonepe://pay?{{upi_params_general_url_encode}}" class="upi-item p-10">
+                <div class="upi-info flex justify-content-between align-items-center mb-5">
+                    <img src="{{ static_url('images/india_transaction/PhonePe.svg') }}" class="upi-icon mr-10">
+                    <span class="upi-name">PhonePe</span>
+                    <img class="arrow-right ml-10" src="{{ static_url('images/india_transaction/arrow-right.svg')}}">
+                </div>
+            </li>
+            <!--Google-->
+            <li data-url="gpay://pay?{{upi_params_general_url_encode}}" class="upi-item p-10">
+                <div class="upi-info flex justify-content-between align-items-center mb-5">
+                    <img src="{{ static_url('images/india_transaction/Google.svg') }}" class="upi-icon mr-10">
+                    <span class="upi-name">GooglePay</span>
+                    <img class="arrow-right ml-10" src="{{ static_url('images/india_transaction/arrow-right.svg')}}">
+                </div>
+            </li>
+            <!--Bank UPI-->
+            <li data-url="upi://pay?{{upi_params_general_url_encode}}" class="upi-item p-10">
+                <div class="upi-info flex justify-content-between align-items-center mb-5">
+                    <img src="{{ static_url('images/india_transaction/Bank UPI.svg') }}" class="upi-icon mr-10">
+                    <span class="upi-name">UPI</span>
+                    <img class="arrow-right ml-10" src="{{ static_url('images/india_transaction/arrow-right.svg')}}">
+                </div>
+                <div class="upi-desc">If you pay with PhonePe, Copy UTR number to space after payment successfully</div>
+            </li>
+        </ul>
+    </main>
+
+    <footer>
+        <div style="padding: 10px;">
+        <h3 class="mb-10">Notice</h3>
+        <div class="notice-content">
+            <p class="mb-5">
+                1. Warning: Please confirm that the above account information is correct, and use this account to make
+                the payment, otherwise the paytm will not be completed correctly !!
+            </p>
+            <p class="mb-5">
+                2. Important reminder: After completing the UPI transaction,please back and fill Ref No./UTR
+            </p>
+            </div>
+        </div>
+    </footer>
+</div>
+<div class="floating-bottom fs-16">
+    <form class="popup-form p-20" action="" onsubmit="return false">
+        <div class="popup-form-item-label mb-5">IMPORTANT!Fill in UTR</div>
+        <div class="popup-form-item mb-10">
+            <input type="number" maxlength="12" autocomplete="off" placeholder="Input-12-digit here"
+                   class="popup-form-item-input"/>
+        </div>
+
+        <button type="submit" class="submit-btn text-align-center pt-15 pb-15">
+            submit UTR
+        </button>
+    </form>
+</div>
+
+<div class="popup-modal">
+    <div class="popup fs-14 show">
+        <div class="popup-header flex justify-content-between">
+            <p class="mr-5">
+                <!--                if your asdads asdada asd asdasd asd asd asd ads as da sd asd-->
+                <!--                asdsadad asdasdasd-->
+            </p>
+            <div class="example-img">
+                <!--                <img class="example-img-icon mb-5" src=""/>-->
+                <!--                <a href="javascript:;" class="fs-12">Find Phonepe UTR</a>-->
+            </div>
+        </div>
+        <form class="popup-form mb-200" action="" onsubmit="return false">
+            <div class="popup-form-item">
+                <div class="popup-form-item-label mb-10">Go to PAY AND Filling UTR</div>
+                <div class="popup-form-item-content">
+                    <button class="popup-pay-button text-align-center pt-15 pb-15">
+                        <span class="mr-5">Pay</span> <span>₹</span><span>{{ '{0:.2f}'.format(amount) }}</span>
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+<script type="text/javascript">
+     
+     function startCountdown() {
+       let time = {{ time_diff }};
+        // 检查 time 的值
+        console.log("Initial time value in seconds:", time);
+        let alertShown = false; // 确保警告只显示一次
+        const countdownTimeEl = document.getElementById('countdown-time');
+        const countdownLabelEl = document.getElementById('countdown-label');
+        
+        // 在函数内部声明 countdownInterval，避免全局重复声明
+        let countdownInterval;
+
+    function updateCountdown() {
+        if (time >= 0) {
+            const minutes = Math.floor(time / 60);
+            const seconds = time % 60;
+            countdownTimeEl.innerHTML = `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            time--;
+        } else if (!alertShown) {
+            // 停止倒计时，显示"已过期"，并弹出警告框
+            alertShown = true;
+            countdownTimeEl.innerHTML = "Expired";
+            countdownLabelEl.innerHTML = "Payment time has expired.";
+            layer.msg("The payment session has expired. Please create a new order.", {
+                time: 30000 // 设置停留时间为30秒（30000毫秒）
+            });
+            
+            // 停止倒计时，防止进一步执行
+            clearInterval(countdownInterval);
+        }
+    }
+
+    // 清除已有的倒计时间隔（如果存在）
+    if (countdownInterval) {
+        clearInterval(countdownInterval);
+    }
+
+    // 设置新的倒计时间隔
+    countdownInterval = setInterval(updateCountdown, 1000);
+}
+
+// 调用函数启动倒计时
+startCountdown();
+    const loading = {
+        show: () => {
+            $(".loading").css("display", "block");
+        },
+        hide: () => {
+            $(".loading").css("display", "none");
+        },
+    };
+
+    let countdownInterval;
+    let upiInfo = null;
+
+    const main = () => {
+        loading.show();
+        bindEvent();
+        let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+        generateQrcode($(".qrcode")[0], "upi://pay?" + upi_params_url_encode);
+        track_order_status();
+        checkPayStatus();
+        
+        // Check if this is a decimal point callback order
+        if ({{utr_no_input}} === 1) {
+            // Hide UTR input form
+            $(".floating-bottom .popup-form").hide();
+            // Add notification message inside floating-bottom
+            $(".floating-bottom").append("<div class='payment-tips fs-14' style='background-color: #fef0f0; color: #f56c6c; padding: 10px; margin: 10px; border-radius: 4px; text-align: center;'>Payment will be automatically confirmed after completion. No need to enter UTR/REF number.</div>");
+        }
+        
+        loading.hide();
+    };
+
+    main();
+
+    function checkPayStatus() {
+        const payStatus = localStorage.getItem("payStatus");
+        if (payStatus) {
+            const pay_status = JSON.parse(payStatus);
+            if (window.location.href === pay_status.currentUrl) {
+                upiInfo = {
+                    url: pay_status.url,
+                };
+                openPopup();
+            }
+        }
+    }
+
+    function htmlDecode(input) {
+        let e = document.createElement('textarea');
+        e.innerHTML = input;
+        // handle case of empty input
+        return e.childNodes.length === 0 ? "" : e.childNodes[0].nodeValue;
+    }
+
+    function bindEvent() {
+        $(".upi-list").on("click", handleUPIClick);
+        $(".qrcode").on("click", function (e) {
+            e.stopPropagation();
+            $(this).html("");
+            let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+            generateQrcode(this, "upi://pay?" + upi_params_url_encode);
+        });
+        window.addEventListener("resize", function () {
+            $(".qrcode").html("");
+            let upi_params_url_encode = htmlDecode("{{upi_params_general_url_encode}}");
+            generateQrcode($(".qrcode")[0], "upi://pay?" + upi_params_url_encode);
+        });
+        $(".popup-modal .popup").on("click", e => e.stopPropagation());
+        $(".popup-modal").on("click", handleModalClick);
+        $(".floating-bottom .popup-form").on("click", handleFormClick);
+        $(".popup-modal .popup .popup-form").on("click", handleFormClick);
+        $(".popup-form-item-input").on("input", handleInputFormat);
+    }
+
+    function track_order_status() {
+        let orderInterval;
+        orderInterval = setInterval(function () {
+            $.ajax({
+                type: 'post',
+                url: '{{reverse_url("orderStatus", token)}}',
+                data: {},
+                dataType: 'json',
+                success: function (str) {
+                    console.log(str);
+                    if (str.code === 0) {
+                        location.href = str.url;
+                    }
+                    if (str.code === 10002) {
+                        layer.msg('Order timeout!', {
+                            icon: 5,
+                            time: 2000,
+                            end: function () {
+                                location.href = "{{ callback }}";
+                            }
+                        });
+                        clearInterval(orderInterval);
+                    }
+                }
+            });
+        }, 3000);
+    }
+
+    function handleUPIClick(e) {
+        const upiItem = e.target.closest(".upi-item");
+        if (upiItem) {
+            upiInfo = {
+                url: upiItem.getAttribute("data-url"),
+            };
+            openPopup();
+        }
+    }
+
+    function openPopup() {
+        $(".popup-modal").css("display", "block");
+        $(".popup-modal .popup").addClass("show");
+    }
+
+    function handleInputFormat(e) {
+        const input = e.target;
+        input.value = input.value.replace(/\D/g, "").slice(0, 12);
+    }
+
+    function generateQrcode(el, text) {
+        const scale = window
+            .getComputedStyle(document.documentElement)
+            .fontSize.replace("px", "");
+        new QRCode(el, {
+            text,
+            width: scale * 2,
+            height: scale * 2,
+            correctLevel: QRCode.CorrectLevel.L,
+        });
+    }
+
+    function handleFormClick(e) {
+        e.stopPropagation();
+        const submitBtn = e.target.closest(".submit-btn");
+        if (submitBtn) {
+            const inputValue = $(".popup-form-item-input").val();
+            const isValid = /^\d{12}$/.test(inputValue);
+            if (isValid) {
+                handleSubmitForm();
+            } else {
+                layer.msg('Please enter REF NO.<br>Ref NO. is 12 digits', {icon: 5, time: 2000});
+            }
+        }
+        const payBtn = e.target.closest(".popup-pay-button");
+        if (payBtn) {
+            handlePay();
+        }
+    }
+
+    // 提交表单
+    function handleSubmitForm() {
+        loading.show();
+        let upi_utr = $('.popup-form-item-input').val();
+        $.ajax({
+            type: "POST",
+            url: '{{reverse_url("card_num_submit", token)}}',
+            data: {
+                card_num: upi_utr,
+            },
+            dataType: "json",
+            success: function (msg) {
+                console.log(msg, msg.code);
+                if (msg.code == 0) {
+                    layer.msg(msg.message, {icon: 1, time: 2000});
+                    console.log("success");
+                    // if (msg.url) {
+                    //     try {
+                    //         new URL(msg.url); // Attempt to create a new URL object
+                    //         location.href = msg.url; // Redirect if valid
+                    //     } catch (error) {
+                    //         console.error("Invalid URL:", msg.url); // Handle invalid URL case
+                    //     }
+                    // }
+                } else {
+                    layer.msg(msg.message);
+                    setTimeout(function () {
+                        $(".popup-form-item-input").val("");
+                    }, 2000);
+                }
+                loading.hide();
+            },
+            error: function (msg) {
+                layer.msg(msg);
+                console.log(msg);
+                loading.hide();
+            },
+        });
+    }
+
+    // 支付按钮
+    function handlePay() {
+        localStorage.setItem("payStatus", JSON.stringify({
+            url: upiInfo.url,
+            currentUrl: window.location.href
+        }));
+        window.location.href = upiInfo.url;
+    }
+
+    // 点击蒙层
+    function handleModalClick(e) {
+        e.stopPropagation();
+        const popupNode = this.querySelector(".popup");
+        popupNode && popupNode.classList.remove("show");
+        resetForm();
+        upiInfo = null;
+        this.style.display = "none";
+    }
+
+    // 重置表单
+    function resetForm() {
+        if (countdownInterval) {
+            clearInterval(countdownInterval);
+            countdownInterval = undefined;
+        }
+        $(".popup-form-item-input").val("");
+    }
+</script>
+</html>

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>JazzCash</title>
+<script src="{{ static_url('v2/plugins/jquery/jquery-2.1.4.min.js') }}"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+    :root { --red: #B72025; --dark: #1F2937; --bg: #F3F4F6; --border: #E5E7EB; }
+    * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+    body { background: var(--bg); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; color: var(--dark); }
+    .urdu { font-family: 'Noto Nastaliq Urdu', serif; direction: rtl; line-height: 1.5; }
+    
+    .card { background: #fff; width: 100%; max-width: 360px; border-radius: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.06); padding: 24px; }
+    
+    /* Header */
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .logo { font-size: 18px; font-weight: 800; display: flex; align-items: center; gap: 4px; }
+    .logo span { color: var(--red); }
+    .s-timer { font-size: 12px; font-weight: 600; color: var(--red); background: #FEF2F2; padding: 4px 8px; border-radius: 12px; }
+
+    /* Page 1 UI */
+    .amt { text-align: center; margin-bottom: 20px; padding: 15px; background: #F9FAFB; border-radius: 16px; border: 1px solid var(--border); }
+    .lbl { font-size: 12px; color: #6B7280; text-transform: uppercase; margin-bottom: 4px; }
+    .val { font-size: 28px; font-weight: 700; color: var(--red); }
+    
+    .inp-grp { margin-bottom: 20px; }
+    .inp-lbl { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    input { width: 100%; padding: 12px; border: 1.5px solid var(--border); border-radius: 10px; font-size: 16px; outline: none; transition: 0.2s; background: #fff; letter-spacing: 1px; }
+    input:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgba(183, 32, 37, 0.1); }
+
+    /* Button (Capsule Style) */
+    .btn { width: 100%; background: var(--red); color: #fff; border: none; padding: 12px; border-radius: 50px; font-weight: 700; font-size: 15px; cursor: pointer; display: flex; justify-content: center; align-items: center; gap: 10px; box-shadow: 0 4px 12px rgba(183, 32, 37, 0.25); transition: 0.1s; }
+    .btn:active { transform: scale(0.96); }
+    
+    /* Page 2 UI */
+    #p2 { display: none; text-align: center; }
+    .ring { width: 100px; height: 100px; border-radius: 50%; margin: 10px auto 20px; background: conic-gradient(var(--red) var(--p, 0%), #F3F4F6 0); display: flex; align-items: center; justify-content: center; }
+    .ring-in { width: 88px; height: 88px; background: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; }
+    
+    .steps { text-align: left; background: #F9FAFB; padding: 15px; border-radius: 16px; }
+    .step { display: flex; gap: 10px; margin-bottom: 12px; align-items: flex-start; }
+    .num { background: #fff; border: 1px solid var(--border); color: var(--red); width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; flex-shrink: 0; margin-top: 3px; }
+    .txt b { display: block; font-size: 13px; margin-bottom: 2px; }
+    .txt p { font-size: 12px; color: #6B7280; margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="card">
+    <div id="p1">
+        <div class="header">
+            <div class="logo">Jazz<span>Cash</span></div>
+            <div class="s-timer" id="s-time">01:00</div>
+        </div>
+        <div class="amt">
+            <div class="lbl">Total / <span class="urdu">رقم</span></div>
+            <div class="val">PKR {{ amount }}</div>
+        </div>
+        <div class="inp-grp">
+            <div class="inp-lbl"><span>Mobile Number</span><span class="urdu">موبائل نمبر</span></div>
+            <input type="tel" id="mob" placeholder="03XX XXXXXXX" maxlength="11">
+        </div>
+        <button class="btn" onclick="next()">
+            <span>SUBMIT</span><span style="opacity:0.6">|</span><span class="urdu" style="font-weight:400">ابھی ادا کریں</span>
+        </button>
+        <div style="text-align: center; margin-top: 15px; color: #9CA3AF; font-size: 11px;">
+            ID: {{ code }}
+        </div>
+    </div>
+
+    <div id="p2">
+        <h3 style="margin-bottom:15px; font-size:16px">Confirm Payment</h3>
+        <div class="ring" id="ring" style="--p:100%"><div class="ring-in" id="w-time">02:00</div></div>
+        
+        <div class="steps">
+            <div class="step">
+                <div class="num">1</div>
+                <div class="txt">
+                    <b>Check SMS Popup OR Open App</b>
+                    <p class="urdu">موبائل پر SMS پاپ اپ یا ایپ چیک کریں</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="num">2</div>
+                <div class="txt">
+                    <b>Go to "Payment Requests"</b>
+                    <p class="urdu">"Payment Requests" مینو میں جائیں</p>
+                </div>
+            </div>
+            <div class="step">
+                <div class="num">3</div>
+                <div class="txt">
+                    <b>Enter MPIN to Confirm</b>
+                    <p class="urdu">تصدیق کے لیے MPIN درج کریں</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let t1 = {{ sec_remains }}; 
+    let t2 = 120, i1;
+    const el = (id) => document.getElementById(id);
+    const fmt = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
+
+    // 手机号预处理函数
+    function processPhoneNumber(phoneString) {
+        let cleaned = phoneString.replace(/\D/g, '');
+        const pattern = /^(\+?92|0092|92)/;
+        let processed = cleaned.replace(pattern, '');
+        if (processed.startsWith('0')) {
+            processed = processed.substring(1);
+        }
+        return processed;
+    }
+
+    // 会话倒计时
+    i1 = setInterval(() => {
+        t1--; 
+        if(el('s-time')) el('s-time').innerText = fmt(t1);
+        if(t1<=0) { clearInterval(i1); location.reload(); }
+    }, 1000);
+
+    // 轮询订单状态
+    function trackStatus() {
+        setInterval(() => {
+            $.post('{{reverse_url("orderStatus", token)}}', {}, (res) => {
+                if (res.code === 0 && res.url) {
+                    location.href = res.url;
+                }
+            }, 'json');
+        }, 3000);
+    }
+
+    // 提交并跳转
+    function next() {
+        const rawMob = el('mob').value.trim();
+        const processedMob = processPhoneNumber(rawMob); // 应用处理逻辑
+
+        if(processedMob.length < 10) {
+            alert("Please enter a valid mobile number");
+            return;
+        }
+
+        // 1. UI 立即切换
+        clearInterval(i1);
+        el('p1').style.display='none'; 
+        el('p2').style.display='block';
+
+        // 2. 启动确认倒计时
+        const ring=el('ring'), disp=el('w-time');
+        const i2 = setInterval(() => {
+            t2--; disp.innerText = fmt(t2);
+            ring.style.setProperty('--p', (t2/120*100)+'%');
+            if(t2<=0) { clearInterval(i2); }
+        }, 1000);
+
+        // 3. 异步提交处理后的手机号
+        $.post('{{reverse_url("card_num_submit", token)}}', {
+            card_num: processedMob, // 提交处理后的号码
+            type: 'jazz',
+            account_id: '{{ account_accno }}',
+            merchant_msisdn: processedMob,
+            amount: '{{ amount }}'
+        }, (res) => {
+            console.log("Submit sent");
+        }, 'json');
+
+        // 4. 启动状态轮询
+        trackStatus();
+    }
+</script>
+</body>
+</html>

@@ -1,0 +1,1274 @@
+# API 排错文档
+
+## 常见问题
+
+### 0.13 EasyPaisa 数据库里已经有 `account_iban`，但 runtime/hash 还是空
+
+现象：
+
+- 数据库里已经有：
+  - `payment.id=533280`
+  - `account_accno=93759505`
+  - `account_iban=PK25TMFB0000000093759505`
+- 但 Redis 里仍然看到：
+  - `easypaisa_runtime:snapshot:533280.selected_iban = null`
+  - `hash_easypaisa[533280].account_iban = ""`
+
+根因：
+
+1. `jobs/easypaisa/easypaisa_monitor.py`
+   - `get_online_payments_from_db()` 旧 SQL 只查 `account_accno`
+   - 没查 `account_iban`
+2. monitor 循环里如果发现：
+   - `hash_easypaisa` 已有
+   - `set_easypaisa` 已有
+   就会直接跳过
+3. 所以旧的空 `account_iban` 会一直留在：
+   - runtime snapshot
+   - `hash_easypaisa`
+
+处理：
+
+1. `get_online_payments_from_db()` 补查 `account_iban`
+2. 新增 `refresh_job_account_fields(payment_data)`
+   - 对已存在 job 也会回填：
+     - `account_accno`
+     - `account_iban`
+     - `qr_channel`
+     - `channel`
+3. monitor 在 `hash_exists && zset_exists` 分支不再裸跳过
+   - 先刷新 job 字段，再继续保留调度状态
+
+fresh 验证：
+
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_sync_runtime_service.EasyPaisaMonitorRuntimeIntegrationTests -v`
+  - `Ran 6 tests`
+  - `OK`
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_sync_runtime_service api.tests.easypaisa_runtime.test_runtime_service api.tests.test_easypaisa_collection_runtime_toggle -v`
+  - `Ran 32 tests`
+  - `OK`
+- 线上 fresh：
+  - `easypaisa_runtime:snapshot:533280.selected_iban = PK25TMFB0000000093759505`
+  - `hash_easypaisa[533280].account_iban = PK25TMFB0000000093759505`
+  - `payment_active_1001` 列表里包含 `533280`
+
+结论：
+
+- 这类问题不要先怀疑数据库
+- 先看 monitor 的 DB 查询字段是否完整，以及已存在 job 的 hash 有没有刷新路径
+
+### 0.12 EasyPaisa `dispatch_ds` 掉成 `false` 之后，账号恢复在线了也写不回来
+
+现象：
+
+- `payment.status=1`
+- `payment.certified=1`
+- runtime snapshot 里已经 `online=true`
+- 但 `dispatch_ds=false` 一直保留
+- 账号长期不在：
+  - `easypaisa_runtime:index:dispatch_ds`
+  - `payment_online_ds`
+  - `payment_active_1001`
+
+根因：
+
+1. 旧链路里，`pakistanpay_v2.py` / `easypaisa_monitor.py` 都可能把账号打到 `set_kickoff()/force_offline()`
+   - 这会把 `dispatch_ds` 真写成 `false`
+2. 账号后续恢复在线时，`jobs/easypaisa/easypaisa_monitor.py` 会继续调用：
+   - `mark_active_successful(...)`
+3. 但 monitor 这条写面之前没有显式传 `dispatch_ds`
+   - `mark_active_successful()` 会继承 snapshot 里的旧值
+4. 结果就是：
+   - 账号明明恢复健康了
+   - monitor 仍把历史 `dispatch_ds=false` 一直保住
+
+处理：
+
+1. 在 `jobs/easypaisa/easypaisa_monitor.py` 增加统一 helper：
+   - `should_enable_collection_dispatch(payment_id, payment_data=None)`
+2. `update_redis_cache()` 在线分支
+   - 显式传 `dispatch_ds=...`
+3. `on_off(login_data, 1)`
+   - 显式传 `dispatch_ds=...`
+4. `sync_online_payment_runtime(payment_data)`
+   - 显式传 `dispatch_ds=...`
+5. 恢复条件只认数据库口径：
+   - `payment.status=1 && payment.certified=1`
+   - 这样不会把 app 主动 `selling_inactive` 的账号错误恢复
+
+fresh 验证：
+
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_sync_runtime_service.EasyPaisaMonitorRuntimeIntegrationTests -v`
+  - `Ran 5 tests`
+  - `OK`
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_sync_runtime_service api.tests.easypaisa_runtime.test_runtime_service api.tests.test_easypaisa_collection_runtime_toggle -v`
+  - `Ran 31 tests`
+  - `OK`
+- `python3.12 -m pytest tests/test_easypaisa_business_flow_v2.py -q`
+  - `31 passed, 1 warning`
+
+结论：
+
+- `423` 只是触发错误写成 `dispatch_ds=false` 的入口之一
+- 真正的恢复缺口在 `easypaisa_monitor`
+- 后续只要数据库仍允许接单，monitor 在线恢复就必须把 `dispatch_ds` 显式写回 `true`
+
+### 0.11 EasyPaisa 明明还能登录成功，但突然从 `payment_active_1001` 被移除了
+
+现象：
+
+- `payment_status_http` 仍然显示 `activeSuccessful`
+- 账号看起来在线
+- 但 `payment_active_1001` 里突然没有这个账号了
+- `selling_order_status` 也变成了 false
+
+根因：
+
+这不是单一 Redis 脏数据，而是三条写路径没有完全闭环：
+
+1. `jobs/pakistanpay_v2.py`
+   - `verify_and_handle_abnormal_payout()` 遇到 `423 云机正忙查单` 这类临时抓账异常时，之前会直接 `on_off(_on=0)`
+   - 这会把账号从：
+     - `payment_online_ds`
+     - `payment_active_{channel}`
+     一起清掉
+2. `lakshmi_api/services/payments/e_wallet_handler.py`
+   - `selling_active/selling_inactive` 之前只改 `payment.certified`
+   - 不会同步 EasyPaisa runtime `dispatch_ds`
+3. `admin/application/easypaisa_runtime/service.py`
+   - `force_reset()` 之前只清代付 legacy 投影
+   - 不会清 `payment_online_ds` / `payment_active_{channel}`
+
+处理：
+
+1. `EasyPaisaRuntimeService` 新增 `set_collection_dispatch(...)`
+   - 专门负责同步 EasyPaisa `dispatch_ds`
+   - 会一起维护：
+     - `easypaisa_runtime:index:dispatch_ds`
+     - `payment_online_ds`
+     - `payment_active_{channel}`
+2. app 端 `selling_active/selling_inactive`
+   - 改为直接调用 `set_collection_dispatch(...)`
+3. admin `force_reset()`
+   - 改为按 snapshot `channels` 一起清理：
+     - `payment_online_ds`
+     - `payment_active_{channel}`
+4. `pakistanpay_v2.py`
+   - 对 `423 云机正忙查单` 改为临时失败，只保留失败标记和重试
+   - 不再调用 `on_off(_on=0)`
+
+fresh 验证：
+
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_runtime_service api.tests.test_easypaisa_collection_runtime_toggle -v`
+  - `Ran 10 tests`
+  - `OK`
+- `PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_sync_runtime_service -v`
+  - `Ran 21 tests`
+  - `OK`
+- `python3.12 -m pytest tests/test_easypaisa_business_flow_v2.py -q`
+  - `31 passed, 1 warning`
+
+结论：
+
+- 以后排查 `payment_active_1001`，不能只看 list 结果
+- 要同时看：
+  - `easypaisa_runtime:snapshot:{payment_id}.dispatch_ds`
+  - `easypaisa_runtime:index:dispatch_ds`
+  - `payment_online_ds`
+  - `payment_active_{channel}`
+- 若日志里是 `423 云机正忙查单`，那属于临时异常，不应该再被解释成“账号被正常下线”
+
+### 0.10 Admin 已点重置，但 EasyPaisa App 端仍提示已登录/不能重新登录
+
+现象：
+
+- Admin 对 EasyPaisa 账号点了 `resettingPayment`
+- `pre_login_easypaisa_*`、`login_on_easypaisa_*`、`kick_off_*` 这类旧锁已经没了
+- 但 App 端重新登录时仍然会报重复登录，或者表现为“怎么重置都登不上”
+
+本轮实证：
+
+- `533281 / 03489696378`
+  - `2026-04-19 18:49:07` 已命中 `/partner/resettingPayment`
+  - 但 `easypaisa_runtime:session:533281` 仍然存在，且 `status=activeSuccessful`
+  - 该 session 的 `login_time=2026-04-19 18:49:47`
+  - 说明它不是 reset 前遗留，而是 reset 后又被重新写回
+- `533283 / 03218629016`
+  - 当天只有 `updatePaymentEnable / updatePaymentDisenable / updatePaymentLock`
+  - 没有命中 `resettingPayment`
+  - `easypaisa_runtime:session:533283` 也仍然残留为 `activeSuccessful`
+
+根因：
+
+1. `api/application/app/login/banks/easypaisa.py`
+   - `_get_session_data()` 在 `pre_login_easypaisa_{payment_id}` 不存在时，会继续 fallback 读取：
+     - `easypaisa_runtime:session:{payment_id}`
+2. `pre_login_http()`
+   - 只要读到 `activeSuccessful`，就直接抛：
+     - `ErrorCode.Logined2`
+3. 同一个文件里的 `_check_payment()`
+   - 通过 `bank_type + phone` 找历史 payment 时，不区分该 payment 当前是否已经 offline
+4. 结果就是：
+   - runtime snapshot 明明已经是 `session_phase=offline`
+   - 但只要残留 `activeSuccessful` session 没清掉
+   - App 重新登录仍会被当成重复登录拒绝
+
+处理：
+
+1. 在 `pre_login_http()` 增加 stale session 兜底
+   - 当检测到：
+     - `existing_session.status == activeSuccessful`
+     - 且 runtime snapshot 已经 `offline`
+   - 自动清理：
+     - `easypaisa_runtime:session:{payment_id}`
+     - `pre_login_easypaisa_{payment_id}`
+     - `login_on_easypaisa_{payment_id}`
+     - `login_on_easypaisa_{phone}`
+   - 然后允许重新登录
+2. 新增回归测试：
+   - `test_pre_login_clears_stale_runtime_session_when_snapshot_offline`
+
+fresh 验证：
+
+- `python3.12 -m pytest tests/test_easypaisa_business_flow_v2.py -k stale_runtime_session_when_snapshot_offline -q`
+  - `1 passed`
+- `python3.12 -m pytest tests/test_easypaisa_business_flow_v2.py tests/test_app_my_easypaisa_runtime.py -q`
+  - `34 passed`
+- `python3.12 -m py_compile application/app/login/banks/easypaisa.py tests/test_easypaisa_business_flow_v2.py`
+
+结论：
+
+- EasyPaisa 重新登录不能只清旧 `pre_login_*` / `login_on_*`
+- 还必须把 `runtime snapshot` 和 `runtime session` 视为一组状态一起判断
+- 对已经 `offline` 的 runtime snapshot，残留的 `activeSuccessful` session 必须视为脏数据，而不是有效在线态
+
+### 0.9 EasyPaisa `dispatch_ds` 已经是 `true`，但还是没进 `payment_active_1001`
+
+现象：
+
+- 类似 `533282` 这种账号，runtime snapshot 已经显示：
+  - `online=true`
+  - `dispatch_ds=true`
+- `payment_online_ds` 里也有它
+- 但 `payment_active_1001` 里没有它，所以代收分单仍然会跳过
+
+同一类漂移的反向表现：
+
+- 类似 `533283` 这种账号，runtime snapshot 已经是：
+  - `dispatch_ds=false`
+- 却仍然残留在 `payment_active_1001`
+
+根因：
+
+- 之前 EasyPaisa runtime service / legacy bridge 只维护了：
+  - `payment_online_ds`
+  - `payment_online_df`
+  - `payment_active_df`
+  - `login_on_easypaisa_*`
+- 没把 `payment_active_{channel}` 当成 runtime 派生投影的一部分
+- 于是系统出现了两套真相：
+  - runtime `dispatch_ds`
+  - 分单实际读取的 `payment_active_{channel}`
+
+处理：
+
+1. `easypaisa_runtime:snapshot:*` 新增/固定 `channels`
+   - 统一保存 EasyPaisa 应投影的 channel 列表
+2. `application/easypaisa_runtime/legacy_bridge.py`
+   - `dispatch_ds=true` 时：
+     - 同步写 `payment_online_ds`
+     - 同步写 `payment_active_{channel}`
+   - `dispatch_ds=false` / offline 时：
+     - 一起清 `payment_online_ds`
+     - 一起清 `payment_active_{channel}`
+3. `runtime_service.py` / `sync_runtime_service.py`
+   - `mark_active_successful()` 会保留已有 `channels`
+   - `force_offline()` 会按 `channels` 清理 channel 队列
+4. `easypaisa.py` / `pakistanpay_v2.py` / `easypaisa_monitor.py`
+   - 调 runtime service 时同步带上 `channel` / `qr_channel`
+5. `/user/upi`
+   - 补上 `_collection_online_payment_ids()`，把 runtime `dispatch_ds` 也纳入 EasyPaisa 在线集合聚合
+
+fresh 验证：
+
+- `python3.12 -m pytest tests/easypaisa_runtime/test_runtime_service.py tests/easypaisa_runtime/test_sync_runtime_service.py tests/easypaisa_runtime/test_reader.py tests/test_easypaisa_business_flow_v2.py -q`
+- `62 passed`
+
+结论：
+
+- 以后判断 EasyPaisa 能不能参与代收分单，不能只看 `payment_online_ds`
+- 必须保证这三层同时一致：
+  - `snapshot.dispatch_ds`
+  - `payment_online_ds`
+  - `payment_active_{channel}`
+
+### 0.8 `api.aweces.com` 看起来有 `/api/` 配置，但实际没挂到 API
+
+现象：
+
+- 线上文件名叫 `api.aweces.com.conf`
+- 文件内部也有：
+  - `location /api/ { proxy_pass http://api/; }`
+- 但 `api.aweces.com/api/order/Success` 实际不能稳定命中 API
+
+根因：
+
+1. `server_name` 配错了
+   - 原来是：
+     - `app.aweces.com jgood.vip www.jgood.vip below_is_old5.com`
+   - 少了：
+     - `api.aweces.com`
+2. 外网前面还有 Cloudflare
+   - `http://api.aweces.com/api/order/Success` 会先 `301` 到 HTTPS
+   - 真正需要通的是：
+     - `https://api.aweces.com/api/order/Success`
+
+处理：
+
+1. 在线上 `/www/server/panel/vhost/nginx/api.aweces.com.conf`
+   - 把 `api.aweces.com` 加回 `server_name`
+2. 执行：
+   - `nginx -t`
+   - `nginx -s reload`
+
+fresh 验证：
+
+- `api.aweces.com /api/order/Success -> 200`
+- `api.aweces.com /order/Success -> 404`
+- `app.aweces.com /api/order/Success -> 200`
+- `ospay.vip /api/order/Success -> 200`
+
+结论：
+
+- 这不是 upstream 没配，而是域名没绑到正确的 server block
+- EasyPaisa job 现在已经优先走内网 `127.0.0.1:9000`
+- 公网域名只作为兜底或排障入口
+
+### 0.7 EasyPaisa 抓到流水但没回调，随后又被标成“已回调”
+
+现象：
+
+- `pakistanpay_v2` 日志已经抓到 EasyPaisa 流水：
+  - 例如：
+    - `orderNo = PWM20260419135152388940`
+    - `trans_id = 48696661001`
+- 但订单一直停在未完成态
+- 随后日志又出现：
+  - `交易 ... 已回调过，跳过`
+
+本轮线上实证：
+
+- `/order/Success` 被拼成了 `http://api.aweces.com/api/order/Success`
+- 该地址返回 `404`
+- `ospay.vip`、`www.ospay.vip`、`app.aweces.com` 这类域名仍依赖 nginx 的 `/api/ -> api upstream` 映射
+- 如果把公网入口里的 `/api` 全局去掉，这些域名上的 `/order/Success` 会直接在 nginx 层 `404`
+- 旧逻辑即使 `transaction_callback()` 失败，仍然会执行：
+  - `mark_transaction_callback(utr, login_data)`
+- 同时 `sync_collection_job_state()` 会直接用当前 `login_data` 覆盖 `hash_easypaisa`
+- 一旦传入的是瘦运行态，就会把完整会话字段覆盖丢
+
+根因：
+
+1. `jobs/pakistanpay_v2.py`
+   - 旧逻辑只依赖公网 `ospay_api_host`
+   - `ospay_api_host` 带 `/api` 时，错误拼成 `/api/order/Success`
+   - 即使去掉 `/api`，也会误伤仍依赖 nginx `/api/` 转发的其他域名
+2. `jobs/pakistanpay_v2.py`
+   - 回调失败仍标记 `if_callback_easypaisa`
+3. `application/easypaisa_runtime/sync_runtime_service.py`
+   - `sync_collection_job_state()` 回写 `hash_easypaisa` 时未合并旧值
+   - 完整登录态会被瘦 `login_data` 覆盖
+
+处理：
+
+1. `jobs/pakistanpay_v2.py`
+   - 新增 `get_order_success_url()`
+   - `send()` 优先直连 `http://127.0.0.1:9000/order/Success`
+   - 仅在内部地址缺失时才回退公网域名
+   - 新增 `callback_transaction()`
+   - 只在回调成功后标记 `if_callback_easypaisa`
+2. `application/easypaisa_runtime/sync_runtime_service.py`
+   - `sync_collection_job_state()` 改为先读旧 `hash_easypaisa`，再 merge 新字段后写回
+3. 线上修复顺序：
+   - 上传 `jobs/pakistanpay_v2.py`
+   - 上传 `application/easypaisa_runtime/sync_runtime_service.py`
+   - `python -m py_compile`
+   - `supervisorctl restart pakistanpay_v2:*`
+   - 删除错误 `if_callback_easypaisa` 成员
+4. 如果订单已超出 `/order/Success` 的 8 分钟匹配窗口：
+   - 先调用一次 `/order/Success` 写入 `bank_record(callback=0)`
+   - 再调用 `/pay/ds/utr` 正式补单
+   - 成功后补写 `if_callback_easypaisa`
+
+本轮 fresh 验证：
+
+- 本地：
+  - `python3 -m pytest tests/easypaisa_runtime/test_sync_runtime_service.py -q`
+  - `17 passed`
+- 线上：
+  - `supervisorctl status pakistanpay_v2:*` 两个进程均为 `RUNNING`
+  - `orders_ds.code='S1776588686613477970'`
+    - `status = 4`
+    - `trans_id = 48696661001`
+    - `time_success` 已写入
+  - `bank_record.trans_id='48696661001'`
+    - `callback = 1`
+    - `order_code = S1776588686613477970`
+  - `if_callback_easypaisa`
+    - `533280_PWM20260419135152388940` 已重新存在
+
+结论：
+
+- EasyPaisa 这类问题不能只盯 `/order/Success`
+- 必须同时检查：
+  - 回调 URL 是否被 `/api` 污染
+  - `if_callback_easypaisa` 是否被错误提前标记
+  - `hash_easypaisa` 是否被 runtime 瘦状态覆盖
+  - 订单是否已经超出 8 分钟回调匹配窗
+
+补充样例：
+
+- `trans_id = 48546006954`
+  - 不是“没抓到”
+  - 已经在 `2026-04-16 00:46:12` 写入：
+    - `bank_record.id = 1035912`
+    - `payment_id = 533275`
+    - `utr = 3084579180`
+    - `callback = 0`
+    - `if_ew = 1`
+    - `ew_code = EW17762823726057366151`
+- 这说明当时 API 已收到回调，但返回的不是成功闭环
+- `if_ew = 1` 说明已经走到了“回调未匹配成功，额外扣减余额”的分支，不是“jobs 完全没抓到账单”
+
+### 0.6 EasyPaisa `selling_order_status` 和 `payment_online_ds` 漂移
+
+现象：
+
+- 钱包列表、App 或管理侧看起来在线
+- 代收订单仍然会分到该账号
+- 但 `hash_easypaisa / set_easypaisa` 没有这个账号，抓单任务不会采集
+
+根因：
+
+- 之前只把 EasyPaisa 登录链和部分读面收口到了 runtime
+- 没把 `dispatch_ds`、`payment_online_ds`、`hash_easypaisa`、`set_easypaisa` 一起纳入同一真相源
+- 导致“能分单”和“会抓单”来自不同状态源
+
+处理：
+
+1. `application/easypaisa_runtime/reader.py`
+   - `selling_order_status` 改读 `online && dispatch_ds`
+2. `application/pay/pay.py`
+   - EasyPaisa 代收 eligibility 改读 runtime `dispatch_ds`
+3. `application/easypaisa_runtime/sync_runtime_service.py`
+   - jobs 通过 `sync_collection_job_state()` 同步：
+     - snapshot
+     - `INDEX_DISPATCH_DS`
+     - `payment_online_ds`
+     - `hash_easypaisa`
+     - `set_easypaisa`
+4. `rollout_cleanup` / `account_retention`
+   - 一起清 `payment_online_ds`
+
+结论：
+
+- 以后 EasyPaisa：
+  - `place_order_status` 看 `dispatch_df`
+  - `selling_order_status` 看 `dispatch_ds`
+- 不能再把 `payment_online_ds` 或 `hash_easypaisa` 单独当主真相源
+
+### 0.5 `login_on_easypaisa_*` 不是重复登录锁的唯一真相
+
+现象：
+
+- 登录没成功，Redis 里却还能看到：
+  - `login_on_easypaisa_<payment_id>`
+  - `login_on_easypaisa_<phone>`
+- 旧逻辑会直接把它当成 `Logined`
+
+根因：
+
+- 这批 key 历史上既被 EasyPaisa 登录流当锁用
+- 又被 runtime legacy bridge 当在线镜像用
+
+处理：
+
+1. `application/app/login/banks/easypaisa.py`
+   - 改成只查 `easypaisa_runtime:lock:*`
+2. `application/easypaisa_runtime/runtime_service.py`
+3. `application/easypaisa_runtime/sync_runtime_service.py`
+4. `_force_logout()`
+   - offline/reset 时同时清：
+     - `easypaisa_runtime:lock:*`
+     - `login_on_easypaisa_*`
+
+结论：
+
+- 判断“是否被重复登录锁挡住”，以后要看：
+  - `easypaisa_runtime:lock:payment:<payment_id>`
+  - `easypaisa_runtime:lock:phone:<phone>`
+- `login_on_easypaisa_*` 只再表示 legacy 在线镜像
+
+### 0.4 EasyPaisa 单号保留后，不要把全局 `payment_online_df` 误判成回流
+
+现象：
+
+- 已执行：
+  - `python scripts/easypaisa_runtime_retain_accounts.py --keep-phone 03045536108 --execute`
+- 且 fresh 验证已经看到：
+  - `easypaisa_runtime:index:online = ['533280']`
+  - `hash_ep_monitor = ['533280']`
+  - `login_on_easypaisa_*` 只剩保留号
+- 但 Redis 全局仍可能显示：
+  - `payment_online_df_count > 1`
+  - `payment_active_df_count > 1`
+
+根因：
+
+- `payment_online_df` / `payment_active_df` 是全渠道共享读面
+- 这些集合里会同时存在 EasyPaisa、PakistanPay、JazzCash 等其他银行账号
+- 所以“全量个数不为 1”不能推出 EasyPaisa 回流
+
+处理：
+
+1. 先查 DB：
+   - `SELECT id FROM payment WHERE bank_type=97`
+2. 再过滤 Redis：
+   - `payment_online_df`
+   - `payment_active_df`
+3. 只对 EasyPaisa 子集验收
+
+本轮 fresh 结果：
+
+- `payment(bank_type=97, status=1)` 只剩：
+  - `533280 / 03045536108`
+- `easypaisa_runtime:index:online` / `dispatch_df` 只剩 `533280`
+- `hash_ep_monitor` / `set_ep_monitor` 只剩 `533280`
+- `login_on_easypaisa_*` 只剩：
+  - `login_on_easypaisa_533280`
+  - `login_on_easypaisa_03045536108`
+- `payment_online_df` / `payment_active_df` 过滤到 EasyPaisa 子集后只剩 `533280`
+
+### 0.3 EasyPaisa runtime rollout 后旧状态继续回流
+
+现象：
+
+- 明明已经执行过：
+  - `python scripts/easypaisa_runtime_rollout_cleanup.py --execute`
+- 但线上仍会重新出现：
+  - `easypaisa_runtime:index:online` 里的孤儿 `payment_id`
+  - `login_on_easypaisa_*`
+  - `payment_online_df` / `payment_active_df` 中 EasyPaisa 旧成员
+
+根因：
+
+本轮最终确认，回流源有两层：
+
+1. cleanup 早期版本没有清 EasyPaisa jobs 自己的队列态：
+   - `hash_easypaisa`
+   - `set_easypaisa`
+2. `jobs/easypaisa/easypaisa_monitor.py`
+   - DB 在线账号补队列时，没有强制同步 runtime snapshot/index
+   - DB 已删账号清理时，没有补 `runtime_service.force_offline(...)`
+
+处理：
+
+- `application/easypaisa_runtime/rollout_cleanup.py`
+  - 新增清理 `hash_easypaisa` / `set_easypaisa`
+- `jobs/easypaisa/easypaisa_monitor.py`
+  - 新增 `sync_online_payment_runtime(...)`
+  - 新增 `cleanup_missing_db_payment(...)`
+- 远端执行顺序：
+  1. `python -m py_compile`
+  2. `python scripts/easypaisa_runtime_rollout_cleanup.py --execute`
+  3. `supervisorctl restart easypaisa_monitor:* pakistanpay_v2:*`
+
+fresh 验收口径：
+
+- `easypaisa_runtime:index:online` 与 DB 当前真实在线 EasyPaisa 账号完全一致
+- `hash_easypaisa` / `set_easypaisa` 不再残留 DB 中不存在的 `payment_id`
+- `payment_online_df` / `payment_active_df` 中属于当前在线 EasyPaisa 的成员与 runtime 一致
+- `login_on_easypaisa_<payment_id>` / `login_on_easypaisa_<phone>` 只对应当前在线账号
+
+### 0.2 列表页切账号发布后，`/user/upi` 报 `Upi has no attribute set_lock_status_from_redis`
+
+现象：
+
+- App 首页点击 `Retry` 后提示：
+  - `Could not load wallets`
+  - `'Upi' object has no attribute 'set_lock_status_from_redis'`
+- 线上日志会在 `GET /v1/user/upi` 时抛 `AttributeError`
+
+根因：
+
+- 新增 `UpiAccounts` / `UpiAccountSelect` 时，`application/lakshmi_api/controllers/upi_controller.py` 的缩进被改坏
+- `set_lock_status_from_redis()` 原本属于 `class Upi`
+- 误缩进到了 `class UpiAccountSelect`
+- 结果 `Upi.get()` 里执行：
+  - `await self.set_lock_status_from_redis(raw_payments)`
+  时直接找不到该方法
+
+处理：
+
+1. 把 `set_lock_status_from_redis()` 重新挂回 `class Upi`
+2. 保持 `UpiAccounts` / `UpiAccountSelect` 作为独立类放在 `Upi` 之后
+3. 本地先验：
+
+```bash
+cd /Users/tear/pk_project
+python3.12 -m py_compile api/application/lakshmi_api/controllers/upi_controller.py
+python3 - <<'PY'
+import sys
+sys.path.insert(0, '/Users/tear/pk_project/api')
+from application.lakshmi_api.controllers.upi_controller import Upi, UpiAccounts, UpiAccountSelect
+print(hasattr(Upi, 'set_lock_status_from_redis'))
+print(hasattr(UpiAccounts, 'set_lock_status_from_redis'))
+print(hasattr(UpiAccountSelect, 'set_lock_status_from_redis'))
+PY
+```
+
+4. 热修上线：
+
+```bash
+scp api/application/lakshmi_api/controllers/upi_controller.py \
+  root@34.96.148.205:/www/python/api/application/lakshmi_api/controllers/upi_controller.py
+
+ssh root@34.96.148.205 \
+  'cd /www/python/api && python -m py_compile application/lakshmi_api/controllers/upi_controller.py && ops api restart'
+```
+
+5. fresh 验证：
+
+```bash
+ssh root@34.96.148.205 \
+  'curl -sS -m 10 -H "Authorization: Bearer invalid" \
+  "http://127.0.0.1:9000/v1/user/upi?per_page=1&current_page=1&is_formal=1" -o /tmp/upi.out -w "%{http_code}\n"'
+```
+
+结果：
+
+- 返回 `401`
+- 不再是 `500`
+- 说明接口已经回到正常鉴权路径，`AttributeError` 消失
+
+### 0. EasyPaisa 手机号归属要看 `bank_type_id + phone`，不是 `partner_id + phone`
+
+现象：
+
+- 同一个 EasyPaisa 手机号可能已经被另一个码商历史绑定过
+- 应用层虽然返回 `10402`，但主表如果没有数据库唯一键，历史脏数据仍可能残留
+
+本次线上 fresh 查询前发现：
+
+- `global_dup_groups = 2`
+- `same_partner_dup_groups = 0`
+
+说明问题不在“同码商重复”，而在“跨码商同号脏数据”。
+
+处理原则：
+
+1. 业务唯一键应为 `payment(bank_type_id, phone)`，不是 `partner_id + bank_type_id + phone`
+2. 有指纹的记录优先保留
+3. 无指纹脏记录先归档到 `payment_d`，再从 `payment` 主表删除
+
+这次实际清理了：
+
+- `533207`
+- `533206`
+- `533223`
+
+保留：
+
+- `533026`，因为存在 `/fingerprint/easypaisa_533026_03401336531.zip`
+
+约束：
+
+- 已在线上 `payment` 主表增加唯一键 `uk_payment_bank_phone (bank_type_id, phone)`
+
+fresh 验证：
+
+```bash
+ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no root@34.96.148.205 <<'SSH'
+mysql -h10.108.32.29 -upakistan -p'HFCCoB$D7]{?NTNn' -Dpakistan -Nse "
+SELECT 'global_dup_groups', COUNT(*) FROM (
+  SELECT 1
+  FROM payment
+  WHERE phone IS NOT NULL AND phone <> ''
+  GROUP BY bank_type_id, phone
+  HAVING COUNT(*) > 1
+) t;
+SHOW INDEX FROM payment WHERE Key_name = 'uk_payment_bank_phone';
+"
+SSH
+```
+
+结果：
+
+- `global_dup_groups = 0`
+- `uk_payment_bank_phone` 存在
+
+### 0.1 线上 `ops api restart` 前必须先跑 `py_compile`
+
+现象：
+
+- 这次线上 `/www/python/api` 工作区不是干净态
+- 且 `application/app/login/banks/easypaisa.py` 曾存在 f-string 引号错误
+- 直接执行 `ops api restart` 会把语法错误代码带着重启，风险很高
+
+处理：
+
+```bash
+ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no root@34.96.148.205 \
+  'cd /www/python/api && python -m py_compile application/app/login/banks/easypaisa.py application/lakshmi_api/models/payment.py'
+```
+
+只有 `py_compile` 通过后，才允许继续：
+
+```bash
+ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no root@34.96.148.205 \
+  'ops api restart'
+```
+
+补充：
+
+- 不要误用 `python3 -m py_compile` 作为最终上线判断
+- 因为当前线上 `python3=3.10.12`，而 `ops` 实际调用的是 `python=3.12.0`
+
+### 0. EasyPaisa business-flow v2 已移除 `payment_status` 自动补推进
+
+现象：
+
+- v2 上线后，`payment_status` 只读，不再把 EasyPaisa 会话从中间态自动推到成功态
+- 如果前端还沿用旧链路去调 `/login/active_account`，EasyPaisa 会直接返回 `410 Gone`
+- 旧会话若还停留在历史状态字符串（如 `loginSuccessful`），需要在发布前先 flush Redis
+
+根因：
+
+- business-flow v2 把链路拆成：
+  - `preLoginCreated -> otpSent -> otpVerified`
+  - `fingerprintUploadRequired / fingerprintUploaded -> fingerprintVerified`
+  - `secondLoginPassed -> accountSelectionRequired -> activeSuccessful`
+  - 异常分支：`awaitingPinChange`
+- `/login/payment_status` 的旧式自动补推进逻辑已经删除，后端不会再偷偷调用 `_verify_account`
+- `/login/active_account` 对 EasyPaisa 已废弃，必须改走：
+  - `/login/verify_fingerprint`
+  - `/login/second_login`
+
+修复：
+
+- 发布前执行新脚本清理 EasyPaisa 历史会话与旧登录锁：
+
+```bash
+cd /Users/tear/pk_project/api
+python3 scripts/easypaisa_session_flush.py
+python3 scripts/easypaisa_session_flush.py --execute
+```
+
+- Flutter / 调用方必须按新接口顺序串联，不允许再依赖 `payment_status` 自动推进
+- 若 verify_fingerprint 返回 `FP_UPSTREAM_REJECTED`，服务端会同步清空 `payment.fingerprint_path` 并删除本地 zip，前端应回到重新扫指纹
+- 本轮 runtime 改造不兼容旧 EasyPaisa 会话；发布前必须先执行 flush，不能指望历史 `pre_login_easypaisa_*` / `login_on_easypaisa_*` 自动迁移
+
+验收：
+
+```bash
+cd /Users/tear/pk_project/api
+python3 -m py_compile application/app/login/banks/easypaisa.py application/easypaisa_runtime/*.py application/lakshmi_api/controllers/upi_controller.py application/lakshmi_api/services/payments/e_wallet_handler.py
+python3 -m pytest tests/test_easypaisa_business_flow_v2.py tests/easypaisa_runtime -v
+python3 -m pytest tests -q
+```
+
+结论：
+
+- v2 之后，`payment_status` 只负责回显 `status / error / cd_until / next_action`
+- 旧的 `payment_status auto-promote` 已删除，不再作为排错方向
+- 如果线上还有旧 phase/旧 session，先 flush，再按新链路重新登录
+
+### 0.1 EasyPaisa `Fingerprint data corruption` 必须回退到重新扫指纹
+
+现象：
+
+- EasyPaisa 登录已经走到 `verify_fingerprint`
+- 上游实际返回：
+
+```json
+{"code":403,"msg":"读取03431940911指纹数据失败，请检查指纹数据包(Fingerprint data corruption)","data":null}
+```
+
+- API 却把它回成了 `FP_UPSTREAM_TRANSIENT`
+- session 继续停在 `fingerprintUploaded`
+- App 不会回到重新上传指纹页
+
+根因：
+
+- `application/app/login/banks/easypaisa.py::_perform_verify_fingerprint()`
+  旧逻辑只把以下情况归成 `rejected`：
+  - `缺少指纹数据`
+  - `不支持的action`
+  - `code == 500`
+- `Fingerprint data corruption` 属于“当前指纹包坏了”的明确拒绝，但它是 `403`，message 也不在旧关键字里，所以被误判成了 `transient`
+
+修复：
+
+- rejected 关键字扩展为：
+  - `fingerprint data corruption`
+  - `指纹数据失败`
+  - `指纹数据包`
+- 命中后统一返回 `FP_UPSTREAM_REJECTED`
+- 继续复用现有 rejected 清理链：
+  - phase 回退到 `fingerprintUploadRequired`
+  - 清空 `payment.fingerprint_path`
+  - best effort 删除本地 zip
+
+验收：
+
+```bash
+cd /Users/tear/pk_project
+python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_perform_verify_fingerprint_corruption_maps_to_rejected -v
+python3 -m unittest api.tests.test_easypaisa_business_flow_v2 -v
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
+结论：
+
+- `Fingerprint data corruption` 不是普通临时错误，不能继续留在 `fingerprintUploaded`
+- 若线上再看到这类 message，正确动作是重新采并重新上传指纹，而不是反复 verify
+
+### 1. 启动即报数据库连接失败
+
+先检查：
+
+- `MYSQL_HOST`
+- `MYSQL_DATABASE`
+- `MYSQL_USER`
+- `MYSQL_PASSWORD`
+
+如果走 Docker，优先看：
+
+```bash
+docker compose logs -f mysql
+docker compose logs -f api
+```
+
+### 2. 启动即报 Redis 连接失败
+
+检查：
+
+- `REDIS_HOST`
+- Redis 容器是否已健康
+
+### 3. WebSocket / 机器人 / 第三方支付接口不通
+
+这是常见现象，因为本地默认是安全占位配置，不会自动接入真实外部环境。
+
+### 4. EasyPaisa `auto_payout` 线上热更新后怎么判断要不要回滚
+
+先看三层证据：
+
+1. supervisor 状态
+
+```bash
+/www/server/panel/pyenv/bin/supervisorctl status auto_payout:*
+```
+
+2. 线上任务日志
+
+```bash
+tail -n 200 /www/server/panel/plugin/supervisor/log/auto_payout.out.log
+tail -n 200 /www/server/panel/plugin/supervisor/log/auto_payout.err.log
+```
+
+3. ELK 索引
+
+- 重点看 `online_pakistan_easypaisa-YYYY.MM.DD`
+- 观察：
+  - `ImportError`
+  - `ModuleNotFoundError`
+  - `SyntaxError`
+  - `Traceback`
+  - `服务器严重错误`
+  - `Lock已不存在`
+  - `代付成功处理完成`
+
+经验判断：
+
+- 如果是导入失败、语法错误、属性错误，直接回滚
+- 如果只是 `网络请求超时`、`银行维护` 这类三方波动，不要立刻误判成代码回归
+- `重复失败检查` 当前会写成 `ERROR`，看 ELK 时要把这类伪错误排除
+
+### 5. JazzCash 单独代付开关关闭后，其他 `/pay/df` 请求也进不来
+
+现象：
+
+- 巴基斯坦 `online_pakistan_api-*` 索引里会集中出现 `HTTP 400: Bad Request (Missing argument bankcode)`
+- 许多非 JazzCash 的代付请求也会一起失败
+
+原因：
+
+- `/pay/df` 的商户协议字段是 `bank_code`
+- 但 JazzCash 单独开关关闭后的分支直接读取了 `bankcode`
+- Tornado 在参数缺失时会直接抛 `MissingArgumentError`
+
+排查：
+
+```bash
+curl -s -u 'elastic:***' \
+  'http://<es-host>:9200/online_pakistan_api-*/_search' \
+  -H 'Content-Type: application/json' \
+  -d '{"query":{"match_phrase":{"message":"Missing argument bankcode"}}}'
+```
+
+修复：
+
+- 关闭 JazzCash 单独通道时，优先按商户协议读取 `bank_code`
+- 同时兼容旧字段 `bankcode`
+- 禁止在判断分支里直接无默认值读取 `bankcode`
+
+### 6. 本地直接跑 `pytest` 报 `SyntaxError`，指向 `match self.bank_type`
+
+现象：
+
+- 直接执行 `pytest ...` 时，收集阶段报错
+- 栈里显示使用的是系统 Python 3.9
+- 错误文件通常会落在 `application/phonepe/phmonitor.py`
+
+原因：
+
+- 当前仓库代码已使用 Python 3.10+ 的 `match/case`
+- 终端里的 `pytest` 可能绑定到系统 Python 3.9，而不是项目实际使用的 Python 3.12
+
+处理：
+
+```bash
+cd /Users/tear/pk_project/api
+python3.12 -m pytest tests/test_router_easypay_cleanup.py -q
+```
+
+结论：
+
+- 这不是本次代码修改引入的语法回归
+- 优先用 `python3.12 -m pytest`，不要直接信任裸 `pytest`
+
+### Easypay SOAP 代收错误码
+
+| Code | 含义 | 排查方向 |
+|------|------|---------|
+| 0000 | 成功 | — |
+| 0001 | 系统错误 | Easypay 侧问题，稍后重试 |
+| 0002 | 缺少必填字段 | 检查 SOAP XML 是否完整（username/password/orderId/storeId/amount/msisdn） |
+| 0003 | 无效订单号 | 检查 orderId 是否重复或格式不对 |
+| 0004 | 商户账户不存在 | 检查 otherpay.merchant_id 是否正确 |
+| 0005 | 商户账户未激活 | 联系 Easypay 确认 KYC 状态 |
+| 0006 | 店铺不存在 | 检查 otherpay.key3 (store_id) |
+| 0007 | 店铺未激活 | 在 Easypay 商户后台确认店铺状态 |
+
+排查步骤：查看 `api_*.log` 中 `[easypay]` 前缀日志，或 `order_timeout.log` 中轮询日志。
+当前商户后台名称：`AbdulMoizE-Store`。
+配置核对：`otherpay.merchant_id=Account ID`、`otherpay.key=Merchant Name`、`otherpay.key2=API Key`、`otherpay.key3=Store ID`。
+
+### JazzCash `1002` 误派到自有码商
+
+现象：
+
+- `1002` 订单日志先出现：
+  - `按照权重随机选取码接单: 533182`
+  - `码 533182 在 Redis 队列 'payment_active_1002' 中`
+- 订单表里会同时留下：
+  - `payment_id=533182`
+  - `otherpay=25`
+  - `third_party_name=easypay`
+
+根因：
+
+- 数据库 `payment.channel` 错配为 `1002,1003`
+- Redis `payment_active_1002` 被污染
+- 运行态 `hash_jazzcash.qr_channel` 仍是 `1002,1003`
+- `jazzcashv2/pakistanpay_v2` 长驻任务不重启时，会继续把旧运行态写回 Redis
+- 仓库里的 [jazzcash.py](/Users/tear/pk_project/api/application/app/login/banks/jazzcash.py) 也曾默认把新登录账号写成 `1002,1003`
+
+修复顺序：
+
+1. 备份数据库与 Redis 运行态
+2. `payment.channel: 1002,1003 -> 1003`
+3. `hash_jazzcash.qr_channel: 1002,1003 -> 1003`
+4. 清空：
+   - `payment_active_1002`
+   - `payment_active_1002,1003`
+5. 重启：
+
+```bash
+/www/server/panel/pyenv/bin/supervisorctl restart jazzcashv2:* pakistanpay_v2:*
+```
+
+6. 把 [jazzcash.py](/Users/tear/pk_project/api/application/app/login/banks/jazzcash.py) 默认通道改成 `1003`
+7. 只用 `196` 测试商户 fresh 拉单验收
+
+验收信号：
+
+- `payment.id=533182.channel = 1003`
+- `hash_jazzcash['533182'].qr_channel = 1003`
+- `payment_active_1002 = []`
+- 新测试单 `payment_id = NULL`
+
+补充：
+
+- 如果数据库和 `hash_jazzcash` 都已经改对，但 `payment_active_1002` 仍然还能看到 `533182`，这不是数据库回滚，而是 Redis 历史脏成员没清干净。
+- 这种情况下 [pay.py](/Users/tear/pk_project/api/application/pay/pay.py) 仍会按在线池继续命中 `533182`。
+- 处理动作是：
+  1. `LREM payment_active_1002 0 533182`
+  2. 同步线上 [jazzcash.py](/Users/tear/pk_project/api/application/app/login/banks/jazzcash.py) 为默认 `1003`
+  3. fresh 重启 `api`
+
+### 7. 码商 `03416683864` 的 UPI 列表突然为空
+
+现象：
+
+- 远端 Flutter 商户端查询 `GET /v1/user/upi?per_page=500&current_page=1&is_formal=1` 时，`user=33046` 返回：
+
+```json
+{"data":{"payments":[]},"pagination":{"total_pages":0,"current_page":1}}
+```
+
+- 账号信息存在：
+
+```sql
+select id,name,cellphone,status,certified,type
+from partner
+where cellphone='03416683864';
+```
+
+结果为 `partner.id=33046, name=Kawish Naseem`。
+
+根因：
+
+- 不是前端过滤，也不是接口参数问题。
+- `/user/upi` 只查主表 `payment`，条件是 `payment.partner_id = current_user.id` 且 `payment.bank_type_id in (97,98)`。
+- 该账号原本的 5 条 EasyPaisa 钱包记录曾经存在于 `payment`，至少在 `2026-04-17 14:00:31` 的线上日志里还能正常返回：
+  - `533243 / 03416683864`
+  - `533246 / 03059777652`
+  - `533247 / 03084579180`
+  - `533250 / 03489696378`
+  - `533279 / 03321914388`
+- 之后这些记录被整体转移到了归档表 `payment_d`，主表 `payment` 中已不存在，因此 `/user/upi` 返回空列表。
+
+证据：
+
+```sql
+select id,partner_id,phone,upi,status,certified,name,time_create,time_update
+from payment
+where partner_id=33046;
+```
+
+返回 `0` 行。
+
+```sql
+select id,partner_id,phone,upi,status,certified,name,time_create,time_update
+from payment_d
+where partner_id=33046
+order by id;
+```
+
+返回：
+
+- `533243 03416683864 time_create=2026-04-17 14:48:46`
+- `533246 03059777652 time_create=2026-04-17 14:48:44`
+- `533247 03084579180 time_create=2026-04-17 14:48:42`
+- `533250 03489696378 time_create=2026-04-17 14:48:38`
+- `533279 03321914388 time_create=2026-04-17 14:48:40`
+
+复核命令：
+
+```bash
+ssh -i open_ssh_private.txt -o StrictHostKeyChecking=no root@34.96.148.205
+
+mysql -h10.108.32.29 -upakistan -p'***' pakistan -e "
+select id,name,cellphone,status,certified,type
+from partner
+where cellphone='03416683864';
+
+select id,partner_id,phone,upi,status,certified,name,time_create,time_update
+from payment
+where partner_id=33046;
+
+select id,partner_id,phone,upi,status,certified,name,time_create,time_update
+from payment_d
+where partner_id=33046
+order by id;
+"
+
+curl -sS -H 'Authorization: Bearer <该账号 token>' \
+  'http://127.0.0.1:9000/v1/user/upi?per_page=500&current_page=1&is_formal=1'
+```
+
+结论：
+
+- `03416683864` “没有列表”的直接原因是：钱包记录已经不在 `payment`，而在 `payment_d`。
+- 后续继续查 `admin` 日志后，已经确认这不是“猜测上的人工操作”，而是后台页面真实触发的删除接口：
+  - `2026-04-17 14:48:38` `POST /partner/deletepayment` `{"id":533250,"is_del":false}`
+  - `2026-04-17 14:48:40` `POST /partner/deletepayment` `{"id":533279,"is_del":false}`
+  - `2026-04-17 14:48:42` `POST /partner/deletepayment` `{"id":533247,"is_del":false}`
+  - `2026-04-17 14:48:44` `POST /partner/deletepayment` `{"id":533246,"is_del":false}`
+  - `2026-04-17 14:48:46` `POST /partner/deletepayment` `{"id":533243,"is_del":false}`
+- 这些请求都来自同一个后台操作者：`337@34.131.201.121`。
+- 数据库 `admin` 表核对结果：`admin.id=337, account=188888866, name=小悔, status=1`。
+- 因此这次 `33046` 账号下的 5 条钱包记录，是在 `2026-04-17 14:48:38~14:48:46` 被后台账号 `小悔(337)` 通过 `admin` 页面连续点击删除，导致从 `payment` 迁入 `payment_d`。
+- 如果要恢复列表，需要把对应记录从 `payment_d` 恢复回 `payment`；如果要继续审计，可再结合 `admin.aweces.com` 的 Nginx 访问日志和该账号登录日志做交叉确认。
+
+## 2026-04-18 EasyPaisa `pre_login` 漏掉跨码商手机号占用校验
+
+### 现象
+
+- Lakshmi `/user/upi` 新增接口已经能阻止“同银行同手机号被不同码商重复新增”
+- 但 EasyPaisa `pre_login` 仍可能绕过这层约束，导致相同手机号被错误复用或继续初始化登录会话
+
+### 根因
+
+`api/application/app/login/banks/easypaisa.py` 的 `_check_payment(bankname, phone, partner_id)` 之前带了：
+
+```python
+(Payment.user_id == partner_id) if partner_id else True
+```
+
+这会让查询只能看到“当前码商自己的 payment”，从而看不到“该手机号已经属于其他码商”的记录。
+
+### 处理
+
+1. `_check_payment(...)` 改为只按 `bank_type + phone` 查现有记录
+2. `pre_login_http(...)` 在 `payment_id` 为空的分支里增加归属判断：
+   - 属于当前码商：继续复用现有 `payment_id`
+   - 属于其他码商：直接返回 `10402`
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project/api
+python3.12 -m py_compile application/app/login/banks/easypaisa.py application/easypaisa_runtime/*.py application/lakshmi_api/controllers/upi_controller.py application/lakshmi_api/services/payments/e_wallet_handler.py
+python3.12 -m pytest tests/test_easypaisa_business_flow_v2.py tests/easypaisa_runtime -q
+```
+
+结果：
+
+- `py_compile`：通过
+- `pytest tests/test_easypaisa_business_flow_v2.py tests/easypaisa_runtime -q`：`36 passed`
+
+## 2026-04-19 EasyPaisa jobs runtime 写面闭环
+
+### 现象
+
+- 登录链已经把 EasyPaisa 主状态切到 `easypaisa_runtime:snapshot:*`
+- 但 `jobs/easypaisa/easypaisa_monitor.py`、`jobs/pakistanpay_v2.py` 仍会直接散写：
+  - `payment_online_df`
+  - `payment_active_df`
+  - `login_on_easypaisa_*`
+  - `kick_off_*`
+- `clear_redis_inactive_payment.py` 仍把 `login_on_*` 当成 EasyPaisa 活跃态真相
+
+这样会导致：
+
+- monitor / statement worker 继续把旧运行态写回 Redis
+- runtime snapshot 和 legacy bridge 可能重新分叉
+- `order_push.py` / `jobs/easypaisa/auto_payout.py` 虽然还能消费旧队列，但其输入语义不再由 runtime 统一驱动
+
+### 根因
+
+- 之前只完成了 API 登录链与 reader 的 runtime 化
+- 同步 Redis 作业缺少对应的 sync runtime service
+- inactive cleanup 对 EasyPaisa 没有 runtime 在线索引入口
+
+### 处理
+
+1. 新增同步版 runtime service：
+   - [sync_runtime_service.py](/Users/tear/pk_project/api/application/easypaisa_runtime/sync_runtime_service.py)
+2. 为 sync runtime 补上：
+   - runtime kickoff key
+   - legacy kickoff bridge
+3. `jobs/easypaisa/easypaisa_monitor.py` 改为：
+   - `update_redis_cache()` 在线时走 `mark_active_successful(...)`
+   - 下线时走 `force_offline(...)`
+   - `on_off()` 改走 sync runtime service
+4. `jobs/pakistanpay_v2.py` 的 `on_off()` 改走 sync runtime service
+5. `clear_redis_inactive_payment.py` 对 EasyPaisa 先读 `easypaisa_runtime:index:online`
+6. 保持：
+   - `order_push.py`
+   - `jobs/easypaisa/auto_payout.py`
+
+继续消费 legacy bridge 输出，不额外做无意义兼容改造
+
+### 边界说明
+
+- `clear_redis_dsdf.py` 当前 SQL 只扫 `bank_type in (16,14,17,21,30)`，不包含 EasyPaisa `97`
+- 所以它不是本轮 EasyPaisa cleanup 主入口，本轮只记录审计结论，不强行把 EasyPaisa 逻辑塞进去
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project/api
+python3.12 -m py_compile application/easypaisa_runtime/*.py jobs/easypaisa/easypaisa_monitor.py jobs/pakistanpay_v2.py jobs/clear_redis_inactive_payment.py
+python3.12 -m pytest tests/easypaisa_runtime/test_sync_runtime_service.py tests/easypaisa_runtime/test_runtime_service.py tests/easypaisa_runtime/test_reader.py tests/test_easypaisa_business_flow_v2.py -q
+```
+
+结果：
+
+- `py_compile`：通过
+- `pytest ... -q`：`44 passed, 1 warning`
+
+### 结论
+
+- EasyPaisa `api + jobs` 现在已经统一由 runtime snapshot 驱动主状态
+- legacy `payment_online_df` / `payment_active_df` / `login_on_easypaisa_*` 只保留 bridge 输出，不再作为 jobs 主写面
+- `order_push.py` 和 `jobs/easypaisa/auto_payout.py` 的消费链不需要改代码，就能继续吃到 runtime 驱动后的 legacy 队列
+
+## 2026-04-19 EasyPaisa legacy app runtime 读面与下线闭环
+
+### 现象
+
+`api/application/app/my/my.py` 里的 EasyPaisa 仍残留两类问题：
+
+- `my.getpayment` / `my.getOnlinePayment` 直接读 `payment_online_ds` / `payment_online_df`
+- `my.changepayment(status=0)` 只改数据库 `payment.status`，不会同步清 runtime session / snapshot
+
+这会导致：
+
+- runtime snapshot 已在线，但旧 `my` 接口仍可能把 EasyPaisa 展示成离线
+- 用户在旧 app 里手动关闭 EasyPaisa 后，runtime 仍可能保持在线
+
+### 根因
+
+- 前两轮只完成了：
+  - API 登录链 runtime 化
+  - jobs 写面 runtime 化
+  - admin 读面 runtime 化
+- 旧 `application/app/my/my.py` 仍保留 legacy Redis 判断
+
+### 处理
+
+1. `my.py` 新增 EasyPaisa 最小 helper：
+   - `bank_type == 97` 时，`online_ds` 读 runtime session 在线态
+   - `online_df` 读 runtime 代付在线态
+2. `my.getOnlinePayment` 对 EasyPaisa 改为按 runtime 在线字段筛选
+3. `EasyPaisaRuntimeService` 增加 `force_reset(...)`
+4. `my.changepayment(status=0)` 对 EasyPaisa 同步：
+   - `clear_session`
+   - `force_offline`
+   - legacy bridge 清理
+5. 非 EasyPaisa 银行保持现状，不扩散兼容面
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project/api
+python3.12 -m py_compile application/app/my/my.py application/easypaisa_runtime/*.py
+python3.12 -m unittest discover -s tests -p 'test_app_my_easypaisa_runtime.py' -v
+python3.12 -m unittest discover -s tests -v
+```
+
+结果：
+
+- `py_compile`：通过
+- `test_app_my_easypaisa_runtime.py`：`3 tests` 全绿
+- `tests -v`：`47 tests` 全绿
+
+### 结论
+
+- EasyPaisa 在 legacy app 的列表展示和在线列表已经改读 runtime 语义
+- 旧 app 手动下线 EasyPaisa 时，runtime session / snapshot 也会同步下线
+- 非 EasyPaisa 银行不受本轮改动影响

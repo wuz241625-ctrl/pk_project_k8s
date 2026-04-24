@@ -1,0 +1,562 @@
+{
+  "order_total": "total orders",
+  "successful_orders": "successful orders",
+  "failed_orders": "failed orders",
+  "success_rate": "success rate",
+  "transaction_amount": "Transaction amount",
+  "successful_amount": "Success amount",
+  "failed_amount": "failed amount",
+  "commission": "fee",
+  "merchant_balance": "merchant balance",
+  "frozen_balance": "merchant balance freeze",
+  "login_out": "Logout",
+  "statics": "Search",
+  "login": {
+    "title": "{system} Merchant Management System",
+    "username": "Account",
+    "password": "Password",
+    "googlecode": "Google Auth Key",
+    "login": "Login",
+    "capsLockOn": "Caps lock is On",
+    "tip": "Hint",
+    "confirm": "Confirm",
+    "validation": {
+      "username": "Please enter your account",
+      "password": "Password must be at least 6 digits characters",
+      "passwordIllegal": "Please do not use illegal characters",
+      "googlecode": "Please enter the 6-digit Google Auth Key",
+      "googlecodeInvalid": "Please enter the correct Google Auth Key"
+    }
+  },
+  "chart": {
+      "legend": "7-day trend chart",
+      "xAxis": ["一", "二", "三", "四", "五", "六", "七"]
+  },
+  "msg": {
+    "20000": "exec successful",
+    "80000": "Login failed",
+    "80001": "username or password incorrect",
+    "80002": "account disabled, please contact the administrator",
+    "80003": "Google Authenticator Fail",
+    "80004": "add failed",
+    "80005": "update failed",
+    "80006": "delete failed",
+    "80007": "exec failed",
+    "80008": "Account already exists",
+    "80009": "process fee rates setup error",
+    "80010": "balance not enough",
+    "80011": "Payment abnormal",
+    "80012": "The account does not exist or is freeze, please contact the administrator",
+    "80013": "Do not operate frequently",
+    "0": "Exec failed",
+    "10000": "Illegal IP",
+    "10001": "Data format error",
+    "10002": "Parameter exception",
+    "10003": "Parameter cannot be empty",
+    "10004": "Merchant does not exist",
+    "10005": "Merchant status exception",
+    "10006": "Signature error",
+    "10007": "Exec frequent",
+    "10008": "Channel congestion",
+    "10009": "Gateway error",
+    "10010": "Channel maintenance",
+    "10011": "Amount error",
+    "10012": "Channel Inactive",
+    "10013": "Rate error",
+    "10014": "Order Submission Failed",
+    "10015": "Insufficient payment balance",
+    "10016": "Order does not exist",
+    "10017": "IFSC error",
+    "10018": "Update UPI error",
+    "10019": "Record already exists in bank_record",
+    "10020": "Update status error",
+    "10021": "Parsing failed",
+    "10022": "Payment setting exception",
+    "10023": "Merchant payment setting exception",
+    "10024": "Amount not a valid decimal",
+    "10025": "Repeat upi",
+    "10026": "The collection and payment reconciliation is locked, please try again later"
+},
+"balance": {
+    "table": {
+      "serialNumber": "serial number",
+      "merchantOrderNumber": "merchant order number",
+      "beforeChange": "original balance",
+      "changeAmount": "order amount",
+      "afterChange": "revised balance",
+      "time": "created at",
+      "type": "type"
+    },
+    "types": {
+      "0": "collection",
+      "1": "payment",
+      "2": "withdrawal",
+      "3": "commission",
+      "4": "freeze",
+      "6": "manual",
+      "9": "Payment Reject",
+      "10": "Payment Discount"
+    },
+    "search": {
+      "serialNumber": "serial number",
+      "merchantOrderNumber": "merchant order number",
+      "amount": "amount",
+      "time": "created at",
+      "type": "type"
+    },
+    "export": {
+      "header": ["serial number", "merchant order number", "original balance", "order amount", "revised balance", "created at", "type"],
+      "filename": "Collection transaction statement"
+    }
+  },
+  "ds": {
+    "table": {
+      "orderNumber": "serial number",
+      "merchantNumber": "merchant number",
+      "orderAmount": "order amount",
+      "status": "status",
+      "gatewayNumber": "payment channel code",
+      "upi": "UPI",
+      "utr": "UTR",
+      "settlementAmount": "Settlement amount",
+      "fee": "fee",
+      "orderTime": "place order at",
+      "successTime": "success created at",
+      "success": "success：{count}",
+      "failure": "failed：{count}",
+      "successRate": "success rate：{rate}",
+      "processing": "processing：{count}",
+      "processingAmount": "amount in processing：{amount}",
+      "totalAmount": "total amount：{amount}"
+    },
+    "exportData": {
+        "tHeader": {
+          "order_number": "Order Number",
+          "merchant_number": "Merchant Number",
+          "order_amount": "Order Amount",
+          "status": "Status",
+          "gateway_number": "Gateway Number",
+          "upi": "UPI",
+          "utr": "UTR",
+          "order_time": "Order Time",
+          "success_time": "Success Time",
+          "settlement_amount": "Settlement Amount",
+          "fee": "Fee"
+        },
+        "filename": "Order Information"
+    },
+    "status": {
+      "0": "Dispatching",
+      "1": "waiting for payment",
+      "2": "waiting for confirmation",
+      "3": "notifying",
+      "4": "done",
+      "-1": "revoke"
+    },
+    "search": {
+      "orderNumber": "serial number",
+      "merchantNumber": "merchant number",
+      "upi": "UPI",
+      "utr": "UTR",
+      "amount": "amount",
+      "gateway": "channel",
+      "status": "status",
+      "orderTime": "place order at",
+      "successTime": "paid at",
+      "merchant_id": "merchant id"
+    },
+    "export": {
+      "header": ["serial number", "merchant number", "order amount", "status", "payment channel code", "UPI", "UTR", "place order at", "success created at", "Settlement amount", "fee"],
+      "filename": "collection order info"
+    },
+    "copySuccess": "copy success"
+  },
+  "df": {
+    "table": {
+      "orderNumber": "order number",
+      "merchantNumber": "merchant number",
+      "orderAmount": "order amount",
+      "status": "status",
+      "upi": "UPI",
+      "ifsc": "BANK CODE",
+      "gatewayNumber": "bank name",
+      "utr": "UTR",
+      "paymentAccount": "Payment Account",
+      "paymentName": "Payment Name",
+      "settlementAmount": "Settlement amount",
+      "fee": "Fee",
+      "orderTime": "order created at",
+      "successTime": "success created at",
+      "voucher": "receipt",
+      "success": "Success: {count}",
+      "failure": "Failure: {count}",
+      "successRate": "Success rate: {rate}",
+      "processing": "Processing: {count}",
+      "processingAmount": "Processing amount: {amount}",
+      "totalAmount": "Total amount: {amount}",
+      "batch_payment": "Batch Payment",
+      "enter_google_code": "Enter Google Verification Code",
+      "viewVoucher": "查看凭证"
+    },
+    "exportData": {
+      "tHeader": {
+        "order_number": "Order Number",
+        "merchant_code": "Merchant Code",
+        "order_amount": "Order Amount",
+        "status": "Status",
+        "channel_code": "Gateway Number",
+        "bank_name": "Bank Name",
+        "payment_name": "Payee Name",
+        "payment_account": "Payee Account",
+        "payment_type": "Payee Type",
+        "order_time": "Order Time",
+        "success_time": "Success Time",
+        "settlement_amount": "Settlement Amount",
+        "poundage": "Fee"
+      },
+      "filename": "Payment Orders Information"
+    },
+    "dialog": {
+      "title": "view receipt",
+      "singlePayment": "single payment "
+    },
+    "copySuccess": "copy success",
+    "status": {
+      "0": "Dispatching",
+      "1": "Pending Payment",
+      "2": "Pending Confirmation",
+      "3": "In Callback",
+      "4": "Completed",
+      "-1": "Cancelled",
+      "-2": "Cancelling",
+      "5": "Processing"
+    },
+    "search": {
+      "code": "Order Number",
+      "merchant_code": "Merchant Number",
+      "status": "Status",
+      "payment_name": "Payment Name",
+      "payment_account": "Payment Account",
+      "payment_type": "Payment Type",
+      "amount": "Amount",
+      "channel_code": "Gateway",
+      "time_create": "Order Time",
+      "time_success": "Success Time"
+    },
+    "form": {
+      "orderAmount": "Order Amount",
+      "ifsc": "BANK CODE",
+      "paymentBank": "Bank Name",
+      "paymentAccount": "Account Number",
+      "paymentName": "Account Holder Name",
+      "googleVerification": "Google Verification Code"
+    },
+    "placeholder": {
+      "orderAmount": "Please enter the order amount",
+      "ifsc": "Please enter BANK CODE",
+      "paymentBank": "Please enter the bank name",
+      "paymentAccount": "Please enter the account number",
+      "paymentName": "Please enter the account holder name",
+      "googleVerification": "Please enter the Google verification code"
+    }
+  },
+  "button": {
+    "add": "add",
+    "batchAdd": "batch orders",
+    "cancel": "revoke",
+    "confirm": "confirm"
+  },
+  "withdraw": {
+    "table": {
+      "orderNumber": "serial number",
+      "orderAmount": "order amount",
+      "status": "status",
+      "usdtAddress": "USDT Address",
+      "orderTime": "place order at",
+      "successTime": "success created at",
+      "operation": "exec",
+      "copyAddress": "copy address"
+    },
+    "exportData": {
+      "tHeader": {
+        "order_number": "serial number",
+        "order_amount": "order amount",
+        "status": "status",
+        "usdt_address": "USDT address",
+        "order_time": "place order at",
+        "completion_time": "finish date"
+      },
+      "filename": "withdrawal orders"
+    },
+    "dialog": {
+      "title": "withdrawal",
+      "amount": "wthdrawal amount",
+      "address": "USDT address",
+      "googleKey": "Google Authenticator",
+      "placeholderAmount": "Please enter the Wwthdrawal amount",
+      "placeholderAddress": "Please enter the USDT address",
+      "placeholderGoogle": "Please enter the Google auth code",
+      "confirm": "confirm",
+      "cancel": "revoke"
+    },
+    "pagination": {
+      "total": "total",
+      "sizes": "page size",
+      "prev": "previous Page",
+      "pager": "Page",
+      "next": "next Page",
+      "jumper": "go to"
+    },
+    "messages": {
+      "copySuccess": "copy success",
+      "withdrawSubmitted": "Withdrawal has been submitted, please wait for processing",
+      "inputError": "Please enter the correct amount and Google auth code"
+    },
+    "status": {
+      "pending": "pending",
+      "processing": "processing",
+      "completed": "done",
+      "cancelled": "revoke"
+    },
+    "search": {
+      "code": "Order Number",
+      "status": "Status",
+      "amount": "Amount",
+      "time_create": "Order Time",
+      "time_success": "Success Time"
+    }
+  },
+  "merchant": {
+    "addButton": "add",
+    "channelDialog": {
+      "title": "channel settings",
+      "ratePlaceholder": "please enter the rate",
+      "cancel": "revoke",
+      "confirm": "confirm",
+      "saveSuccess": "save successfully"
+    },
+    "dialog": {
+      "edit": "edit",
+      "add": "create",
+      "cellphone": "phone number",
+      "name": "name",
+      "cellphonePlaceholder": "Please enter phone number",
+      "namePlaceholder": "please enter name",
+      "dfRate": "payment rate",
+      "dfRatePlaceholder": "please enter payment rate",
+      "feeDf": "single payment amount",
+      "feeDfPlaceholder": "please enter the single payment amount",
+      "google": "Google auth code",
+      "googlePlaceholder": "Please enter the Google auth code",
+      "saveSuccess": "Save successfully"
+    },
+    "table": {
+      "id": "ID",
+      "cellphone": "phone number",
+      "name": "name",
+      "balance": "balance",
+      "balanceFrozen": "freeze balance",
+      "dfStatus": "order status",
+      "status": "status",
+      "registerTime": "registered at",
+      "operation": "exec",
+      "channel": "channel",
+      "edit": "edit"
+    },
+    "status": {
+      "1": "enabled",
+      "0": "disabled"
+    },
+    "status1": {
+      "1": "enabled",
+      "0": "disabled"
+    },
+    "search": {
+      "id": "ID",
+      "cellphone": "phone number",
+      "name": "name",
+      "dfStatus": "paymentstatus",
+      "status": "status",
+      "registerDate": "registered date"
+    }
+  },
+  "ranking": {
+    "search": {
+      "channelCode": "channel ID",
+      "date": "date"
+    },
+    "table": {
+      "id": "ID",
+      "cellphone": "phone number",
+      "name": "date",
+      "orderCount": "Number of order",
+      "orderAmount": "order amount",
+      "successOrderCount": "success orders",
+      "successAmount": "success amount",
+      "successRate": "success rate",
+      "payoutAmount": "payout success amount"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    },
+    "sort": {
+      "ascending": "ascending",
+      "descending": "descending"
+    }
+  },
+  "setting": {
+    "balance": "Balance",
+    "frozen_amount": "Frozen Amount",
+    "reset_password": "Reset Password",
+    "google_key": "Google Key",
+    "enter_google_code": "Enter Google Verification Code",
+    "new_password": "New Password",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "caps_lock": "Caps lock is On",
+    "password": "Password",
+    "table": {
+      "code": "payment channel code",
+      "name": "name",
+      "rate": "rate",
+      "limit": "amount limits",
+      "status": "status",
+      "statusOpen": "enabled",
+      "statusMaintaining": "under maintenance"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    },
+    "totalCount": "total："
+  },
+  "channel": {
+    "totalCount": "total：",
+    "table": {
+      "code": "payment channel code",
+      "name": "name",
+      "rate": "rate",
+      "limit": "amount limits",
+      "status": "status",
+      "statusOpen": "enabled",
+      "statusMaintaining": "under maintenance"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    }
+  },
+  "menu": {
+    "dashboard": "statistics",
+    "collectionStats": "collection statistics",
+    "paymentStats": "payment statistics",
+    "balanceFlow": "balance change history",
+    "orderManagement": "order management",
+    "collectionOrders": "collection orders",
+    "paymentOrders": "payment orders",
+    "withdrawalOrders": "withdrawal orders",
+    "merchantManagement": "downline management",
+    "merchantList": "downline list",
+    "merchantRanking": "downline ranking",
+    "systemSettings": "system settings",
+    "channelInfo": "channel information",
+    "personalInfo": "personal information",
+    "errorPages": {
+      "404": "404 not found",
+      "401": "401 unauthorized"
+    }
+  },
+  "search": {
+    "code": "serial number",
+    "upi": "UPI",
+    "utr": "UTR",
+    "amount": "amount",
+    "channel_code": "channel",
+    "status": "status",
+    "time_create": "place order at",
+    "time_success": "paid at",
+    "select_placeholder": "please select",
+    "input_placeholder": "please enter",
+    "range_separator": "to",
+    "start_placeholder_date": "start date",
+    "end_placeholder_date": "end date",
+    "start_placeholder_datetime": "start at",
+    "end_placeholder_datetime": "end at",
+    "search_button": "query",
+    "reset_button": "reset",
+    "export_button": "export",
+    "id": "ID",
+    "cellphone": "phone number",
+    "name": "name",
+    "payment": "payment",
+    "registration_date": "registered date",
+    "disabled": "disabled",
+    "enabled": "enabled",
+    "not_opened": "disabled",
+    "opened": "enabled",
+    "channel_id": "channel ID",
+    "date": "date",
+    "merchant_code": "merchant order number",
+    "record_type": "type",
+    "timeRangeExceedDays": "Time range cannot exceed 31 days"
+  },
+  "pagination": {
+    "layout": "total, sizes, prev, pager, next, jumper",
+    "page": "页",
+    "page_size": "per page",
+    "total": "total",
+    "prev": "previous Page",
+    "next": "next Page",
+    "jumper": "go to"
+  },
+  "method": {
+    "enterGoogleCode": "Please enter the 6-digit Google Auth code",
+    "prompt": "Hint",
+    "confirmReset": "Confirm Reset",
+    "cancel": "revoke",
+    "resetSuccess": "Reset Successfully",
+    "confirmCheck": "Confirm to View",
+    "checkSuccess": "Verification code displayed",
+    "copySuccess": "copy success",
+    "pleaseFillCorrectContent": "Please enter the correct content",
+    "submitSuccess": "Submission successful",
+    "fileIncorrect": "Incorrect file",
+    "uploadFileSizeError": "Uploaded file size cannot exceed 1M",
+    "pleaseSelectFile": "Please select a file",
+    "incorrectGoogleCode": "Please enter the correct Google verification code",
+    "allSubmitSuccess": "All submissions successfulsuccess",
+    "submitFail": "Submission failed",
+    "saveSuccess": "Save successful",
+    "phone": "phone",
+    "name": "name"
+  },
+  "upload": {
+    "dragAndDrop": "Drag and drop files here, or",
+    "selectFile": "Select File",
+    "onlyOneFile": "Only one file is allowed!",
+    "invalidFileType": "Only .xlsx, .xls, .csv files are allowed",
+    "loading": "Loading...",
+    "placeholder": "Please upload file"
+  },
+  "datepicker": {
+      "startTime": "Start Time",
+      "endTime": "End Time",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "thisWeek": "This Week",
+      "thisMonth": "This Month",
+      "lastMonth": "Last Month",
+      "rangeSeparator": "to",
+      "startPlaceholder": "Start Date",
+      "endPlaceholder": "End Date"
+    },
+  "order_total": "order_total",
+  "successful_orders": "successful_orders",
+  "failed_orders": "failed_orders",
+  "success_rate": "success_rate",
+  "transaction_amount": "transaction_amount",
+  "successful_amount": "successful_amount",
+  "failed_amount": "failed_amount",
+  "commission": "commission",
+  "merchant_balance": "merchant_balance",
+  "frozen_balance": "frozen_balance",
+  "10001": "Invalid username or password"
+}

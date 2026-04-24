@@ -1,0 +1,38 @@
+@font-face {
+  font-family: "iconfont"; /* Project id  */
+  src: url('iconfont.ttf?t=1661699133199') format('truetype');
+}
+
+.iconfont {
+  font-family: "iconfont" !important;
+  font-size: 16px;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-copy:before {
+  content: "\e7b8";
+}
+
+.icon-dengpao:before {
+  content: "\e61b";
+}
+
+.copy-icon {
+  color: #4CAF50;
+  font-size: 16px;
+  font-weight: bold;
+  border-radius: 5px;
+  background-color: #eee;
+  width:0.8rem;
+  height: 0.4rem;
+}
+
+.copy-icon:hover {
+  color: #000;
+  font-size: 16px;
+  font-weight: bold;
+  border-radius: 5px;
+  background-color: #bbb;
+}

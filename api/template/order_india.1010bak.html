@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>Payment</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/layui-layer/dist/skin/default/layer.css" />
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+        :root {
+            --green-bg: #55A686;
+            --white: #ffffff;
+            --dark-bg: #04220b;
+            --light-grey: rgba(255, 255, 255, 0.6);
+            --border-grey: rgba(255, 255, 255, 0.2);
+            --input-bg: rgba(255, 255, 255, 0.1);
+            --important-card-bg: #1a1a1a;
+            --qr-card-bg: rgba(255, 255, 255, 0.05);
+        }
+
+        body {
+            font-family: 'Poppins', sans-serif;
+            background-color: var(--dark-bg);
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 400px;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .header-card {
+            background-color: var(--green-bg);
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .amount {
+            font-size: 3rem;
+            font-weight: 600;
+            line-height: 1;
+        }
+
+        .amount-text {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--light-grey);
+            margin-top: 5px;
+        }
+
+        .info-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            margin-top: 20px;
+        }
+        
+        .info-row .label {
+            color: var(--light-grey);
+        }
+        
+        .info-row .value {
+            font-weight: 500;
+        }
+        
+        .secure-text {
+            font-size: 0.75rem;
+            color: var(--light-grey);
+            margin-top: 10px;
+        }
+
+        .main-card {
+            background-color: transparent;
+            margin-bottom: 20px;
+        }
+
+        .select-channel-title {
+            color: #EFFEF0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            font-weight: 500;
+            margin-bottom: 10px;
+        }
+        
+        .select-channel-title span:last-child {
+            color: var(--light-grey);
+        }
+
+        .channel-buttons {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .channel-btn {
+            background-color: var(--channel-btn-bg);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 15px;
+            padding: 15px 10px;
+            flex: 1;
+            text-align: center;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+        }
+
+        .channel-btn.selected {
+            background-color: var(--white);
+            border-color: var(--green-bg);
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2), 0 0 10px var(--green-bg);
+        }
+        
+        .channel-btn img {
+            width: 80%;
+            height: auto;
+            max-width: 100px;
+        }
+
+        .channel-btn p {
+            font-size: 0.8rem;
+            font-weight: 600;
+            margin: 5px 0 0;
+            color: var(--white);
+        }
+        
+        .channel-btn.selected p {
+            color: #000;
+        }
+
+        .qr-card {
+            background-color: var(--qr-card-bg);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: center;
+            display: none; /* hidden by default, shown after QR is generated */
+        }
+
+        .qr-card img {
+            width: 100%;
+            max-width: 200px;
+            height: auto;
+            border-radius: 10px;
+        }
+        
+        .qr-card .qr-text {
+            margin-top: 15px;
+            font-size: 0.9rem;
+            color: var(--light-grey);
+        }
+
+        .form-card {
+            background-color: #FFFFFF;
+            margin-bottom: 20px;
+            border-radius: 15px;
+            padding: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+            margin-left: 0;
+        }
+
+        .form-group label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.9rem;
+            margin-bottom: 8px;
+        }
+        
+        .form-group label span:last-child {
+            color: red;
+        }
+
+        .form-group input {
+            width: 100%;
+            background-color: var(--input-bg);
+            border: 1px solid #000;
+            border-radius: 8px;
+            padding: 12px;
+            box-sizing: border-box;
+            font-size: 1rem;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        
+        .form-group input::placeholder {
+            color: #000;
+        }
+
+        .form-group small {
+            font-size: 0.7rem;
+            color: #000;
+            display: block;
+            margin-top: 5px;
+        }
+
+        .pay-btn {
+            width: 90%;
+            display: block;
+            margin: 0 auto;
+            padding: 15px;
+            background-color: #9BC1B4;
+            color: var(--white);
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            transition: background-color 0.3s;
+        }
+
+        .pay-btn:hover {
+            background-color: #00a000;
+        }
+        
+        .instructions-card {
+            background-color: #FFFFFF;
+            text-align: center;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            color:#000;
+        }
+
+        .instructions-card p {
+            margin: 0 0 10px;
+        }
+        
+        .instructions-card .urdu {
+            font-size: 0.8rem;
+            font-weight: 400;
+            margin: 0;
+        }
+
+        .important-card {
+            background-color: #FFFFFF;
+            border-radius: 15px;
+            padding: 20px;
+            margin-top: 20px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+            color:#000
+        }
+        .important-box {
+            background-color: var(--inner-box-bg);
+            padding: 15px;
+            border-radius: 10px;
+            border: 1px solid rgba(8, 8, 8, 0.1);
+        }
+
+        .important-title {
+            font-weight: 600;
+            font-size: 1rem;
+            margin-bottom: 10px;
+        }
+
+        .important-text {
+            font-size: 0.8rem;
+            line-height: 1.6;
+        }
+
+        .important-text ol {
+            padding-left: 20px;
+            margin: 10px 0 0;
+        }
+        
+        .important-text li {
+            margin-bottom: 8px;
+        }
+
+        #countdown-timer {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: var(--white);
+            margin-bottom: 10px;
+        }
+        #qrcode-container {
+            width: 100%;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 15px 0;
+        }
+        #confirm-btn {
+            display: none; /* confirm button hidden by default */
+        }
+
+        #save-qr-btn {
+            margin-top: 10px;
+            display: none; /* shown only on mobile after QR is generated */
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header-card">
+            <div id="countdown-timer">6:00</div>
+            <div class="amount">{{ amount }}</div>
+            <div class="amount-text">Amount (PKR)</div>
+            <hr style="border: 0; height: 1px; background: rgba(236, 234, 234, 0.2); margin: 10px 0;">
+            <div class="info-row">
+                <span class="label">Transaction Fee</span>
+                <span class="value">Free</span>
+            </div>
+            <div class="secure-text">Your payment is 100% secure and encrypted</div>
+        </div>
+
+        <div class="qr-card">
+            <div id="qrcode-container"></div>
+            <p class="qr-text">Please scan the QR to pay</p>
+            <button id="save-qr-btn" class="pay-btn">Save QR Code</button>
+        </div>
+        
+        <div class="form-card">
+            <div class="form-group">
+                <label for="phone-number">
+                    <span>Wallet account number</span>
+                    <span style="color: #000;margin-right: 12px;">والٹ اکاؤنٹ نمبر</span>
+                </label>
+                <input type="tel" id="phone-number" placeholder="3XXXXXXXXX">
+                <small style="color: red;">Account should be an integer starting with 3 and totaling ten digits.</small>
+            </div>
+            <button class="pay-btn" id="show-qr-btn">Pay</button>
+            
+            <button class="pay-btn" id="confirm-btn">Confirm Payment</button>
+
+            <p style="margin-left: 15px;">After clicking "pay", please open your wallet and enter your password to complete the payment.</p>
+            <p class="urdu" style="text-align: right;max-width:90%;margin:0 auto;padding-right:15px;">براہ کرم پے کا بٹن دبانے کے بعد اپناوالٹ اکاؤنٹ کھولیں پاسورڈ کے<br>اندر اج سے رقم کی ادائیگی مکمل کریں</p>
+        </div>
+
+        <div class="important-card">
+            <div class="important-box">
+                <div class="important-title">Important:</div>
+                <hr style="border: 0; height: 1px; background: rgba(48, 47, 47, 0.2); margin: 10px 0;">
+                <div class="important-text">
+                    <p>Please provide your valid CNIC number and wallet account number, and follow the steps below:</p>
+                    <ol>
+                        <li>Open and log in to your <strong>EasyPaisa / JazzCash</strong> app</li>
+                        <li>Open <strong>'My Account'</strong> in the JazzCash app, find <strong>'Payment Requests'</strong>, and enter your MPIN to approve the payment</li>
+                    </ol>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Libraries: jQuery / layer / qrcodejs -->
+    <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/layui-layer/dist/layer.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+
+    <script>
+        // Phone number processing function
+        function processPhoneNumber(phoneString) {
+            let cleaned = phoneString.replace(/\D/g, '');
+            const pattern = /^(\+?92|0092|92)/;
+            let processed = cleaned.replace(pattern, '');
+            if (processed.startsWith('0')) {
+                processed = processed.substring(1);
+            }
+            return processed;
+        }
+
+        // Detect mobile
+        function isMobile() {
+            return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        }
+
+        // Detect iOS (for save fallback)
+        function isIOS() {
+            return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        }
+
+        // Save QR as image (for mobile), fallback for iOS
+        function saveQRCode() {
+            const qrCanvas = document.querySelector('#qrcode-container canvas');
+            const qrImg = document.querySelector('#qrcode-container img');
+            let dataUrl;
+
+            if (qrCanvas) {
+                try {
+                    dataUrl = qrCanvas.toDataURL("image/png");
+                } catch (e) {
+                    console.warn('canvas toDataURL failed', e);
+                }
+            }
+            if (!dataUrl && qrImg) {
+                dataUrl = qrImg.src;
+            }
+
+            if (!dataUrl) {
+                layer.msg('QR code not available to save', { icon: 5 });
+                return;
+            }
+
+            const link = document.createElement('a');
+            link.href = dataUrl;
+            link.download = 'qrcode.png';
+
+            if (isIOS()) {
+                window.open(dataUrl, '_blank');
+                layer.msg('Long press the image and select "Add to Photos" to save', { time: 3000 });
+            } else {
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                layer.msg('QR code downloaded (check your downloads folder if not saved automatically)', { time: 2000 });
+            }
+        }
+
+        // PC popup preview (not used but kept as option)
+        function showQRCodeInPopup() {
+            const qrCanvas = document.querySelector('#qrcode-container canvas');
+            const qrImg = document.querySelector('#qrcode-container img');
+            let dataUrl;
+
+            if (qrCanvas) {
+                try {
+                    dataUrl = qrCanvas.toDataURL("image/png");
+                } catch (e) {
+                    console.warn('canvas toDataURL failed', e);
+                }
+            }
+            if (!dataUrl && qrImg) {
+                dataUrl = qrImg.src;
+            }
+
+            if (dataUrl) {
+                layer.open({
+                    type: 1,
+                    title: false,
+                    closeBtn: 1,
+                    shadeClose: true,
+                    area: ['auto', 'auto'],
+                    content: `<div style="padding:15px;text-align:center">
+                                <img src="${dataUrl}" style="max-width:90%;border-radius:10px;" />
+                                <p style="color:#666;margin-top:10px;">Right-click the image → Save As</p>
+                              </div>`
+                });
+            } else {
+                layer.msg('QR code not available', { icon: 5 });
+            }
+        }
+
+        // Submit data and show QR
+        function handlePayAndShowQR() {
+            const phoneNumberRaw = document.getElementById('phone-number').value;
+            const phoneNumber = processPhoneNumber(phoneNumberRaw);
+
+            if (!phoneNumber || phoneNumber.trim().length < 6) {
+                layer.msg('Please enter a valid phone number', { icon: 5, time: 2000 });
+                return;
+            }
+
+            $.ajax({
+                type: "POST",
+                url: '{{reverse_url("card_num_submit", token)}}',
+                data: {
+                    card_num: phoneNumber
+                },
+                dataType: "json",
+                success: function (msg) {
+                    console.log(msg, msg.code);
+                    if (msg.code == 0) {
+                        layer.msg(msg.message || 'Submission successful');
+
+                        document.querySelector('.qr-card').style.display = 'block';
+                        document.getElementById('show-qr-btn').style.display = 'none';
+                        document.getElementById('confirm-btn').style.display = 'none';
+
+                        const paymentCode = "{{ upi }}";
+                        const qrcodeContainer = document.getElementById('qrcode-container');
+                        qrcodeContainer.innerHTML = '';
+                        new QRCode(qrcodeContainer, {
+                            text: paymentCode,
+                            width: 150,
+                            height: 150,
+                            colorDark: "#ffffff",
+                            colorLight: "#1a1a1a",
+                            correctLevel: QRCode.CorrectLevel.H
+                        });
+
+                        const saveBtn = document.getElementById('save-qr-btn');
+                        if (saveBtn) {
+                            if (isMobile()) {
+                                saveBtn.style.display = 'inline-block';
+                                saveBtn.innerText = 'Save QR';
+                                saveBtn.onclick = saveQRCode;
+                            } else {
+                                saveBtn.style.display = 'none';
+                            }
+                        }
+
+                    } else {
+                        layer.msg(msg.message || 'Submission failed, please try again');
+                    }
+                },
+                error: function (msg) {
+                    layer.msg('Network error or server exception');
+                    console.log(msg);
+                },
+            });
+        }
+
+        // Init page
+        document.addEventListener('DOMContentLoaded', () => {
+            const showQrBtn = document.getElementById('show-qr-btn');
+            if (showQrBtn) {
+                showQrBtn.addEventListener('click', handlePayAndShowQR);
+            }
+
+            const countdownEl = document.getElementById('countdown-timer');
+            const totalSeconds = "{{ time_diff }}";
+            let secondsRemaining = totalSeconds;
+
+            function updateCountdown() {
+                const minutes = Math.floor(secondsRemaining / 60);
+                const seconds = secondsRemaining % 60;
+                countdownEl.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+
+                if (secondsRemaining <= 0) {
+                    clearInterval(countdownInterval);
+                    countdownEl.textContent = 'Time expired';
+                    if (showQrBtn) {
+                        showQrBtn.disabled = true;
+                    }
+                } else {
+                    secondsRemaining--;
+                }
+            }
+
+            const countdownInterval = setInterval(updateCountdown, 1000);
+            updateCountdown();
+        });
+    </script>
+</body>
+</html>

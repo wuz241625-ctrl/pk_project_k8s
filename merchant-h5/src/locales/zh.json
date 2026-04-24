@@ -1,0 +1,552 @@
+{
+  "order_total": "订单总数",
+  "successful_orders": "成功单数",
+  "failed_orders": "失败单数",
+  "success_rate": "成功率",
+  "transaction_amount": "交易金额",
+  "successful_amount": "成功金额",
+  "failed_amount": "失败金额",
+  "commission": "手续费",
+  "merchant_balance": "商户余额",
+  "frozen_balance": "商户余额冻结",
+  "login_out": "登出",
+  "statics": "恭喜发财",
+  "login": {
+    "title": "{system} 商户管理系统",
+    "username": "账号",
+    "password": "密码",
+    "googlecode": "谷歌密钥",
+    "login": "登录",
+    "capsLockOn": "Caps lock is On",
+    "tip": "提示",
+    "confirm": "确 定",
+    "validation": {
+      "username": "请输入账号",
+      "password": "密码不能少于6位数",
+      "passwordIllegal": "请勿使用非法字符",
+      "googlecode": "请输入6位谷歌密钥",
+      "googlecodeInvalid": "请输入正确的谷歌密钥"
+    }
+  },
+  "chart": {
+      "legend": "七日走势图",
+      "xAxis": ["一", "二", "三", "四", "五", "六", "七"]
+  },
+  "msg": {
+      "20000": "操作成功",
+      "80000": "登录失败",
+      "80001": "账号密码错误",
+      "80002": "账号已禁用，请联系管理员",
+      "80003": "谷歌验证码错误",
+      "80004": "添加失败",
+      "80005": "更新失败",
+      "80006": "删除失败",
+      "80007": "操作失败",
+      "80008": "账号已存在",
+      "80009": "费率设置错误",
+      "80010": "余额不足",
+      "80011": "代付异常",
+      "80012": "账户不存在或冻结，请联系管理员",
+      "80013": "请勿频繁操作",
+      "0": "操作失败",
+      "10000": "非法IP",
+      "10001": "数据格式错误",
+      "10002": "参数异常",
+      "10003": "参数不能为空",
+      "10004": "商户不存在",
+      "10005": "商户状态异常",
+      "10006": "签名错误",
+      "10007": "操作频繁",
+      "10008": "通道繁忙",
+      "10009": "网关错误",
+      "10010": "通道维护",
+      "10011": "金额错误",
+      "10012": "通道未激活",
+      "10013": "费率错误",
+      "10014": "下单失败",
+      "10015": "代付余额不足",
+      "10016": "Order does not exist",
+      "10017": "IFSC错误",
+      "10018": "更新upi错误",
+      "10019": "bank_record已存在记录",
+      "10020": "更新状态错误",
+      "10021": "解析失败",
+      "10022": "代付设置异常",
+      "10023": "商户代付设置异常",
+      "10024": "金额小数点后不为0",
+      "10025": "重复upi",
+      "10026": "代收代付对账锁定中，请稍后再试"
+},
+"balance": {
+    "table": {
+      "serialNumber": "流水号",
+      "merchantOrderNumber": "商户订单号",
+      "beforeChange": "变动前",
+      "changeAmount": "变动金额",
+      "afterChange": "变动后",
+      "time": "时间",
+      "type": "类型"
+    },
+    "types": {
+      "0": "代收",
+      "1": "代付",
+      "2": "提现",
+      "3": "佣金",
+      "4": "冻结",
+      "6": "手动",
+      "9": "代付驳回",
+      "10": "代付优惠"
+    },
+    "search": {
+      "serialNumber": "流水号",
+      "merchantOrderNumber": "商户订单号",
+      "amount": "金额",
+      "time": "时间",
+      "type": "类型"
+    },
+    "export": {
+      "header": ["流水号", "商户订单号", "变动前", "变动金额", "变动后", "时间", "类型"],
+      "filename": "代收流水表"
+    }
+  },
+  "ds": {
+    "table": {
+      "orderNumber": "订单编号",
+      "merchantNumber": "商家编号",
+      "orderAmount": "订单金额",
+      "status": "状态",
+      "gatewayNumber": "网关号",
+      "upi": "UPI",
+      "utr": "UTR",
+      "settlementAmount": "结算金额",
+      "fee": "手续费",
+      "orderTime": "下单时间",
+      "successTime": "成功时间",
+      "success": "成功：{count}",
+      "failure": "失败：{count}",
+      "successRate": "成功率：{rate}",
+      "processing": "处理中：{count}",
+      "processingAmount": "处理中金额：{amount}",
+      "totalAmount": "总额：{amount}"
+    },
+    "exportData": {
+        "tHeader": {
+          "order_number": "订单编号",
+          "merchant_number": "商户编号",
+          "order_amount": "订单金额",
+          "status": "状态",
+          "gateway_number": "网关编号",
+          "upi": "UPI",
+          "utr": "UTR",
+          "order_time": "下单时间",
+          "success_time": "成功时间",
+          "settlement_amount": "结算金额",
+          "fee": "手续费"
+        },
+        "filename": "代收订单信息"
+    },
+    "status": {
+      "0": "派单中",
+      "1": "待支付",
+      "2": "待确认",
+      "3": "回调中",
+      "4": "已完成",
+      "-1": "已取消"
+    },
+    "search": {
+      "orderNumber": "订单编号",
+      "merchantNumber": "商家编号",
+      "upi": "UPI",
+      "utr": "UTR",
+      "amount": "金额",
+      "gateway": "网关",
+      "status": "状态",
+      "orderTime": "下单时间",
+      "successTime": "成功时间",
+      "merchant_id": "商户id"
+    },
+    "export": {
+      "header": ["订单编号", "商家编号", "订单金额", "状态", "网关号", "UPI", "UTR", "下单时间", "成功时间", "结算金额", "手续费"],
+      "filename": "代收订单信息"
+    },
+    "copySuccess": "复制成功"
+  },
+  "df": {
+    "table": {
+      "orderNumber": "订单号",
+      "merchantNumber": "商户号",
+      "orderAmount": "订单金额",
+      "status": "状态",
+      "upi": "UPI",
+      "ifsc": "BANK CODE",
+      "gatewayNumber": "银行名称",
+      "utr": "UTR",
+      "paymentAccount": "收款账号",
+      "paymentName": "收款姓名",
+      "settlementAmount": "结算金额",
+      "fee": "费用",
+      "orderTime": "订单时间",
+      "successTime": "成功时间",
+      "voucher": "凭证",
+      "success": "成功：{count}",
+      "failure": "失败：{count}",
+      "successRate": "成功率：{rate}",
+      "processing": "处理中：{count}",
+      "processingAmount": "处理中金额：{amount}",
+      "totalAmount": "总额：{amount}",
+      "batch_payment": "批量代付",
+      "enter_google_code": "请输入谷歌验证码",
+      "viewVoucher": "查看凭证"
+    },
+    "exportData": {
+      "tHeader": {
+        "order_number": "订单编号",
+        "merchant_code": "商家编号",
+        "order_amount": "订单金额",
+        "status": "状态",
+        "channel_code": "网关号",
+        "bank_name": "银行名称",
+        "payment_name": "收款姓名",
+        "payment_account": "收款账号",
+        "payment_type": "收款类型",
+        "order_time": "下单时间",
+        "success_time": "成功时间",
+        "settlement_amount": "结算金额",
+        "poundage": "手续费"
+      },
+      "filename": "代付订单信息"
+    },
+    "dialog": {
+      "title": "查看凭证",
+      "singlePayment": "单笔代付"
+    },
+    "copySuccess": "复制成功",
+    "status": {
+      "0": "派单中",
+      "1": "待支付",
+      "2": "待确认",
+      "3": "回调中",
+      "4": "已完成",
+      "-1": "已取消",
+      "-2": "取消中",
+      "5": "处理中"
+    },
+    "search": {
+      "code": "订单编号",
+      "merchant_code": "商家编号",
+      "status": "状态",
+      "payment_name": "收款姓名",
+      "payment_account": "收款账号",
+      "payment_type": "收款类型",
+      "amount": "金额",
+      "channel_code": "网关",
+      "time_create": "下单时间",
+      "time_success": "成功时间"
+    },
+    "form": {
+      "orderAmount": "代付金额",
+      "ifsc": "BANK CODE",
+      "paymentBank": "银行名称",
+      "paymentAccount": "收款账号",
+      "paymentName": "收款姓名",
+      "googleVerification": "谷歌验证"
+    },
+    "placeholder": {
+      "orderAmount": "请输入代付金额",
+      "ifsc": "请输入BANK CODE",
+      "paymentBank": "请输入银行名称",
+      "paymentAccount": "请输入收款账号",
+      "paymentName": "请输入收款人姓名",
+      "googleVerification": "请输入谷歌验证码"
+    }
+  },
+  "button": {
+    "add": "添加",
+    "batchAdd": "批量添加",
+    "cancel": "取消",
+    "confirm": "确认"
+  },
+  "withdraw": {
+    "table": {
+      "orderNumber": "订单编号",
+      "orderAmount": "订单金额",
+      "status": "状态",
+      "usdtAddress": "USDT地址",
+      "orderTime": "下单时间",
+      "successTime": "成功时间",
+      "operation": "操作",
+      "copyAddress": "复制地址"
+    },
+    "exportData": {
+      "tHeader": {
+        "order_number": "订单号",
+        "order_amount": "订单金额",
+        "status": "状态",
+        "usdt_address": "USDT地址",
+        "order_time": "下单时间",
+        "completion_time": "完成时间"
+      },
+      "filename": "提现订单"
+    },
+    "dialog": {
+      "title": "提现",
+      "amount": "提现金额",
+      "address": "USDT地址",
+      "googleKey": "谷歌密钥",
+      "placeholderAmount": "请输入提现金额",
+      "placeholderAddress": "请输入USDT地址",
+      "placeholderGoogle": "请输入谷歌验证码",
+      "confirm": "确认",
+      "cancel": "取消"
+    },
+    "pagination": {
+      "total": "总计",
+      "sizes": "每页大小",
+      "prev": "上一页",
+      "pager": "页码",
+      "next": "下一页",
+      "jumper": "跳转"
+    },
+    "messages": {
+      "copySuccess": "复制成功",
+      "withdrawSubmitted": "提现已提交，请等待处理",
+      "inputError": "请输入正确的金额和谷歌验证码"
+    },
+    "status": {
+      "pending": "待处理",
+      "processing": "处理中",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "search": {
+      "code": "订单编号",
+      "status": "状态",
+      "amount": "金额",
+      "time_create": "下单时间",
+      "time_success": "成功时间"
+    }
+  },
+  "merchant": {
+    "addButton": "新增",
+    "channelDialog": {
+      "title": "通道设置",
+      "ratePlaceholder": "请输入费率",
+      "cancel": "取消",
+      "confirm": "确认",
+      "saveSuccess": "保存成功"
+    },
+    "dialog": {
+      "edit": "编辑",
+      "add": "新增",
+      "cellphone": "手机号",
+      "name": "姓名",
+      "cellphonePlaceholder": "请输入手机号",
+      "namePlaceholder": "请输入姓名",
+      "dfRate": "代付费率",
+      "dfRatePlaceholder": "请输入代付费率",
+      "feeDf": "单笔代付金额",
+      "feeDfPlaceholder": "请输入单代付金额",
+      "google": "谷歌验证码",
+      "googlePlaceholder": "请输入谷歌验证码",
+      "saveSuccess": "保存成功"
+    },
+    "table": {
+      "id": "ID",
+      "cellphone": "手机号",
+      "name": "姓名",
+      "balance": "余额",
+      "balanceFrozen": "冻结余额",
+      "dfStatus": "代付状态",
+      "status": "状态",
+      "registerTime": "注册时间",
+      "operation": "操作",
+      "channel": "通道",
+      "edit": "编辑"
+    },
+    "status": {
+      "1": "启用",
+      "0": "禁用"
+    },
+    "status1": {
+      "1": "已开启",
+      "0": "未启用"
+    },
+    "search": {
+      "id": "ID",
+      "cellphone": "手机号",
+      "name": "姓名",
+      "dfStatus": "代付状态",
+      "status": "状态",
+      "registerDate": "注册日期"
+    }
+  },
+  "ranking": {
+    "search": {
+      "channelCode": "通道ID",
+      "date": "日期"
+    },
+    "table": {
+      "id": "ID",
+      "cellphone": "手机号",
+      "name": "姓名",
+      "orderCount": "订单数",
+      "orderAmount": "订单金额",
+      "successOrderCount": "成功订单数",
+      "successAmount": "成功金额",
+      "successRate": "成功率",
+      "payoutAmount": "代付完成金额"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    },
+    "sort": {
+      "ascending": "升序",
+      "descending": "降序"
+    }
+  },
+  "setting": {
+    "balance": "余额",
+    "frozen_amount": "冻结金额",
+    "reset_password": "重置密码",
+    "google_key": "谷歌密钥",
+    "enter_google_code": "请输入谷歌验证码",
+    "new_password": "新密码",
+    "cancel": "取消",
+    "confirm": "确认",
+    "caps_lock": "大写锁定已打开",
+    "password": "密码",
+    "table": {
+      "code": "网关号",
+      "name": "名称",
+      "rate": "费率",
+      "limit": "限额",
+      "status": "状态",
+      "statusOpen": "开启中",
+      "statusMaintaining": "维护中"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    },
+    "totalCount": "总数："
+  },
+  "channel": {
+    "totalCount": "总数：",
+    "table": {
+      "code": "网关号",
+      "name": "名称",
+      "rate": "费率",
+      "limit": "限额",
+      "status": "状态",
+      "statusOpen": "开启中",
+      "statusMaintaining": "维护中"
+    },
+    "pagination": {
+      "sizeOptions": [10, 20, 50, 100]
+    }
+  },
+  "menu": {
+    "dashboard": "统计",
+    "collectionStats": "代收统计",
+    "paymentStats": "代付统计",
+    "balanceFlow": "余额流水",
+    "orderManagement": "订单管理",
+    "collectionOrders": "代收订单",
+    "paymentOrders": "代付订单",
+    "withdrawalOrders": "提现订单",
+    "merchantManagement": "下级管理",
+    "merchantList": "下级列表",
+    "merchantRanking": "下级排名",
+    "systemSettings": "系统设置",
+    "channelInfo": "通道信息",
+    "personalInfo": "个人资料",
+    "errorPages": {
+      "404": "404 页面未找到",
+      "401": "401 未授权"
+    }
+  },
+  "search": {
+    "code": "订单编号",
+    "upi": "UPI",
+    "utr": "UTR",
+    "amount": "金额",
+    "channel_code": "网关",
+    "status": "状态",
+    "time_create": "下单时间",
+    "time_success": "成功时间",
+    "select_placeholder": "请选择",
+    "input_placeholder": "请输入",
+    "range_separator": "至",
+    "start_placeholder_date": "开始日期",
+    "end_placeholder_date": "结束日期",
+    "start_placeholder_datetime": "开始时间",
+    "end_placeholder_datetime": "结束时间",
+    "search_button": "查询",
+    "reset_button": "重置",
+    "export_button": "导出",
+    "id": "ID",
+    "cellphone": "手机号",
+    "name": "姓名",
+    "payment": "代付",
+    "registration_date": "注册日期",
+    "disabled": "禁用",
+    "enabled": "启用",
+    "not_opened": "未开启",
+    "opened": "已开启",
+    "channel_id": "通道ID",
+    "date": "日期",
+    "merchant_code": "商户订单号",
+    "record_type": "类型",
+    "timeRangeExceedDays": "时间范围不能超过31天"
+  },
+  "pagination": {
+    "layout": "total, sizes, prev, pager, next, jumper",
+    "page": "页",
+    "page_size": "每页条数",
+    "total": "总计",
+    "prev": "上一页",
+    "next": "下一页",
+    "jumper": "跳至"
+  },
+  "method": {
+    "enterGoogleCode": "请输入6位谷歌验证码",
+    "prompt": "提示",
+    "confirmReset": "确认重置",
+    "cancel": "取消",
+    "resetSuccess": "重置成功",
+    "confirmCheck": "确认查看",
+    "checkSuccess": "验证码已显示",
+    "copySuccess": "复制成功",
+    "pleaseFillCorrectContent": "请填写正确内容",
+    "submitSuccess": "提交成功",
+    "fileIncorrect": "文件不正确",
+    "uploadFileSizeError": "上传文件大小不能超过1M",
+    "pleaseSelectFile": "请选择文件",
+    "incorrectGoogleCode": "请输入正确的谷歌验证码",
+    "allSubmitSuccess": "全部提交成功",
+    "submitFail": "条提交失败",
+    "saveSuccess": "保存成功",
+    "phone": "手机",
+    "name": "姓名"
+  },
+  "upload": {
+    "dragAndDrop": "拖动文件到此处，或者",
+    "selectFile": "选择文件",
+    "onlyOneFile": "只支持单个文件！",
+    "invalidFileType": "只支持 .xlsx, .xls, .csv 文件",
+    "loading": "加载中...",
+    "placeholder": "请选择文件"
+  },
+  "datepicker": {
+      "startTime": "开始时间",
+      "endTime": "结束时间",
+      "today": "今天",
+      "yesterday": "昨天",
+      "thisWeek": "一周",
+      "thisMonth": "本月",
+      "lastMonth": "上月",
+      "rangeSeparator": "至",
+      "startPlaceholder": "开始日期",
+      "endPlaceholder": "结束日期"
+    }
+
+}

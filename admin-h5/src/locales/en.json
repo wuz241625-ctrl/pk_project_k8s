@@ -1,0 +1,3238 @@
+{
+    "msg": {
+        "20000": "Operation Successful",
+        "60000": "Login Failed",
+        "60001": "Account Password Error",
+        "60002": "Account Disabled, Please Contact Administrator",
+        "60003": "Google auth code Error",
+        "60004": "Addition Failed",
+        "60005": "Update Failed",
+        "60006": "Deletion Failed",
+        "60007": "Operation Failed",
+        "60008": "ID Already Exists",
+        "60009": "Order Test Exception",
+        "60010": "Please Do Not Operate Frequently",
+        "60011": "Insufficient Balance",
+        "60012": "Failed to Change Balance",
+        "60013": "Rate Setting Error",
+        "60014": "No Bank Record",
+        "60015": "Failed to Deduct Partner Balance",
+        "60016": "Failed to Deduct Merchant Balance",
+        "60017": "Refund Failed",
+        "60018": "Record Already Exists, Please Do Not Upload Again",
+        "60019": "Bank Card Not Verified",
+        "60020": "Bank Card Not Enabled",
+        "60021": "Partner Not Verified",
+        "60022": "Partner Not Activated",
+        "60023": "Not allowed to be assigned to external payment",
+        "60024": "Order revert failed, the remaining amount shoud be clean",
+        "60032": "Someone is Already Operating, Please Wait",
+        "60033": "No Information for This Card",
+        "60034": "Partner Does Not Exist or Not Activated",
+        "60035": "Partner Deposit Insufficient, Please Replenish Deposit",
+        "60036": "Order Does Not Exist",
+        "60037": "Deposit Ratio Error",
+        "60038": "The Minimum Collection Amount Cannot Be Less Than 0",
+        "60039": "The Maximum Collection Amount Cannot Be Less Than 0",
+        "60040": "The Minimum Collection Amount Cannot Be Greater Than or Equal to the Maximum Collection Amount",
+        "60041": "Partner Ranking Can Only Be Clicked Once Every 30 Seconds",
+        "60042": "Bank Ranking Can Only Be Clicked Once Every 10 Seconds",
+        "60370": "This phone number does not belong to a JazzCash account",
+        "60371": "This phone number does not belong to a EasyPaisa account",
+        "60206": "Registration Failed",
+        "60211": "Superior ID Error",
+        "60212": "Current Partner or Subordinate Still Has Orders",
+        "60213": "Current Partner Migration Failed",
+        "60214": "Current Partner Migration Successful",
+        "60215": "Current Partner Not Allowed to Migrate to Their Own Subordinate",
+        "60216": "Migrating Partner ID Does Not Exist",
+        "60217": "Partner Migration in Progress, Unable to Perform This Operation",
+        "60218": "Third-party Payment Does Not Exist, Unable to Perform This Operation",
+        "60219": "Third-party Payment Not Activated, Unable to Perform This Operation",
+        "60221": "Channel Number Does Not Exist",
+        "60222": "Event rule error",
+        "60224": "There can only be one lottery event",
+        "60225": "The permission operation of the current user Level is incorrect.",
+        "60226": "You cannot edit or delete other operations other than those you added.",
+        "60227": "Add failed - parameter passing error.",
+        "60228": "Add failed - data was not added successfully.",
+        "60229": "Update failed - parameter passing error.",
+        "60230": "Update failed - administrator does not exist.",
+        "60231": "Update failed - data has not changed.",
+        "60232": "Delete failed - administrator does not exist.",
+        "60233": "Delete failed - data deletion abnormality.",
+        "60234": "Delete failed - parameter passing error.",
+        "60301": "he time range for placing an order cannot exceed 31 days.",
+        "60302": "It is forbidden to add IPs containing the 127.0.0.* segment.",
+        "60303": "This order is not filled in with UTR and cannot be replenished",
+        "60304": "UPI already exists",
+        "60306": "The UTR has been called back and cannot be filled in repeatedly",
+        "60307": "UTR format error",
+        "60308": "Phone format error",
+        "60314": "Inner bank forbid",
+        "60324": "Missing required parameters",
+        "60325": "Split amount must be greater than 0",
+        "60326": "Order is being processed, please do not operate frequently",
+        "60327": "Parent order not found",
+        "60328": "Order status does not allow splitting. Only parent orders with status 'Dispatching (0)' can be split.",
+        "60329": "Split amount is too large; total sub-order amount cannot exceed parent order amount",
+        "60330": "Failed to update parent order status",
+        "60331": "Failed to insert sub-order",
+        "60332": "Order split successful",
+        "60333": "Order split failed. Please contact administrator. Exception details",
+        "60336": "Order status does not allow release",
+        "60335": "No Rights",
+        "60334": "Please select a time range within 31 days",
+        "60340": "Decimal range configuration invalid, minimum value should be less than maximum value, and range should be between -0.99 and 0.99",
+        "60350": "This transaction ID has already been called back in an order.",
+        "60360": "This transaction ID is invalid.",
+        "10000": "Illegal IP",
+        "10001": "Data format error",
+        "10002": "Parameter exception",
+        "10003": "Parameter cannot be empty",
+        "10004": "Merchant does not exist",
+        "10005": "Merchant status exception",
+        "10006": "Signature error",
+        "10007": "Exec frequent",
+        "10008": "Channel congestion",
+        "10009": "Gateway error",
+        "10010": "Channel maintenance",
+        "10011": "Amount error",
+        "10012": "Channel Inactive",
+        "10013": "Rate error",
+        "10014": "Order Submission Failed",
+        "10015": "Insufficient payment balance",
+        "10016": "Order does not exist",
+        "10017": "IFSC error",
+        "10018": "Update UPI error",
+        "10019": "Record already exists in bank_record",
+        "10020": "Update status error",
+        "10021": "Parsing failed",
+        "10022": "Payment setting exception",
+        "10023": "Merchant payment setting exception",
+        "10024": "Amount not a valid decimal",
+        "10025": "Repeat upi",
+        "10026": "The collection and payment reconciliation is locked, please try again later",
+        "10027": "Collection blacklist IP banned",
+        "10028": "Collection blacklist user_id banned"
+    },
+    "noData": "No Data",
+    "title": "{system} Management System",
+    "usernamePlaceholder": "Account",
+    "passwordPlaceholder": "Password",
+    "googlecodePlaceholder": "Google Key",
+    "capsLockOn": "Caps lock is On",
+    "loginButton": "Login",
+    "dialogTitle": "Prompt",
+    "dialogConfirm": "Confirm",
+    "validation": {
+        "enterUsername": "Please Enter Account",
+        "passwordTooShort": "Password Cannot Be Less Than 6 Digits",
+        "illegalCharacters": "Please Do Not Use Illegal Characters",
+        "enterGoogleCode": "Please Enter 6-digit Google Key",
+        "invalidGoogleCode": "Please Enter the Correct Google Key"
+    },
+    "search": {
+        "refresh": "Refresh",
+        "selectPlaceholder": "Please Select",
+        "inputPlaceholder": "Please Enter",
+        "dateRangeSeparator": "To",
+        "startDate": "Start Date",
+        "endDate": "End Date",
+        "dateTimeRangeSeparator": "To",
+        "startTime": "Start Date",
+        "endTime": "End Date",
+        "query": "Query",
+        "reset": "Reset",
+        "export": "Export",
+        "exportBank": "Bank",
+        "exportMessage": "Generating, Please Wait Patiently, Do Not Click Repeatedly..."
+    },
+    "datePicker": {
+        "rangeSeparator": "To",
+        "startPlaceholder": "Start Date",
+        "endPlaceholder": "End Date",
+        "today": "Today",
+        "yesterday": "Yesterday",
+        "week": "One Week",
+        "thisMonth": "This Month",
+        "lastMonth": "Last Month"
+    },
+    "chart": {
+        "tooltipTitle": "Value",
+        "legendTitle": "Data Legend",
+        "seriesName": "Data Series",
+        "days": [
+            "七",
+            "六",
+            "五",
+            "四",
+            "三",
+            "Previous",
+            "Yesterday"
+        ]
+    },
+    "dashboard": {
+        "totalOrders": "Total Orders",
+        "successCount": "Number of Successes",
+        "failureCount": "Number of Failures",
+        "profit": "Profit",
+        "transactionAmount": "Transaction Amount",
+        "successAmount": "Successful Amount",
+        "failureAmount": "Failure Amount",
+        "poundage": "Service Fee"
+    },
+    "route": {
+        "refreshBalance": "Refresh Balance",
+        "dashboard": "Dashboard",
+        "collectionStats": "Receipt Statistics",
+        "paymentStats": "Payment Statistics",
+        "dataStats": "Data Statistics",
+        "balanceStats": "Balance Statistics",
+        "financeReport": "Financial Report",
+        "operationStats": "Operation Statistics",
+        "operationLog": "Operation Log",
+        "orderManagement": "Order Management",
+        "collectionOrder": "Receipt Orders",
+        "paymentOrder": "Payment Orders",
+        "partnerWithdrawOrder": "Partner Withdrawal Orders",
+        "partnerRechargeOrder": "Partner Recharge Orders",
+        "partnerUSDTRechargeOrder": "Partner USDT Recharge Orders",
+        "partnerTransferOrder": "Partner Transfer Orders",
+        "merchantWithdrawOrder": "Merchant Withdrawal Orders",
+        "fundsFlow": "Capital Flow",
+        "systemCardFlow": "System Card Flow",
+        "transferFlow": "Transfer flow",
+        "withdrawFlow": "Withdrawal flow"
+    },
+    "shmsye": {
+        "time": "Time",
+        "total": "Real-time Total",
+        "merchant": "Merchant Balance",
+        "merchantFrozen": "Merchant Frozen Balance",
+        "partner": "Partner Balance",
+        "partnerFrozen": "Partner Frozen Balance",
+        "partnerDeposit": "Partner Deposit",
+        "insidePartner": "Internal Partner Balance",
+        "insidePartnerFrozen": "Internal Partner Frozen Balance",
+        "outsidePartner": "External Partner Balance",
+        "outsidePartnerFrozen": "External Partner Frozen Balance"
+    },
+    "cwbb": {
+        "ds": {
+            "amountType": {
+                "collection": "Collection",
+                "payment": "Payment",
+                "withdrawal": "Withdrawal",
+                "commission": "Commission",
+                "freeze": "Freeze",
+                "deposit": "Deposit",
+                "manual": "Manual",
+                "rejected_payment": "Payment Rejected",
+                "topUp": "Top-up",
+                "transfer": "Transfer"
+            },
+            "changeType": {
+                "merchant_balance": "Partner Balance",
+                "store_balance": "Merchant Balance"
+            },
+            "form": {
+                "date": "Date",
+                "balance_type": "Balance Type",
+                "change_type": "Change Type",
+                "amount": "Change Amount"
+            },
+            "export": {
+                "date": "Date",
+                "amount_type": "Amount Type",
+                "change_type": "Change Type",
+                "change_amount": "Change Amount",
+                "financial_daily_report": "Financial Daily Report"
+            }
+        },
+        "button": {
+            "copyTotalChangeAmount": "Total Change Amount",
+            "copyMerchantBalance": "Merchant Balance",
+            "copyPartnerBalance": "Partner Balance"
+        },
+        "table": {
+            "date": "Date",
+            "amountType": "Amount Type",
+            "changeType": "Change Type",
+            "changeAmount": "Change Amount"
+        },
+        "pagination": {
+            "total": "Total Count",
+            "sizes": "Items per Page",
+            "prev": "Previous Page",
+            "pager": "Page Number",
+            "next": "Next Page",
+            "jumper": "go to"
+        }
+    },
+    "glyczxt": {
+        "ds": {
+            "form": {
+                "id": "ID",
+                "time": "Time"
+            }
+        },
+        "table": {
+            "adminId": "Admin ID",
+            "changeCount": "Number of Balance Modifications",
+            "changeAmount": "Amount of Balance Modifications",
+            "transferCount": "Number of transfer processed",
+            "transferAmount": "Amount of transfer processed",
+            "rechargeCount": "Number of Recharge Transactions Processed",
+            "rechargeAmount": "Amount of Recharge Transactions Processed",
+            "withdrawCount": "Number of Withdrawal Transactions Processed",
+            "withdrawAmount": "Amount of Withdrawal Transactions Processed",
+            "ds": "Collection of additional order",
+            "df": "Processing Payments"
+        }
+    },
+    "czrz": {
+        "ds": {
+            "form": {
+                "id": "ID",
+                "admin_id": "Admin ID",
+                "time_create": "Date",
+                "type": "Operation Type",
+                "ip": "IP Address"
+            },
+            "statusType": {
+                "dispatching": "Dispatching"
+            },
+            "export": {
+                "order_id": "Order ID",
+                "filename": "Export File"
+            }
+        },
+        "operateStatistics": {
+            "table": {
+                "adminId": "Admin ID",
+                "changeCount": "Number of Balance Modifications",
+                "changeAmount": "Amount of Balance Modifications",
+                "transferCount": "Number of transfer processed",
+                "transferAmount": "Amount of transfer processed",
+                "rechargeCount": "Number of Recharge Transactions Processed",
+                "rechargeAmount": "Amount of Recharge Transactions Processed",
+                "withdrawCount": "Number of Withdrawal Transactions Processed",
+                "withdrawAmount": "Amount of Withdrawal Transactions Processed",
+                "ds": "Collection of additional order",
+                "df": "Processing Payments"
+            }
+        }
+    },
+    "Mstxdd": {
+        "ds": {
+            "form": {
+                "id": "Order Number",
+                "status": "Status",
+                "partner_id": "Partner ID",
+                "admin_id": "Operator ID",
+                "amount": "Amount",
+                "time_create": "Order Time",
+                "time_success": "Completion Time"
+            },
+            "statusType": {
+                "dispatching": "Pending",
+                "processing": "Processing",
+                "completed": "Completed",
+                "cancelled": "Cancelled"
+            },
+            "paymentType": {
+                "system_payment": "System Payment",
+                "agent_dispatch": "Agent Dispatch",
+                "code_merchant_recharge": "Partner Recharge Order",
+                "merchant_recharge": "Merchant Recharge"
+            },
+            "export": {
+                "order_id": "Order Number",
+                "partner_id": "Partner ID",
+                "admin_id": "Admin ID",
+                "amount": "Order Amount",
+                "status": "Status",
+                "payment_type": "Payout Method",
+                "amount_success": "Successful Payout Amount",
+                "amount_order": "Payout in Progress Amount",
+                "orders": "Payout Order Number",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "filename": "Partner Payment Order"
+            },
+            "completionTime": {
+                "green": "Green (within 5 minutes)",
+                "blue": "Blue (5-10 minutes)",
+                "yellow": "Yellow (10-15 minutes)",
+                "red": "Red (more than 15 minutes)"
+            }
+        },
+        "form": {
+            "serial_number": "Order Number",
+            "status": "Status",
+            "user_id": "Partner ID",
+            "admin_id": "Operator ID",
+            "total_amount": "Amount",
+            "usdt_amount": "USDT",
+            "top_partner_id": "Top Partner ID",
+            "created_at": "Order Time",
+            "paid_at": "Completion Time"
+        },
+        "statusType": {
+            "0": "Pending",
+            "1": "Processing",
+            "2": "Completed",
+            "-1": "Cancelled"
+        },
+        "export": {
+            "serial_number": "Order Number",
+            "user_id": "Partner ID",
+            "admin_id": "Admin ID",
+            "total_amount": "Order Amount",
+            "status": "Status",
+            "bonus_rate": "Bonus Rate",
+            "bonus": "Bonus",
+            "currency_amount": "Rupee Amount",
+            "usdt_amount": "USDT",
+            "exchange_rate": "Rate",
+            "address": "Receipt Address",
+            "block_chain": "Blockchain",
+            "created_at": "Order Time",
+            "paid_at": "Completion Time",
+            "updated_at": "Update Time",
+            "filename": "Partner USD Recharge Order"
+        },
+        "buttons": {
+            "success": "Success",
+            "fail": "Failure",
+            "rate": "Success Rate",
+            "processing": "Processing",
+            "processingAmount": "Processing Amount",
+            "amount": "Total Amount",
+            "payment": "Payout",
+            "confirmFinish": "Confirm Completion",
+            "reject": "Reject",
+            "cancel": "Cancel",
+            "confirm": "Confirm"
+        },
+        "columns": {
+            "orderId": "Order Number",
+            "partnerId": "Partner ID",
+            "adminId": "Admin ID",
+            "amount": "Order Amount",
+            "status": "Status",
+            "paymentCodes": "Payout Order",
+            "amountOrder": "Payout Amount",
+            "amountSuccess": "Successful Payout Amount",
+            "paymentFailCodes": "Failed Payout Order",
+            "account": "Receipt Account",
+            "name": "Receipt Name",
+            "type": "Account Type",
+            "timeCreate": "Order Time",
+            "timeSuccess": "Completion Time",
+            "operations": "Operation"
+        },
+        "dialogs": {
+            "payment": "Payout"
+        },
+        "labels": {
+            "orderCode": "Order Number",
+            "amount": "Amount",
+            "paymentAmount": "Payout Amount"
+        },
+        "placeholders": {
+            "enterPaymentAmount": "Please Enter Payment Amount"
+        }
+    },
+    "tdsz": {
+        "refreshButton": "Refresh",
+        "hasDecimal": "Has Decimal",
+        "decimalRange": "Decimal Range",
+        "total": "Total Count",
+        "orderTest": "Order Test",
+        "gatewayNumber": "Gateway Number",
+        "name": "Name",
+        "merchantRate": "Partner Rate",
+        "is_show_qr": "show qr",
+        "yes": "show",
+        "no": "hide",
+        "hierarchyRate": "Tier Rate",
+        "quota": "Limit",
+        "actions": "Operation",
+        "edit": "Edit",
+        "close": "Close",
+        "enable": "Enable",
+        "fixedAmount": "Fixed Amount",
+        "enterAccount": "Please Enter Account",
+        "enterName": "Please Enter Name",
+        "enterMerchantRate": "Please Enter Partner Rate",
+        "enterHierarchyRate": "Please Enter Tier Rate, Use Comma to Separate",
+        "enterFixedAmount": "Please Enter Fixed Amount",
+        "minAmount": "Minimum Amount",
+        "enterMinAmount": "Please Enter Minimum Amount",
+        "maxAmount": "Maximum Amount",
+        "enterMaxAmount": "Please Enter Maximum Amount",
+        "selectThirdParty": "Select Third-Party",
+        "switchAll": "One-Click Switch",
+        "cancel": "Cancel",
+        "confirm": "Confirm",
+        "test": "Test",
+        "merchant": "Merchant",
+        "enterMerchant": "Please Enter Merchant Number",
+        "channel": "Channel",
+        "selectChannel": "Please Select Channel",
+        "amount": "Amount",
+        "enterAmount": "Please Enter Amount",
+        "placeOrder": "Place Order",
+        "ip": "ip",
+        "user_id": "user_id"
+    },
+    "Vip": {
+        "table": {
+            "vipLevel": "VIP Level",
+            "balanceLimit": "Balance Limit",
+            "dsMin": "Minimum Collection Amount",
+            "dsMax": "Maximum Collection Amount",
+            "dfMin": "Minimum Payment Amount",
+            "dfMax": "Maximum Payment Amount",
+            "topCard": "Number of Activatable Cards",
+            "depositRatio": "Deposit Ratio",
+            "action": "Operation",
+            "edit": "Edit"
+        },
+        "dialog": {
+            "editTitle": "Edit",
+            "vipLevel": "VIP Level",
+            "balanceLimit": "Balance Limit",
+            "dsMin": "Minimum Collection Amount",
+            "dsMax": "Maximum Collection Amount",
+            "dfMin": "Minimum Payment Amount",
+            "dfMax": "Maximum Payment Amount",
+            "topCard": "Number of Activatable Cards",
+            "depositRatio": "Deposit Ratio",
+            "placeholder": "Please Enter",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "depositTip": "Deposit is a percentage of the balance limit; please enter 1-99"
+        }
+    },
+    "qtsz": {
+        "form": {
+            "dfRate": "Payment Rate",
+            "bulletin": "Announcement Information",
+            "customerService": "Customer Service Information",
+            "customerServicePlaceholder": "Please enter customer service TG, separated by commas",
+            "publicAccountSetting": "Public Account Settings",
+            "publicAccountSettingPlaceholder": "Please enter payment information, separated by commas",
+            "dfSwitch": "Payment Master Switch",
+            "dfExpiredSwitch": "Payment Expiry Switch (auto-expiry when on)",
+            "usdtRate": "USDT Rate",
+            "usdtSwitch": "USDT Switch",
+            "usdtBonusRate": "USDT Bonus Ratio",
+            "googleCode": "Google Verification Code",
+            "placeholder": "Please Enter",
+            "save": "Save",
+            "setWeight": "Set Weight",
+            "weightDescription": "(Overall order acceptance probability for this weight, single code acceptance probability)",
+            "newCode": "New Code",
+            "priority": "Priority Dispatch",
+            "weightGreater": "Weight >=",
+            "unit": "Pieces",
+            "setWeightPlaceholder": "Please Set Weight"
+        }
+    },
+    "apihmd": {
+        "form": {
+            "ipList": "IP List",
+            "ipPlaceholder": "Please Enter IP Address",
+            "googleCode": "Google Verification Code",
+            "googleCodePlaceholder": "Please Enter Google Verification Code",
+            "save": "Save"
+        }
+    },
+    "role": {
+        "form": {
+            "addRole": "Add Role",
+            "roleKey": "Role Identifier",
+            "roleKeyPlaceholder": "Please Enter Role Identifier",
+            "roleName": "Role Name",
+            "roleNamePlaceholder": "Please Enter Role Name",
+            "roleDescription": "Role Description",
+            "roleDescriptionPlaceholder": "Please Enter Role Description or Remarks",
+            "parentRole": "Parent Role",
+            "parentRolePlaceholder": "Please select the parent role",
+            "encryption": "Is Encrypted",
+            "permissions": "Permissions",
+            "edit": "Edit",
+            "delete": "Delete",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "dialogTitleAdd": "Add New",
+            "dialogTitleEdit": "Edit",
+            "operation": "Operation"
+        }
+    },
+    "member": {
+        "form": {
+            "addMember": "Add Member",
+            "id": "ID",
+            "account": "Account",
+            "name": "Name",
+            "googleKey": "Google Key",
+            "role": "Role",
+            "updateTime": "Update Time",
+            "createTime": "Creation Time",
+            "operation": "Operation",
+            "edit": "Edit",
+            "enable": "Enable",
+            "disable": "Disable",
+            "delete": "Delete",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "resetKey": "Reset Key",
+            "password": "Password",
+            "passwordPlaceholder": "Password",
+            "capsLockOn": "Caps Lock Is On",
+            "selectRole": "Please Select Role",
+            "rolePlaceholder": "Please Select Role",
+            "promotionId": "Please Select Role"
+        }
+    },
+    "Yhpm": {
+        "ds": {
+            "form": {
+                "channel_code": "Channel ID",
+                "time_create": "Date"
+            },
+            "export": {
+                "order_id": "Order Number",
+                "filename": "Export Filename"
+            },
+            "column": {
+                "order_count": "Order Count",
+                "order_amount": "Order Amount",
+                "success_order_count": "Successful Order Count",
+                "success_amount": "Successful Amount",
+                "success_rate": "Success Rate"
+            }
+        },
+        "form": {
+            "bankName": "Bank Name",
+            "orderCount": "Order Count",
+            "orderAmount": "Order Amount",
+            "successOrderCount": "Successful Order Count",
+            "successAmount": "Successful Amount",
+            "successRate": "Success Rate",
+            "search": "Search",
+            "export": "Export",
+            "pageSize": "Items per Page",
+            "currentPage": "Current Page",
+            "total": "Total"
+        }
+    },
+    "Shpm": {
+        "form": {
+            "channel_code": "Channel ID",
+            "time_create": "Date"
+        },
+        "columns": {
+            "balance": "Balance",
+            "count": "Order Count",
+            "amount": "Order Amount",
+            "success_count": "Successful Order Count",
+            "success_amount": "Successful Amount",
+            "rate": "Success Rate"
+        },
+        "table": {
+            "id": "ID",
+            "phone": "Phone Number",
+            "name": "Name",
+            "balance": "Balance",
+            "count": "Order Count",
+            "amount": "Order Amount",
+            "success_count": "Successful Order Count",
+            "success_amount": "Successful Amount",
+            "rate": "Success Rate"
+        },
+        "pagination": {
+            "total": "Total",
+            "page_size": "Items per Page",
+            "current_page": "Current Page"
+        }
+    },
+    "event": {
+        "form": {
+          "id": "event ID",
+          "id_placeholder": "Please enter event ID",
+          "title": "title",
+          "title_placeholder": "Please enter title",
+          "content": "event content",
+          "content_placeholder": "Please enter content",
+          "type": "event type",
+          "type_placeholder": "Please enter event type",
+          "participant": "participant",
+          "participant_placeholder": "Please enter participant (-1 all user)",
+          "status": "status",
+          "status_placeholder": "Please enter status",
+          "begin_at": "begin time",
+          "begin_at_placeholder": "Please enter begin time",
+          "end_at": "end time",
+          "end_at_placeholder": "Please enter end time",
+          "is_app_show": "是否在app显示",
+          "is_app_show_placeholder": "请选择是否在app显示"
+        },
+        "columns": {
+          "id": "event ID",
+          "title": "title",
+          "content": "event content",
+          "type": "event type",
+          "participant": "participant",
+          "status": "status",
+          "is_app_show": "is show",
+          "begin_at": "begin time",
+          "end_at": "end time",
+          "created_at": "create time",
+          "confirm": "confirm",
+          "cancel": "cancle"
+        },
+        "button": {
+          "add": "add",
+          "edit": "edit",
+          "disable": "disable",
+          "enable": "enable",
+          "delete": "delete"
+        },
+        "status": {
+          "disable": "disable",
+          "enable": "enable",
+          "all_user": "all user"
+        },
+        "is_app_show": {
+            "disable": "hidden",
+            "enable": "show"
+        }
+      },
+    "eventRule": {
+        "form": {
+          "id": "rule ID",
+          "id_placeholder": "Please enter rule ID",
+          "prize_id": "event ID",
+          "prize_id_placeholder": "Please enter event ID",
+          "title": "rule title",
+          "title_placeholder": "Please enter rule title",
+          "money": "money",
+          "money_placeholder": "Please enter money",
+          "prize_limit_min": "rule limit min",
+          "prize_limit_min_placeholder": "Please enter rule limit min value",
+          "prize_limit_max": "rule limit max",
+          "prize_limit_max_placeholder": "Please enter rule limit max value",
+          "ratio": "ratio",
+          "ratio_placeholder": "Please enter ratio",
+          "prize_type": "prize type",
+          "prize_type_placeholder": "Please select the prize type",
+          "status": "status",
+          "status_placeholder": "Please select status"
+        },
+        "columns": {
+          "id": "rule ID",
+          "prize_id": "event ID",
+          "prize_title": "event title",
+          "prize_limit_min": "rule limit min",
+          "prize_limit_max": "rule limit max",
+          "title": "rule title",
+          "money": "money",
+          "prize_type": "prize type",
+          "ratio": "ratio",
+          "status": "status",
+          "created_at": "create time",
+          "updated_at": "update time",
+          "confirm": "confirm",
+          "cancel": "cancel"
+        },
+        "button": {
+          "add": "add",
+          "edit": "edit",
+          "disable": "disable",
+          "enable": "enable",
+          "delete": "delete"
+        },
+        "status": {
+          "disable": "disable",
+          "enable": "enable",
+          "all_user": "all user"
+        }
+      },
+    "eventLog": {
+        "columns": {
+          "id": "log ID",
+          "user_id": "partner ID",
+          "prize_id": "event ID",
+          "prize_title": "event title",
+          "money": "money",
+          "remark": "remark",
+          "created_at": "create time"
+        },
+        "status": {
+          "disable": "disable",
+          "enable": "enable",
+          "all_user": "all user"
+        }
+      },
+    "eventPoolLog": {
+        "pool_amount": "pool amount",
+        "form": {
+            "amount": "add pool amount",
+            "amount_placeholder": "Please enter amount"
+        },
+        "columns": {
+            "id": "ID",
+            "code": "code",
+            "record_type": "record type",
+            "user_id": "partner ID",
+            "change_before": "change before amount",
+            "amount": "amount",
+            "change_after": "change after amount",
+            "remark": "remark",
+            "created_at": "create time"
+        },
+        "button": {
+            "add": "add",
+            "edit": "edit",
+            "disable": "disable",
+            "enable": "enable",
+            "delete": "delete"
+        },
+        "status": {
+            "disable": "disable",
+            "enable": "enable"
+        }
+    },
+    "eventChance": {
+        "button": {
+            "add": "Add Chance",
+            "viewLog": "View Log",
+            "cancel": "Cancel",
+            "confirm": "Confirm"
+        },
+        "columns": {
+            "id": "ID",
+            "user_id": "User ID",
+            "chance_num": "Chances",
+            "created_at": "Created At",
+            "updated_at": "Updated At",
+            "operation": "Operation",
+            "log_id": "Log ID",
+            "prize_id": "Event ID",
+            "before_num": "Before",
+            "num": "Change",
+            "after_num": "After",
+            "remark": "Remark"
+        },
+        "dialog": {
+            "addTitle": "Add Draw Chance",
+            "logTitle": "Chance Change Log"
+        },
+        "form": {
+            "user_id": "User ID",
+            "user_id_placeholder": "Please input user ID",
+            "add_num": "Add Number",
+            "add_num_placeholder": "Please input number to add",
+            "remark": "Remark",
+            "remark_placeholder": "Please input remark"
+        },
+        "search": {
+            "user_id": "User ID"
+        },
+        "message": {
+            "required": "Please fill in required fields",
+            "addSuccess": "Added successfully"
+        }
+    },
+    "eventBeginner": {
+        "columns": {
+            "id": "ID",
+            "prize_id": "Prize ID",
+            "partner_id": "Partner ID",
+            "top_parent_id": "Top Parent ID",
+            "pid": "Parent ID",
+            "is_finished": "Is Finished",
+            "is_awarded": "Is Awarded",
+            "prize_amount": "Prize Amount",
+            "time_awarded": "Time Awarded",
+            "time_register": "Time Register",
+            "time_set_trade_hash": "Time Set Trade Hash",
+            "time_watch_tutorial_videos": "Time Watch Tutorial Videos",
+            "time_order_success": "Time Order Success",
+            "create_at": "Create At"
+        }
+    },
+    "message": {
+        "button": {
+            "add": "Add Message",
+            "delete": "Delete",
+            "publish": "Publish",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "edit": "Edit"
+        },
+        "columns": {
+            "id": "ID",
+            "subject": "Subject",
+            "content": "Content",
+            "type": "Type",
+            "to_id": "Recipients",
+            "from_id": "Sender",
+            "status": "Status",
+            "send_time": "Send Time",
+            "created_at": "Created At",
+            "operation": "Operation"
+        },
+        "dialog": {
+            "addTitle": "Add Message",
+            "editTitle": "Edit Message"
+        },
+        "form": {
+            "subject": "Subject",
+            "subject_placeholder": "Please input subject",
+            "content": "Content",
+            "content_placeholder": "Please input content",
+            "type": "Type",
+            "type_placeholder": "Please select type",
+            "to_id": "Recipients",
+            "to_id_placeholder": "Please input recipient IDs, separate with commas, leave empty for all users",
+            "send_time": "Send Time",
+            "send_time_placeholder": "Please select send time"
+        },
+        "search": {
+            "subject": "Subject",
+            "type": "Type",
+            "send_time": "Send Time"
+        },
+        "type": {
+            "system": "System Notice",
+            "normal": "Service Message"
+        },
+        "status": {
+            "pending": "Pending",
+            "published": "Published",
+            "all_user": "All Users"
+        },
+        "message": {
+            "required": "Please fill in required fields",
+            "addSuccess": "Added successfully",
+            "deleteConfirm": "Confirm delete this message?",
+            "deleteSuccess": "Deleted successfully",
+            "publishConfirm": "Confirm publish this message?",
+            "publishSuccess": "Published successfully",
+            "warning": "Warning",
+            "updateSuccess": "Updated successfully"
+        }
+    },
+    "method": {
+        "status0": {
+            "enable": "Enable",
+            "disable": "Disable",
+            "confirm": "Confirm {status} this payment method?",
+            "title": "Warning",
+            "confirmButtonText": "Confirm",
+            "cancelButtonText": "Cancel",
+            "success": "{status} successful"
+        },
+        "logout": "Logout",
+        "release_confirm": "Confirm releasing this order back to “Dispatching”? This will revoke the current assignment and trigger redistribution.<br />If payment may already be in progress, reconciliation could be at risk. Please proceed cautiously.",
+        "release_success": "Released successfully",
+        "app": {
+            "name": "App Name",
+            "versionCode": "Version Code",
+            "version": "Version",
+            "domainName": "Spread Domain Name",
+            "fileUrl": "External Download Page",
+            "download": "Download Address",
+            "isForce": "Force Update",
+            "describe": "Update Description",
+            "isSilence": "Silent Update",
+            "packageType": "Full Package Update",
+            "google": "Google Verification Code",
+            "save": "Save",
+            "customerService": "Customer Service Interface",
+            "placeholder": {
+                "name": "Please enter app name",
+				"versionCode": "Please enter version code",
+				"version": "Please enter version",
+				"domainName": "Please enter Spread domain name",
+				"fileUrl": "Please enter external download page URL",
+				"download": "Please enter app download URL",
+				"describe": "Please enter update description",
+                "google": "Please Enter Google Verification Code",
+                "customerService": "Please Enter Customer Service Interface"
+            }
+        },
+        "successRate": {
+            "balance": "Balance",
+            "success_count_15m": "15 minutes ",
+            "success_amount_15m": "15 minutes",
+            "rate_15m": "15 minutes (Success)",
+            "success_count_30m": "30 minutes ",
+            "success_amount_30m": "30 minutes",
+            "rate_30m": "30 minutes (Success)",
+            "success_count_60m": "60 minutes ",
+            "success_amount_60m": "60 minutes",
+            "rate_60m": "60 minutes (Success)",
+            "id": "ID",
+            "phone": "Phone Number",
+            "name": "Name",
+            "successOrders": "Successful Orders",
+            "successOrders15m": "15 minutes",
+            "successOrders30m": "30 minutes",
+            "successOrders60m": "60 minutes",
+            "successAmount": "Successful Amount",
+            "successAmount15m": "15 minutes",
+            "successAmount30m": "30 minutes",
+            "successAmount60m": "60 minutes",
+            "successRate": "Success Rate",
+            "successRate15m": "15 minutes (Success)",
+            "successRate30m": "30 minutes (Success)",
+            "successRate60m": "60 minutes (Success)"
+        },
+        "order": {
+            "status": {
+              "pending": "Pending",
+              "processing": "Processing",
+              "completed": "Completed",
+              "cancelled": "Cancelled"
+            },
+            "paymentType": {
+              "system": "System Payment",
+              "agency": "Agent Dispatch",
+              "merchantCode": "Partner Recharge",
+              "merchantRecharge": "Merchant Deposit"
+            },
+            "form": {
+              "orderNumber": "Order Number",
+              "status": "Status",
+              "partnerId": "Partner ID",
+              "adminId": "Admin ID",
+              "completionSpeed1": "Completion Speed",
+              "amount": "Amount",
+              "orderTime": "Order Time",
+              "successTime": "Success Time",
+              "completionSpeed": {
+                "green": "Green (within 5 minutes)",
+                "blue": "Blue (5-10 minutes)",
+                "yellow": "Yellow (10-15 minutes)",
+                "red": "Red (more than 15 minutes)"
+              }
+            },
+            "export": {
+              "header": ["Order Number", "Partner ID", "Admin ID", "Order Amount", "Status", "Payment Method", "Successful Payment Amount", "Payment in Progress Amount", "Payment Order Number", "Order Time", "Completion Time"],
+              "filename": "Partner Payment Order"
+            }
+        },
+        "dfdiscount": {
+            "googleCodeLength": "Please Enter 6-digit Google Auth code",
+            "emptyRangeAndDiscount": "Order Range and Discount Amount Cannot Be Empty (Order Amount Range {index})",
+            "positiveInteger": "Please Enter Positive Integer ({label})",
+            "rangeOverlap": "Order Amount Range Cannot Overlap, Please Check",
+            "minGreaterThanMax": "Minimum Amount Cannot Be Greater Than Maximum Amount (Order Amount Range {index})",
+            "positiveIntegerPrompt": "Entered Value Must Be Positive Integer Greater Than or Equal to 1, Please Re-enter",
+            "saveSuccess": "Save Successful",
+            "prompt": "Prompt",
+            "confirm": "Confirm",
+            "cancel": "Cancel"
+        },
+        "orderRange1": "Order Amount Range One",
+        "orderRange2": "Order Amount Range Two",
+        "orderRange3": "Order Amount Range Three",
+        "orderRange4": "Order Amount Range Four",
+        "orderRange5": "Order Amount Range Five",
+        "orderRange6": "Order Amount Range Six",
+        "discountAmount": "Discount Amount",
+        "isOpen": "Is Open",
+        "googleCode": "Google Verification Code",
+        "enterOrderAmountRange": "Please enter the order amount range",
+        "enterDiscountAmount": "Please enter the discount amount",
+        "enterGoogleCode": "Please enter the Google verification code",
+        "usdtOrderRange1": "USDT Order Amount Range One",
+        "usdtOrderRange2": "USDT Order Amount Range Two",
+        "usdtOrderRange3": "USDT Order Amount Range Three",
+        "usdtOrderRange4": "USDT Order Amount Range Four",
+        "usdtOrderRange5": "USDT Order Amount Range Five",
+        "usdtOrderRange6": "USDT Order Amount Range Six",
+        "saveButton": "Save",
+        "Shtxdd": {
+            "form": {
+                "code": "Order Number",
+                "status": "Status",
+                "merchant_id": "Merchant ID",
+                "amount": "Amount",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "statusType": {
+					"0": "Pending",
+					"1": "In Progress",
+					"2": "Completed",
+					"-1": "Cancelled"
+                }
+            },
+            "statusType": {
+                "0": "Pending",
+                "1": "Processing",
+                "2": "Completed",
+                "-1": "Cancelled"
+            },
+            "export": {
+                "code": "Order Number",
+                "merchant_id": "Merchant ID",
+                "admin_id": "Admin ID",
+                "amount": "Order Amount",
+                "status": "Status",
+                "payment_type": "Payout Method",
+                "amount_success": "Successful Payout Amount",
+                "amount_order": "Payout in Progress Amount",
+                "orders": "Payout Order Number",
+                "time_create": "Order Time",
+                "payment_codes": "Success Time",
+                "address": "address",
+                "filename": "Merchant withdrawal order"
+            },
+            "addTransfer": "New Transfer",
+            "processing": "Processing",
+            "amount": "Amount",
+            "address": "Address",
+            "processingAmount": "Processing Amount",
+            "totalAmount": "Total Amount",
+            "orderNumber": "Order Number",
+            "merchantID": "Partner ID",
+            "receiverMerchantID": "Receiver Partner ID",
+            "adminID": "Admin ID",
+            "orderAmount": "Order Amount",
+            "status": "Status",
+            "remark": "Remarks",
+            "orderTime": "Order Time",
+            "successTime": "Completion Time",
+            "updateTime": "Update Time",
+            "action": "Operation",
+            "confirmComplete": "Confirm Completion",
+            "reject": "Reject",
+            "enterMerchantID": "Please Enter Partner ID",
+            "enterAmount": "Please Enter Amount",
+            "enterReceiverMerchantID": "Please Enter Receiver Partner ID",
+            "enterRemark": "Please Enter Remarks",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "pending": "Pending",
+            "completed": "Completed",
+            "rejected": "Rejected",
+            "copyAddress": "Copy"
+        },
+        "Transfer": {
+            "form": {
+                "code": "Order Number",
+                "status": "Status",
+                "partner_id": "Partner ID",
+                "to_partner_id": "Receiver Partner ID",
+                "admin_id": "Operator ID",
+                "amount": "Amount",
+                "time_create": "Order Time",
+                "time_success": "Completion Time"
+            },
+            "statusType": {
+                "0": "Pending",
+                "1": "Processing",
+                "2": "Completed",
+                "-1": "Cancelled"
+            },
+            "export": {
+                "code": "Order Number",
+                "partner_id": "Partner ID",
+                "to_partner_id": "Receiver Partner ID",
+                "admin_id": "Admin ID",
+                "amount": "Order Amount",
+                "status": "Status",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "time_updated": "Update Time",
+                "remark": "Remarks",
+                "filename": "Partner Transfer Orders"
+            },
+            "addTransfer": "New Transfer",
+            "processing": "Processing",
+            "processingAmount": "Processing Amount",
+            "totalAmount": "Total Amount",
+            "orderNumber": "Order Number",
+            "merchantID": "Partner ID",
+            "receiverMerchantID": "Receiver Partner ID",
+            "adminID": "Admin ID",
+            "orderAmount": "Order Amount",
+            "status": "Status",
+            "remark": "Remarks",
+            "orderTime": "Order Time",
+            "successTime": "Completion Time",
+            "updateTime": "Update Time",
+            "action": "Operation",
+            "confirmComplete": "Confirm Completion",
+            "reject": "Reject",
+            "enterMerchantID": "Please Enter Partner ID",
+            "enterAmount": "Please Enter Amount",
+            "enterReceiverMerchantID": "Please Enter Receiver Partner ID",
+            "enterRemark": "Please Enter Remarks",
+            "cancel": "Cancel",
+            "confirm": "Confirm",
+            "pending": "Pending",
+            "completed": "Completed",
+            "rejected": "Rejected",
+            "amount": "Amount"
+        },
+        "Msusdtczdd": {
+            "dialogTitle": "Bind hash",
+            "txid": "hash",
+            "txidLabel": "hash (64-bit Hexadecimal)",
+            "txidPlaceholder": "Please enter hash",
+            "statusType": {
+                "0": "Pending",
+                "1": "Processing",
+                "2": "Completed",
+                "-1": "Cancelled"
+            },
+            "form": {
+                "serial_number": "Order Number",
+                "status": "Status",
+                "user_id": "Partner ID",
+                "admin_id": "Operator ID",
+                "total_amount": "Amount",
+                "usdt_amount": "USDT",
+                "top_partner_id": "Top Partner ID",
+                "created_at": "Order Time",
+                "paid_at": "Completion Time"
+            },
+            "buttons": {
+                "processing": "Processing",
+                "processingAmount": "Processing Amount",
+                "amount": "Total Amount",
+                "confirmFinish": "Confirm Completion",
+                "reject": "Reject",
+                "cancel": "Cancel"
+            },
+            "columns": {
+                "orderId": "Order Number",
+                "partnerId": "Partner ID",
+                "adminId": "Admin ID",
+                "amount": "Order Amount",
+                "bonusRate": "Bonus Rate",
+                "bonus": "Bonus",
+                "currencyAmount": "Rupee Amount",
+                "status": "Status",
+                "usdt": "USDT",
+                "exchangeRate": "Rate",
+                "address": "Receipt Address",
+                "blockChain": "Blockchain",
+                "timeCreate": "Order Time",
+                "timeSuccess": "Completion Time",
+                "timeUpdated": "Update Time",
+                "remark": "Remarks",
+                "operations": "Operation"
+            },
+            "status": {
+                "pending": "Pending",
+                "processing": "Processing",
+                "completed": "Completed",
+                "failed": "Failed"
+            }
+        },
+        "Msczdd": {
+            "form": {
+                "order_id": "Order Number",
+                "status": "Status",
+                "partner_id": "Partner ID",
+                "admin_id": "Operator ID",
+                "amount": "Amount",
+                "time_create": "Order Time",
+                "time_success": "Completion Time"
+            },
+            "statusType": {
+                "pending": "Pending",
+                "processing": "Processing",
+                "completed": "Completed",
+                "canceled": "Cancelled"
+            },
+            "export": {
+                "order_id": "Order Number",
+                "partner_id": "Partner ID",
+                "admin_id": "Admin ID",
+                "amount": "Order Amount",
+                "status": "Status",
+                "account": "Receipt Account",
+                "name": "Receipt Name",
+                "sys_payment_id": "System Card ID",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "time_updated": "Update Time",
+                "filename": "Partner Recharge Order Orders"
+            },
+            "buttons": {
+                "processing": "Processing",
+                "processingAmount": "Processing Amount",
+                "amount": "Total Amount",
+                "process": "Process",
+                "confirmFinish": "Confirm Completion",
+                "reject": "Reject",
+                "cancel": "Cancel",
+                "confirm": "Confirm"
+            },
+            "columns": {
+                "orderId": "Order Number",
+                "partnerId": "Partner ID",
+                "adminId": "Admin ID",
+                "amount": "Order Amount",
+                "status": "Status",
+                "bank": "Bank",
+                "account": "Receipt Account",
+                "name": "Receipt Name",
+                "ifsc": "IFSC",
+                "sysPaymentId": "System Card ID",
+                "timeCreate": "Order Time",
+                "timeSuccess": "Completion Time",
+                "timeUpdated": "Update Time",
+                "operations": "Operation"
+            },
+            "dialogs": {
+                "processBinding": "Process Card Binding"
+            },
+            "labels": {
+                "orderCode": "Order Number",
+                "partnerId": "Partner ID",
+                "amount": "Amount",
+                "sysPayment": "System Card"
+            },
+            "placeholders": {
+                "selectSysCard": "Please Select System Card"
+            },
+            "status": {
+                "pending": "Pending",
+                "processing": "Processing",
+                "completed": "Completed",
+                "failed": "Failed"
+            }
+        },
+        "df": {
+            "form": {
+                "id": "ID",
+                "merchant_code": "Merchant Number",
+                "merchant_id": "Merchant ID",
+                "partner_id": "Partner ID",
+                "bank_id": "Bank ID",
+                "ifsc": "IFSC",
+                "payment_name": "Name",
+                "amount": "Amount",
+                "status": "Status",
+                "payment_img": "With Voucher",
+                "no_voucher": "No Voucher",
+                "has_voucher": "With Voucher",
+                "split_flag": "Split Flag",
+                "split_total_amount": "Total Split Amount",
+                "split_remains": "Amount Remaining",
+                "is_del": "is_del",
+                "revert": "Revert",
+                "split": "Split",
+                "split_y": "Split",
+                "del": "Del",
+                "no_del": "No Del",
+                "split_n": "Not Split",
+                "order_type": "Order Type",
+                "normal_order": "Normal order",
+                "main_order": "Main order",
+                "sub_order": "Sub order",
+                "sub_view": "View Sub-orders",
+                "split_details_title": "Split Details",
+                "order_split": "Order Splitting",
+                "order_number": "Order Number",
+                "enter_order_number": "Please enter order number",
+                "split_amount": "Spliting Amount",
+                "cancel": "Cancel",
+                "confirm_split": "Confirm Split",
+                "table_id": "ID",
+                "table_order_code": "Order Number",
+                "table_amount": "Amount",
+                "table_is_split": "Is Split",
+                "table_order_status": "Order Status",
+                "table_create_time": "Creation Time",
+                "table_otherpay_id": "Third-Party Payment ID",
+                "table_otherpay": "Third-Party Payment",
+                "table_partner_id": "Partner ID",
+                "table_payment_id": "Payment Card ID",
+                "is_split_yes": "Yes, Split",
+                "is_split_no": "No, Not Split",
+                "status_0_dispatching": "Dispatching",
+                "status_1_pending_payment": "Pending Payment",
+                "status_2_pending_confirmation": "Pending Confirmation",
+                "status_3_callback_in_progress": "Callback in Progress",
+                "status_4_completed": "Completed",
+                "status_minus_1_cancelled": "Cancelled",
+                "status_unknown": "Unknown Status",
+                "close_button": "Close",
+                "split_amount_placeholder": "Please enter split amount",
+                "amount_range": "Amount Range",
+                "balance_range": "Balance Range",
+                "range_500": "<=500",
+                "range_500_1000": "500-1000",
+                "range_1000_2000": "1000-2000",
+                "range_2000_5000": "2000-5000",
+                "range_above_5000": ">5000",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "time_updated": "Update Time",
+                "top_partner_id": "Top Partner ID",
+                "range_5000_20000": "5000-20000",
+                "range_20000_50000": "20000-50000",
+                "range_above_50000": ">50000"
+            },
+            "statusType": {
+                "dispatching": "Dispatching",
+                "pending_payment": "Pending Payment",
+                "pending_confirmation": "Pending Confirmation",
+                "callback": "In Callback",
+                "completed": "Completed",
+                "rejected": "Rejected",
+                "callback_rejected": "Rejected Callback",
+                "processing": "Processing"
+            },
+            "export": {
+                "order_id": "Order Number",
+                "merchant_code": "Merchant Number",
+                "amount": "Amount",
+                "status": "Status",
+                "merchant_id": "Merchant ID",
+                "partner_id": "Partner ID",
+                "payment_id": "Code ID",
+                "otherpay_id": "Third-Party ID",
+                "otherpay": "Third-Party Name",
+                "ifsc": "IFSC",
+                "time_create": "Order Time",
+                "time_accept": "Order Acceptance Time",
+                "time_payed": "Payment Time",
+                "time_success": "Completion Time",
+                "time_updated": "Update Time",
+                "payment_bank": "Bank Name",
+                "payment_account": "Receipt Account",
+                "payment_name": "Receipt Name",
+                "realpay": "Settlement Amount",
+                "merchant_rate": "Merchant Rate",
+                "poundage": "Service Fee",
+                "earn_merchant": "Merchant Profit",
+                "earn_partner": "Partner Profit",
+                "earn_system": "Platform Profit",
+                "sys_remark": "Remarks",
+                "filename": "Payment Orders",
+                "is_split": "Split Flag (1: Split)",
+                "parent_id": "Parent Order ID"
+            },
+            "buttons": {
+                "success": "Success",
+                "fail": "Failure",
+                "rate": "Success Rate",
+                "amount": "Transaction Amount",
+                "processing": "Processing",
+                "processingAmount": "Pending Amount",
+                "settle": "Merchant Settlement",
+                "merchantCommission": "Merchant Rebate",
+                "partnerCommission": "Partner Rebate",
+                "platformProfit": "Platform Profit",
+                "thirdPay": "Third-Party Payment",
+                "confirm": "Confirm",
+                "reject": "Reject",
+                "upload": "Upload Voucher",
+                "view": "View Voucher",
+                "callback": "Manual Callback",
+                "selectThirdPay": "Select Third-Party Payment",
+                "cancel": "Cancel",
+                "batch_pd": "batch assignment",
+                "batch_confirm": "batch confirm",
+                "batch_upload_receipt": "Batch upload receipt",
+                "export_unpaid_record": "Export unpaid record",
+                "release": "Release"
+            },
+            "columns": {
+                "amount": "Amount",
+                "status": "Status",
+                "orderId": "Order Number (ID)",
+                "merchantId": "Merchant Number",
+                "partnerId": "Partner Number",
+                "bankId": "Bank ID",
+                "ifsc": "IFSC",
+                "createTime": "Order Time",
+                "acceptTime": "Order Acceptance Time",
+                "payTime": "Payment Time",
+                "successTime": "Completion Time",
+                "updateTime": "Update Time",
+                "thirdPartyId": "Third-Party ID",
+                "thirdPartyName": "Third-Party Name",
+                "bankName": "Bank Name",
+                "account": "Receipt Account",
+                "payeeName": "Receipt Name",
+                "settleAmount": "Settlement Amount",
+                "merchantRate": "Merchant Rate",
+                "fee": "Service Fee",
+                "merchantProfit": "Merchant Profit",
+                "partnerProfit": "Partner Profit",
+                "platformProfit": "Platform Profit",
+                "remarks": "Remarks",
+                "operations": "Operation"
+            },
+            "receipt": {
+                "selectBank": "Select bank",
+                "uploadFile": "Upload file",
+                "justOneFile": "You can only upload one file",
+                "DragTheFileHere": "Drag the file here",
+                "ClickToUpload": "Click to upload"
+            }
+        },
+        "ds": {
+            "form": {
+                "tradeType": {
+                    "fail": "Failure",
+                    "collect": "Collection",
+                    "pay": "Payment",
+                    "payReturn": "Refund",
+                    "payOther": "Other Payment"
+                },
+                "formLabels": {
+                    "bankId": "Bank ID",
+                    "partnerId": "Partner ID",
+                    "amount": "Amount",
+                    "utr": "PhoneNum Player Use In Real",
+                    "trans_id": "Transaction ID",
+                    "code": "Code/Bank (4)",
+                    "orderCode": "Local Order Code",
+                    "ewCode": "EW Code",
+                    "ifsc": "IFSC",
+                    "adminId": "Admin ID",
+                    "tradeType": "Trade Type",
+                    "callback": "Callback",
+                    "time": "Time",
+                    "code_bank": "Code bank",
+                    "content": "content",
+                    "operation": "operation",
+                    "delete": "Delete",
+                    "memo": "memo"
+                },
+                "callbackOptions": {
+                    "fail": "Failure",
+                    "success": "Success"
+                },
+                "id": "ID",
+                "merchant_code": "Merchant Number",
+                "channel": "Channel",
+                "merchant_id": "Merchant ID",
+                "partner_id": "Partner ID",
+                "bank_id": "BANK ID",
+                "code": "CODE",
+                "utr": "UTR",
+                "upi": "UPI",
+                "player_ip": "User IP",
+                "amount": "Amount",
+                "status": "Status",
+                "time_create": "Order Time",
+                "time_success": "Completion Time",
+                "top_partner_id": "Top Partner ID",
+                "admin_id": "Admin ID",
+				"type": "Operation Type",
+				"ip": "IP Address",
+                "third_party_id": "Third party",
+                "third_party_order_number": "Third party order number",
+                "payment_id": "Payment ID",
+                "trade_type": "Trade Type",
+                "callback": "Callback",
+                "order_code": "Order Code",
+                "ifsc": "IFSC",
+                "ew_code": "EW Code",
+                "trans_id": "Trans ID"
+            },
+            "statusType": {
+                "dispatching": "Dispatching",
+                "pending_payment": "Pending Payment",
+                "pending_confirmation": "Pending Confirmation",
+                "callback": "In Callback",
+                "completed": "Completed",
+                "cancelled": "Cancelled",
+                "processing": "Processing"
+            },
+            "export": {
+                "order_id": "Order Number",
+                "merchant_code": "Merchant Number",
+                "channel": "Channel",
+                "amount": "Amount",
+                "status": "Status",
+                "merchant_id": "Merchant ID",
+                "auth_code": "Confirmation Code",
+                "utr": "UTR",
+                "partner_id": "Partner ID",
+                "payment_id": "Code ID",
+                "time_create": "Order Time",
+                "time_accept": "Order Acceptance Time",
+                "time_payed": "Payment Time",
+                "time_success": "Completion Time",
+                "realpay": "Settlement Amount",
+                "merchant_rate": "Merchant Rate",
+                "poundage": "Service Fee",
+                "earn_merchant": "Merchant Commission",
+                "earn_partner": "Total Partner Commission",
+                "earn_system": "Platform Profit",
+                "player_ip": "User IP",
+                "filename": "Collection Orders",
+                "bank_record": "bank_record"
+            },
+            "orderManagement": {
+                "buttons": {
+                    "success": "Success：",
+                    "fail": "Failure：",
+                    "successRate": "Success Rate：",
+                    "transactionAmount": "Transaction Amount：",
+                    "processing": "Processing：",
+                    "processingAmount": "Pending Amount：",
+                    "merchantSettlement": "Merchant Settlement：",
+                    "merchantCommission": "Merchant Commission：",
+                    "partnerCommission": "Partner Commission：",
+                    "platformProfit": "Platform Profit：",
+                    "stat_1003": "ErrorA|ErrorB|NoSend"
+                },
+                "table": {
+                    "orderId": "Local Order ID",
+                    "merchantId": "Merchant Order ID",
+                    "amount": "Amount",
+                    "status": "Status",
+                    "partnerId": "Partner ID",
+                    "channel": "Channel",
+                    "code": "Code",
+                    "utr": "UTR",
+                    "trans_id": "Transaction ID",
+                    "paymentId": "Bank ID",
+                    "upi": "UPI",
+                    "createTime": "Order Time",
+                    "acceptTime": "Order Acceptance Time",
+                    "paymentTime": "Payment Time",
+                    "successTime": "Completion Time",
+                    "settlementAmount": "Settlement Amount",
+                    "merchantRate": "Merchant Rate",
+                    "poundage": "Service Fee",
+                    "merchantCommission": "Merchant Commission",
+                    "partnerTotalCommission": "Total Partner Commission",
+                    "platformProfit": "Platform Profit",
+                    "userIP": "User IP",
+                    "operation": "Operation",
+                    "manualCallback": "Manual Callback",
+                    "orderCorrection": "Additional Order",
+                    "third_party_id": "Third party",
+                    "third_party_order_number": "Third party order number",
+                    "user_id": "user_id",
+                    "count_statics": "count_statics"
+                },
+                "dialog": {
+                    "processingOrders": "Processing - Merchant Order Volume",
+                    "finishOrders": "Merchant Order Volume",
+                    "total": "Total",
+                    "back": "Back",
+                    "quantityDistributed": "Quantity in Order Distribution",
+                    "amountDistributed": "Amount in Order Distribution",
+                    "paymentInProgress": "Quantity in Payment Processing",
+                    "paymentInProgressAmount": "Amount in Payment Processing"
+                }
+            }
+        },
+        "Yels": {
+            "form": {
+                "code": "Order Number",
+                "merchant_code": "Merchant Order Number",
+                "admin_id": "Admin ID",
+                "user_type_1": "User Type",
+                "user_id": "ID",
+                "amount": "Amount",
+                "record_type": "Type",
+                "time_create": "Time",
+                "user_type": {
+                    "0": "Partner",
+                    "1": "Merchant"
+                },
+                "recordType": {
+                    "collect": "Collection",
+                    "pay": "Payment",
+                    "withdraw": "Withdrawal",
+                    "commission": "Commission",
+                    "freeze": "Freeze",
+                    "deposit": "Deposit",
+                    "manual": "Manual",
+                    "recharge": "Recharge",
+                    "transfer": "Transfer",
+                    "payRejected": "Payment Rejected",
+                    "payDiscount": "Payment Discount"
+                }
+            },
+            "recordType": {
+                "0": "Collection",
+                "1": "Payment",
+                "2": "Withdrawal",
+                "3": "Commission",
+                "4": "Freeze",
+                "5": "Deposit",
+                "6": "Manual",
+                "7": "Recharge",
+                "8": "Transfer",
+                "9": "Payment Rejected"
+            },
+            "export": {
+                "code": "Order Number",
+                "admin_id": "Admin ID",
+                "user_type": "User Type",
+                "user_id": "ID",
+                "change_before": "Before Change",
+                "amount": "Change Amount",
+                "change_after": "After Change",
+                "time_create": "Time",
+                "remark": "Remarks",
+                "record_type": "Type",
+                "filename": "Collection Transaction Table"
+            },
+            "table": {
+                "order_id": "Order Number",
+                "merchant_order_id": "Merchant Order Number",
+                "type": "Type",
+                "id": "ID",
+                "before_change": "Before Change",
+                "change_amount": "Change Amount",
+                "after_change": "After Change",
+                "time": "Time",
+                "remark": "Remarks",
+                "admin_id": "Admin ID",
+                "record_type": "Type"
+            },
+            "user": {
+                "merchant": "Merchant",
+                "partner": "Partner"
+            }
+        },
+        "itemizedBill": {
+            "searchForm": {
+                "phoneNumber": "phone number"
+            },
+            "table": {
+                "accno": "accno",
+                "accountName": "account name",
+                "accountNameUr":"accountName Ur",
+                "accountBalance": "account balance",
+                "accountStatus": "account status",
+                "IBAN": "IBAN",
+                "accountLevel": "account level",
+                "accountProfile": "account Profile"
+            },
+            "dialogForm": {
+                "dialogTitle": "download info",
+                "timeLabel":"Please select the download date range",
+                "startTime": "start Time",
+                "endTime":"end Time",
+                "cancel": "cancel",
+                "submit":"submit"
+            }
+        },
+        "Stls": {
+            "form": {
+                "code": "Order Number",
+                "admin_id": "Admin ID",
+                "name": "Name",
+                "account": "Account",
+                "amount": "Amount",
+                "time_create": "Time"
+            },
+            "recordType": {
+                "0": "Partner Recharge Order",
+                "1": "Merchant Recharge",
+                "2": "Partner Withdrawal Order",
+                "3": "Merchant Withdrawal"
+            },
+            "export": {
+                "code": "Order Number",
+                "record_type": "Transaction Type",
+                "amount": "Amount",
+                "name": "Name",
+                "account": "Card Number",
+                "type": "Type",
+                "time_create": "Time",
+                "admin_id": "Admin ID",
+                "remark": "Remarks",
+                "filename": "System Transaction Table"
+            },
+            "amount_out": "Credit",
+            "amount_in": "Debit",
+            "amount": "Total Amount",
+            "code": "Order Number",
+            "record_type": "Transaction Type",
+            "name": "Name",
+            "account": "Account",
+            "type": "Type",
+            "time_create": "Time",
+            "admin_id": "Admin ID",
+            "remark": "Remarks",
+            "pagination": {
+                "total": "Total Count",
+                "sizes": "Items per Page",
+                "prev": "Previous Page",
+                "pager": "Page Number",
+                "next": "Next Page",
+                "jumper": "Jump to"
+            }
+        },
+        "Shlb": {
+            "form": {
+                "id": "ID",
+                "cellphone": "Phone Number",
+                "name": "Name",
+                "pid": "Superior ID",
+                "status": "Payment",
+                "status_id": "Status ID",
+                "time_create": "Registration Date",
+                "status0": {
+                    "0": "Disable",
+                    "1": "Enabled"
+                },
+                "status1": {
+                    "0": "Disable",
+                    "1": "Enable"
+                }
+            },
+            "balanceType": {
+                "balance": "Balance",
+                "balance_frozen": "Frozen Balance"
+            },
+            "export": {
+                "id": "ID",
+                "cellphone": "Phone Number",
+                "name": "Name",
+                "pid": "Superior ID",
+                "status": "Payment",
+                "status_id": "Status ID",
+                "time_create": "Registration Date",
+                "filename": "User Account Report"
+            },
+            "table": {
+                "id": "ID",
+                "phone": "Phone Number",
+                "name": "Name",
+                "pid": "Superior ID",
+                "balance": "Balance",
+                "frozen_balance": "Frozen Balance",
+                "df_status": "Payment Status",
+                "registration_time": "Registration Time",
+                "actions": "Operation",
+                "decimalPointCallback": "Decimal Point Callback"
+            },
+            "button": {
+                "add_merchant": "Add Merchant",
+                "channel": "Channel",
+                "edit": "Edit",
+                "disable": "Disable",
+                "enable": "Enable",
+                "cancel": "Cancel",
+                "confirm": "Confirm",
+                "reset_key": "Reset Key"
+            },
+            "dialog": {
+                "channel_settings": "Channel Settings",
+                "edit": "Edit",
+                "add": "Add New"
+            },
+            "label": {
+                "rate": "Rate",
+                "third_party_payment": "Third-Party Payment",
+                "force_third_party": "Force Third-Party",
+                "channel_redirect": "Channel Redirect",
+                "phone": "Phone Number",
+                "name": "Name",
+                "password": "Password",
+                "enable_df": "Enable Payment",
+                "df_rate": "Payment Rate",
+                "single_df_amount": "Single Transaction Amount",
+                "change_type": "Change Type",
+                "change_amount": "Change Amount",
+                "remark": "Remarks",
+                "assigned_partner": "Designated Partner Payment",
+                "ip_whitelist": "IP Whitelist",
+                "df_ip_whitelist": "Payment IP Whitelist",
+                "ds_ip_blacklist": "Ip Blacklist",
+                "ds_userid_blacklist": "User Blacklist",
+                "ds_userid_on": "Enable User Blacklist",
+                "ds_on": "Enable Ip Blacklist",
+                "google_key": "Google Key",
+                "merchant_key": "Merchant Key",
+                "df_limit_amount_min": "Payment Min-Limit Amount",
+                "df_limit_amount_max": "Payment Max-Limit Amount",
+                "decimalPointCallback": "Decimal Point Callback"
+            },
+            "placeholder": {
+                "set_rate": "Please Set the Rate",
+                "select_third_party_payment": "Please Select a Third-Party Payment",
+                "enter_phone": "Please Enter Phone Number",
+                "enter_name": "Please Enter Name",
+                "password": "Password",
+                "enter_df_rate": "Please Enter Payment Rate",
+                "enter_single_df_amount": "Please Enter Single Payment Amount",
+                "select_balance_type": "Please Select Balance Type",
+                "enter_change_amount": "Please Enter Change Amount",
+                "enter_remark": "Please Enter Remark Information",
+                "enter_assigned_partner": "For multiple partner payment IDs, please use commas to separate them",
+                "enter_ip_whitelist": "For multiple IP addresses, please use commas to separate them (leave blank to remove IP restrictions) ",
+                "enter_df_ip_whitelist": "For multiple IP addresses, please use commas to separate them (must be entered, otherwise payment orders cannot be placed)",
+                "enter_ds_ip_blacklist": "For multiple IP addresses, please use commas to separate them",
+                "enter_ds_userid_blacklist": "For multiple IP addresses, please use commas to separate them",
+                "df_limit_amount_min": "Please Enter the payout min-limit amount",
+                "df_limit_amount_max": "Please Enter the payout max-limit amount"
+            },
+            "warning": {
+                "deduction_notice": "Please note, use '-' for deductions"
+            },
+            "status": {
+                "open": "Enabled",
+                "closed": "Disable",
+                "disabled": "Disabled",
+                "enabled": "Enabled"
+            }
+        },
+        "xtskxx": {
+            "ds": {
+                "form": {
+                    "account": "Account",
+                    "name": "Name",
+                    "bank": "Bank",
+                    "ifsc": "IFSC",
+                    "admin_id": "Admin ID",
+                    "status": "Status"
+                },
+                "statusType": {
+                    "disabled": "Disable",
+                    "enabled": "Enable"
+                },
+                "export": {
+                    "account": "Account",
+                    "name": "Name",
+                    "bank": "Bank",
+                    "ifsc": "IFSC",
+                    "admin_id": "Admin ID",
+                    "system_collection_info": "System Collection Information"
+                }
+            },
+            "account": "Account",
+            "name": "Name",
+            "bank": "Bank",
+            "ifsc": "IFSC",
+            "admin_id": "Admin ID",
+            "status": "Status",
+            "disabled": "Disable",
+            "enabled": "Enable",
+            "systemInfo": "System Collection Information",
+            "button": {
+                "addPayment": "Add Collection"
+            },
+            "table": {
+                "account": "Account",
+                "name": "Name",
+                "bank": "Bank",
+                "ifsc": "IFSC",
+                "adminId": "Admin ID",
+                "timeCreate": "Creation Time",
+                "action": "Operation",
+                "disable": "Disable",
+                "enable": "Enable",
+                "delete": "Delete"
+            },
+            "dialog": {
+                "addTitle": "Add Collection",
+                "account": "Account",
+                "accountPlaceholder": "Please Enter Account",
+                "name": "Name",
+                "namePlaceholder": "Please Enter Real Name",
+                "bank": "Bank",
+                "bankPlaceholder": "Please Enter Bank",
+                "ifsc": "IFSC",
+                "ifscPlaceholder": "Please Enter IFSC",
+                "cancel": "Cancel",
+                "confirm": "Confirm"
+            }
+        },
+        "Yhgl": {
+            "ds": {
+                "form": {
+                    "status": "Status",
+                    "online": "Online Selection",
+                    "time_accept": "Wallet Online Date"
+                },
+                "statusType": {
+                    "disabled": "Disable",
+                    "enabled": "Enable"
+                },
+                "onlineOptions": {
+                    "collection": "Collection",
+                    "payment": "Payment"
+                },
+                "export": {
+                    "filename": "Export Filename"
+                }
+            },
+            "form": {
+                "addBank": "Add Bank",
+                "id": "ID",
+                "onlineCount": "Online Count",
+                "bankName": "Bank Name",
+                "url": "URL",
+                "type": "Type",
+                "status": "Status",
+                "enable": "Enable",
+                "disable": "Disable",
+                "edit": "Edit",
+                "internal": "Internal",
+                "external": "External",
+                "cancel": "Cancel",
+                "confirm": "Confirm",
+                "typeInternal": "Internal Type",
+                "typeExternal": "External Type",
+                "placeholderBankName": "Please Enter Bank Name",
+                "placeholderURL": "Please Enter URL",
+                "operation": "Operation",
+                "bank_id": "Bank ID",
+                "max_order_count": "Max Order Count",
+                "accept_interval": "Order Interval (seconds)",
+                "addSetting": "Add Setting"
+            }
+        },
+        "Yjgl": {
+            "ds": {
+                "form": {
+                    "id": "ID",
+                    "payment_id": "Payment ID",
+                    "status": "Status",
+                    "time_create": "Creation Time"
+                },
+                "status_selectOptions": {
+                    "0": "Disable",
+                    "1": "Enable"
+                },
+                "export": {
+                    "id": "ID",
+                    "payment_id": "Payment ID",
+                    "status": "Status",
+                    "time_create": "Creation Time",
+                    "filename": "Export Filename"
+                }
+            },
+            "formItemList": {
+                "id": "Mobile ID",
+                "payment_id": "Code ID",
+                "status": "Status",
+                "time_create": "Creation Time",
+                "status_selectOptions": {
+                    "0": "Not Connected",
+                    "1": "Connected"
+                }
+            },
+            "form": {
+                "add": "Add New",
+                "phoneId": "Phone ID",
+                "password": "Password",
+                "codeId": "Code ID",
+                "connectionStatus": "Connection Status",
+                "creationTime": "Creation Time",
+                "connected": "Connected",
+                "notConnected": "Not Connected",
+                "reset": "Reset",
+                "changePassword": "Change Password",
+                "delete": "Delete",
+                "placeholderSearch": "Search...",
+                "operation": "Operation"
+            }
+        },
+        "Skzls": {
+            "ds": {
+                "form": {
+                    "id": "ID",
+                    "partner_id": "Partner ID",
+                    "upi": "UPI",
+                    "name": "Bank Name",
+                    "account": "Bank Account",
+                    "certified": "Certification",
+                    "status": "Status",
+                    "account_type": "Account Type",
+                    "gmail": "Gmail",
+                    "gmail_pw": "Gmail Password",
+                    "time_create": "Creation Time"
+                },
+                "statusType": {
+                    "disabled": "Disable",
+                    "enabled": "Normal"
+                },
+                "certified": {
+                    "not_certified": "Not Certified",
+                    "certified": "Certified"
+                },
+                "accountType": {
+                    "saving": "Savings Account",
+                    "current": "Current Account",
+                    "corporate": "Corporate Account"
+                },
+                "export": {
+                    "filename": "Collection Information Sheet (Delete)"
+                }
+            },
+            "form": {
+                "id": "ID",
+                "partnerId": "Partner ID",
+                "bankName": "Bank Name",
+                "upi": "UPI",
+                "balance": "Balance",
+                "certified": "Certification",
+                "bankAccount": "Bank Account",
+                "name": "Name",
+                "ifsc": "IFSC",
+                "accountType": "Account Type",
+                "deleteTime": "Deletion Time",
+                "operation": "Operation",
+                "certifiedYes": "Certified",
+                "certifiedNo": "Not Certified",
+                "placeholderSearch": "Search...",
+                "delete": "Delete"
+            }
+        },
+        "payment01": {
+            "ds": {
+                "form": {
+                    "id": "QR Code ID",
+                    "partnerId": "Partner ID",
+                    "upi": "Unified Payment Interface",
+                    "name": "Name",
+                    "collect": "Collection",
+                    "offline": "Offline",
+                    "online": "Online",
+                    "bankName": "Bank Name",
+                    "pay": "Payment",
+                    "type": "Type",
+                    "verify": "Verification",
+                    "unverified": "Unverified",
+                    "verified": "Verified",
+                    "status": "Status",
+                    "inactive": "Inactive",
+                    "active": "Active",
+                    "manualStatus": "Manual Status",
+                    "unlocked": "Unlocked",
+                    "locking": "Locking",
+                    "collection": "Collection",
+                    "ordinaryCollection": "Normal Collection",
+                    "priorityCollection": "Priority Collection",
+                    "channel": "Channel"
+                },
+                "accountTypes": {
+                    "saving": "SAVING",
+                    "current": "CURRENT",
+                    "corporate": "CORPORATE"
+                },
+                "collection": {
+                    "normal": "normal",
+                    "priority": "prior"
+                },
+                "export": {
+                    "id": "ID",
+                    "partnerId": "Partner ID",
+                    "bankName": "Bank Name",
+                    "upi": "UPI",
+                    "sysBalance": "System Balance",
+                    "balance": "Balance",
+                    "limit": "Limit",
+                    "collect": "Collect",
+                    "pay": "Pay",
+                    "rate": "Rate",
+                    "account": "account",
+                    "name": "name",
+                    "ifsc": "ifsc",
+                    "accountType": "Account Type",
+                    "gmail": "Gamil",
+                    "gmailPw": "Gamil Pw",
+                    "createdTime": "Created Time",
+                    "collection": "Collection",
+                    "filename": "Payment Collection Data Table"
+                },
+                "buttons": {
+                    "copyCollectOnline": "Collection Online",
+                    "copyPayOnline": "Payment Online",
+                    "batchDisable": "Batch Disable",
+                    "cancelLimit": "Cancel Restriction",
+                    "other": "other",
+                    "correction": "Correction",
+                    "limit": "Limit",
+                    "reject": "Reject",
+                    "pass": "Pass",
+                    "disable": "Disable",
+                    "enable": "Enable",
+                    "delete": "Delete",
+                    "reset": "Reset",
+                    "unlockManually": "Manual Unlock",
+                    "lockManually": "Manual Lock",
+                    "priorityCollection": "Priority Collection",
+                    "normalCollection": "Normal Collection",
+                    "edit": "Edit",
+                    "add": "Add new payment information",
+                    "disable_monitor": "Disable monitor",
+                    "enable_monitor": "Enable monitor"
+                },
+                "table": {
+                    "limit_info": "Limit info",
+                    "debitDaily": "Debit daily",
+                    "debitMonthly": "Debit monthly",
+                    "creditDaily": "Credit daily",
+                    "creditYearly": "Credit yearly",
+                    "update_time": "Update time",
+                    "id": "ID",
+                    "partnerId": "Partner ID",
+                    "bankName": "Bank Name",
+                    "upi": "Unified Payment Interface",
+                    "sysBalance": "System Balance",
+                    "balance": "Balance",
+                    "limit": "Limit",
+                    "collect": "Collection",
+                    "pay": "Payment",
+                    "rate": "Exchange Rate",
+                    "bankAccount": "Bank Account",
+                    "ifsc": "Bank Code",
+                    "accountType": "Account Type",
+                    "gmail": "Google Email",
+                    "gmailPw": "Google Email Password",
+                    "createdTime": "Creation Time",
+                    "collection": "Collection",
+                    "collectionStatus": "Collection Status",
+                    "mobileOnline": "Mobile Online Status"
+                },
+                "dialog": {
+                    "upiTitle": "UPI",
+                    "editTitle": "Edit",
+                    "edit": "Edit",
+                    "payment_id": "Payment ID",
+                    "upi": "UPI",
+                    "channel_number": "Channel Number",
+                    "cancel": "Cancel",
+                    "confirm": "Confirm",
+                    "select_channel": "Please select a channel number",
+                    "bankType": "Bank Type",
+                    "selectBankType": "Select Bank Type",
+                    "accountType": "Account Type",
+                    "selectAccountType": "Select Account Type",
+                    "partnerId": "Partner ID",
+                    "channel": "Channel",
+                    "selectChannel": "Select Channel",
+                    "ifsc": "IFSC",
+                    "upi": "UPI",
+                    "netId": "Netbanking Login ID",
+                    "netTradePw": "Netbanking Transaction Password",
+                    "account": "Account",
+                    "name": "Name",
+                    "netPw": "Netbanking Login Password",
+                    "phone": "Phone Number",
+                    "gmail": "Gmail",
+                    "gmailPw": "Gmail Password",
+                    "add": "Add"
+                },
+                "pagination": {
+                    "pageSize": "Items per Page",
+                    "total": "Total Number",
+                    "prev": "Previous Page",
+                    "next": "Next Page"
+                },
+                "search": {
+                    "search": "Search",
+                    "export": "Export"
+                }
+            }
+        },
+        "Mspm": {
+            "ds": {
+                "form": {
+                    "channel_code": "Channel ID",
+                    "date": "Date"
+                },
+                "column": {
+                    "balance": "Balance",
+                    "count": "Order Count",
+                    "amount": "Order Amount",
+                    "success_count": "Successful Order Count",
+                    "success_amount": "Successful Amount",
+                    "rate": "Success Rate"
+                },
+                "export": {
+                    "channel_code": "Channel ID",
+                    "date": "Date",
+                    "balance": "Balance",
+                    "count": "Order Count",
+                    "amount": "Order Amount",
+                    "success_count": "Successful Order Count",
+                    "success_amount": "Successful Amount",
+                    "rate": "Success Rate",
+                    "filename": "Export File Name"
+                }
+            },
+            "form": {
+                "ID": "ID",
+                "phone": "Phone Number",
+                "name": "Name",
+                "balance": "Balance",
+                "orderCount": "Order Count",
+                "orderAmount": "Order Amount",
+                "successOrderCount": "Successful Order Count",
+                "successAmount": "Successful Amount",
+                "successRate": "Success Rate",
+                "pageSize": "Items per Page",
+                "currentPage": "Current Page",
+                "total": "Total"
+            }
+        },
+        "Mslb": {
+            "balanceType": {
+                "balance": "Balance",
+                "balance_frozen": "Frozen Balance",
+                "balance_deposit": "Deposit"
+            },
+            "formItemList": {
+                "id": "ID",
+                "cellphone": "Phone Number",
+                "name": "Name",
+                "pid": "Superior ID",
+                "status": "Status ID",
+                "certified": "Certification",
+                "type": "External/Internal Partner",
+                "time_create": "Registration Date",
+                "top_partner_id": "Top Partner ID",
+                "online": "Online Selection",
+                "time_accept": "Partner Online Date"
+            },
+            "exportData": {
+                "id": "ID",
+                "cellphone": "Phone Number",
+                "name": "Name",
+                "pid": "Superior ID",
+                "vip": "VIP",
+                "balance": "Balance",
+                "balance_frozen": "Frozen Balance",
+                "status": "Status",
+                "type": "External/Internal Partner",
+                "time_create": "Registration Time",
+                "balance_deposit": "Deposit",
+                "ds_min": "Minimum Collection Limit",
+                "ds_max": "Maximum Collection Limit",
+                "invitation_code": "Invitation Code",
+                "filename": "Merchant List"
+            },
+            "table": {
+                "id": "ID",
+                "phone": "Phone Number",
+                "name": "Name",
+                "superior_id": "Superior ID",
+                "top_partner_id": "Top Partner ID",
+                "vip": "VIP",
+                "balance": "Balance",
+                "frozen_balance": "Frozen Balance",
+                "deposit": "Deposit",
+                "status1": "Status",
+                "status": {
+                    "uncertified": "Uncertified",
+                    "certified": "Certified"
+                },
+                "external_internal": "External/Internal Partner",
+                "external": "External",
+                "internal": "Internal",
+                "registration_time": "Registration Time",
+                "min_ds_limit": "Minimum Collection Limit",
+                "max_ds_limit": "Maximum Collection Limit",
+                "invitation_code": "Invitation Code",
+                "actions": "Operation",
+                "edit": "Edit",
+                "lock_unlock": "Lock/Unlock",
+                "migrate": "Transfer",
+                "lock": "Lock Partner",
+                "unlock": "Unlock Partner"
+            },
+            "buttons": {
+                "add_partner": "Add Partner",
+                "new_partner": "Add:",
+                "online_partner": "Partner Online:",
+                "online_ds_partner": "Partner Collection Online:",
+                "online_df_partner": "Partner Payment Online:",
+                "cancel": "Cancel",
+                "confirm": "Confirm",
+                "clear_balance": "Clear Balance",
+                "clear_utr": "Cancel Utr"
+            },
+            "dialog": {
+                "edit": "Edit",
+                "add": "Add New",
+                "phone": "Phone Number",
+                "name": "Name",
+                "min_ds_limit": "Minimum Collection Limit",
+                "max_ds_limit": "Maximum Collection Limit",
+                "superior_id": "Superior ID",
+                "vip_level": "VIP Level",
+                "internal_partner": "Internal Partner",
+                "change_type": "Change Type",
+                "change_amount": "Change Amount",
+                "remark": "Remarks",
+                "permissions": "Permissions",
+                "current_partner_id": "Current Partner ID",
+                "superior_partner_id": "Superior Partner ID",
+                "migrate_partner_id": "Transfer Partner ID",
+                "expand_all": "Expand All",
+				"phone_placeholder": "Phone Number",
+				"name_placeholder": "Name",
+				"min_ds_limit_placeholder": "Minimum Collection Limit",
+				"max_ds_limit_placeholder": "Maximum Collection Limit",
+				"superior_id_placeholder": "Superior ID",
+				"vip_level_placeholder": "VIP Level",
+				"internal_partner_placeholder": "Internal Merchant",
+				"change_type_placeholder": "Change Type",
+				"remark_placeholder": "Remark",
+				"migrate_partner_id_placeholder": "Migration Merchant ID",
+                "change_amount_warning": "Please note that for deduction please use '-'",
+                "change_amount_placeholder": "Please enter the change amount",
+                "banned": "Account Ban",
+                "hash_login": "login password",
+                "hash_trade": "payment password"
+            },
+            "pagination": {
+                "total": "Total",
+                "page_size": "Items per Page",
+                "current_page": "Current Page"
+            }
+        },
+        "Dxlb": {
+            "form": {
+                "id": "ID",
+                "frm": "SMS Number",
+                "content": "SMS Content",
+                "payment_id": "Bank Card ID",
+                "status": "Parsing Success",
+                "remark": "Remark",
+                "received_time": "Received Time",
+                "created": "Creation Time"
+            },
+            "statusOptions": {
+                "0": "Parsing Failed",
+                "1": "Parsing Successful"
+            }
+        },
+        "migration_success": "Migration Successful",
+        "supplement_order": "Additional Order",
+        "operation_successful": "Operation Successful",
+        "enter_trx": "Input Transaction ID",
+        "order_revert": "Confirmation Revert",
+        "order_completed": "Confirmation Successful",
+        "order_rejected": "Rejection Successful",
+        "upload_success": "Upload Successful",
+        "upload_failed": "Upload Failed",
+        "nonsupport_export_df_unpaid": "The selected bank does not support this feature at this time",
+        "enter_bankid": "Please Enter Bank ID",
+        "enter_reason": "Please Enter Rejection Reason",
+        "enter_reason_df": "Please enter the reason for rejection, and there is a risk of rejection due to the pending confirmation status of the order. It cannot be confirmed whether the transfer was successful, and the merchant balance can only be refunded",
+        "assign_order": "Assign Payment",
+        "confirmation": "Confirm",
+        "reject": "Reject",
+        "copySuccess": "Copy Successful",
+        "confirm_reset_google_key": "Confirm Resetting Google Key?",
+        "confirm_reset_merchant_key": "Confirm Reset Merchant Key?",
+        "confirm_disable_merchant": "Confirm Disable this Merchant?",
+        "confirm_enable_merchant": "Confirm Enable this Merchant?",
+        "reset_success": "Reset Successful",
+        "save_success": "Save Successful",
+        "name": "name",
+        "ID": "ID",
+        "enter_qrid": "please input 6 qrID",
+        "select_error": "orderCode is empty or undefined",
+        "login_password_msg": "login password must contain letters, numbers and special characters, and its length must be between 8 and 20 characters",
+        "pay_password_msg": "pay password must contain letters, numbers and special characters, and its length must be between 8 and 20 characters",
+        "get_success": "GET SUCCESS",
+        "enter_payment_rate_fee": "Please Enter Payment Rate and Single Transaction Fee",
+        "password_min_length": "Password Cannot Be Less Than 6 Digits",
+        "no_illegal_characters": "Please Do Not Use Illegal Characters",
+        "enter_remarks": "Please Fill in the Remarks",
+        "df_min_max": "Min-Limit can not bigger than Max-Limit",
+        "warning": "Warning",
+        "no_order_selected": "No Order Selected",
+        "no_data_selected": "No Data Selected",
+        "confirm_third_party_payment": "Confirm assign the payment order to this third party ({id} | {pay_name} | {pay_name_zh})?",
+        "confirm_third_party_payment_batch": "Confirm assign the batch of payment order to this third party ({id} | {pay_name} | {pay_name_zh})?",
+        "choose_third_party_payment": "Please Select Third-Party Payment!",
+        "submit_failed_check_order": "Submission Failed, Please Verify the Order",
+        "submit_success": "Submission Successful",
+        "confirm": "Confirm",
+        "cancel": "Cancel",
+        "copy_success": "Copy Successful",
+        "enter_utr": "Please Enter UTR",
+        "trx": "trx",
+        "optional": "Optional",
+        "enter_phone": "Please Enter phone",
+        "utr_required": "UTR is Required",
+        "phone_required": "Phone is Required",
+        "order_success": "Order Completion Successful",
+        "bind_card": "Please Bind the Card!",
+        "bind_success": "Binding Successful",
+        "confirm_payment_completed": "Confirm Payment Completed?",
+        "withdrawal_completed": "Withdrawal Completed",
+        "confirm_reject": "Confirm Rejection?",
+        "reject_success": "Rejection Successful",
+        "prompt": "Prompt",
+        "add_success": "Addition Successful",
+        "transfer_details": {
+            "partner_id": "Merchant ID: {partner_id}",
+            "amount": "Amount: {amount}",
+            "to_partner_id": "Partner ID: {to_partner_id}",
+            "remark": "Remark: {remark}"
+        },
+        "confirm_transfer": "Confirm Transfer?",
+        "confirm_success": "Confirmation Successful",
+        "reject_confirm": "Confirm Rejection?",
+        "confirm_payment": "Confirm Payment Completed?",
+        "payment_success": "Withdrawal Completed",
+        "withdrawal_success": "Payment Successful",
+        "please_select_withdrawal_method": "Please Select Payment Method",
+        "please_enter_withdrawal_amount": "Please Enter Payment Amount",
+        "please_select_recharge_order": "Please Select Recharge Order",
+        "notification": {
+          "success_save": "Save Successful",
+          "success_add": "Addition Successful",
+          "details": {
+            "account": "Role Identifier: ",
+            "name": "Role Name: ",
+            "role": "Role Description: ",
+            "parent_id": "Related Merchant ID: "
+          }
+        },
+        "validation_gmail": "Gmail验证失败",
+        "name": "Name",
+        "confirm_delete_record": "Confirm Abolition of This Record?",
+        "delete_1": "delete",
+        "delete": {
+            "title": "Warning",
+            "confirmButton": "Confirm Delete",
+            "cancelButton": "Cancel",
+            "confirm": "Confirm Deleting This Member?",
+            "success": "Deletion Successful"
+        },
+        "delete_success": "Deletion Successful",
+        "disable": "Disable",
+        "enable": "Enable",
+        "confirm_action": "Confirm {action} This Partner?",
+        "confirm_action_setting": "Confirm {action} This Setting?",
+        "confirm_delete_bank": "Confirm Deletion of This Bank?",
+        "confirm_delete": "Confirm Delete",
+        "success": "Success",
+        "lock": "Lock",
+        "unlock": "Unlock",
+        "fill_remark": "Please Fill in the Remarks",
+        "partner_type": "External/Internal Partner",
+        "confirm_delete_payment": "Confirm Deleting This Collection Method?",
+        "cancel_limit": {
+            "confirm": "Confirm Cancellation of the Restriction on This Payment Method?",
+            "title": "Cancel Restriction",
+            "placeholder": "Please Enter Number of Hours, Default is 2 Hours if Not Entered",
+            "error": "Please Enter Correct Number of Hours"
+        },
+        "clear_balance": {
+          "confirm": "Confirm to clear balance？",
+          "title": "Clear balance"
+        },
+        "update_success": "Update Successful",
+        "reset": {
+            "confirm": "Confirm Reset of This Payment Method?",
+            "title": "Warning",
+            "confirmButtonText": "Confirm Reset",
+            "cancelButtonText": "Cancel",
+            "success": "Reset Successful"
+        },
+        "correction": {
+            "confirm": "Correct System Balance?",
+            "title": "Correct",
+            "confirmButtonText": "Yes",
+            "cancelButtonText": "No",
+            "success": "Correction Successful"
+        },
+        "change_top": {
+            "placeholder": "Please Enter Upper Limit",
+            "title": "Limit",
+            "success": "Limit Successful"
+        },
+        "certified": {
+            "pass": "Approved",
+            "reject": "Rejected",
+            "confirm": "Confirm {status} this bank?",
+            "title": "Warning",
+            "confirmButtonText": "Confirm",
+            "cancelButtonText": "Cancel",
+            "success": "{status} Successful"
+        },
+        "priority_collection": {
+            "normal": "Normal Collection",
+            "priority": "Priority Collection",
+            "confirm": "Confirm Setting This Collection Method as {status}?",
+            "title": "Warning",
+            "confirmButtonText": "Confirm",
+            "cancelButtonText": "Cancel",
+            "success": "{status} Successful"
+        },
+        "manual_status": {
+            "unlock": "Manual Unlock",
+            "lock": "Manual Lock",
+            "confirm": "Confirm {status} this payment method?",
+            "title": "Warning",
+            "confirmButtonText": "Confirm",
+            "cancelButtonText": "Cancel",
+            "success": "{status} Successful",
+            "disable_monitor": "disable monitor",
+            "enable_monitor": "enable monitor",
+            "confirm_monitor": "confirm{status}？"
+        },
+        "edit": {
+            "upi_empty": "UPI Cannot Be Empty",
+            "complete_info": "Please Fill in Complete Information",
+            "save_success_title": "Save Successful",
+            "save_success_message": "Save Successful"
+        },
+        "batch_disable": {
+            "error": "Batch Disable Failed, Bank Name Cannot Be Empty",
+            "success": "Batch Disable Successful"
+        },
+        "add_prompt": {
+            "title": "Add New",
+            "placeholder": "Please Enter Cloud Machine ID",
+            "success": "Addition Successful"
+        },
+        "update_password": {
+            "title": "Change Password",
+            "placeholder": "Please Enter New Password",
+            "success": "Password Change Successful"
+        },
+        "reset_prompt": {
+            "title": "Reset",
+            "confirm": "Confirm Resetting This Cloud Machine?",
+            "success": "Cloud Machine Reset Successful"
+        },
+        "delete_prompt": {
+            "title": "Delete",
+            "confirm": "Confirm Deleting This Cloud Machine?",
+            "success": "Cloud Machine Deletion Successful"
+        },
+        "resetGg": {
+            "title": "Warning",
+            "confirmButton": "Confirm Reset",
+            "cancelButton": "Cancel",
+            "confirm": "Confirm Resetting Google Key?",
+            "success": "Reset Successful"
+        },
+        "delete": {
+          "title": "Warning",
+          "confirmButton": "Confirm Delete",
+          "cancelButton": "Cancel",
+          "confirm": "Are you sure you want to delete this member?",
+          "success": "Deletion successful",
+          "confirm": "Are you sure you want to delete this payment method?",
+          "title": "Warning",
+          "confirmButtonText": "Confirm Delete",
+          "cancelButtonText": "Cancel",
+          "success": "Deletion successful"
+        },
+        "role": {
+            "passwordShort": "Password Cannot Be Less Than 6 Digits",
+            "invalidChars": "Please Do Not Use Illegal Characters",
+            "enterPassword": "Please Enter Password",
+            "saveSuccess": "Save Successful",
+            "addSuccess": "Addition Successful",
+            "account": "Role Identifier",
+            "name": "Role Name",
+            "description": "Role Description"
+        },
+        "roleDelete": {
+            "title": "Warning",
+            "confirmButton": "Confirm Delete",
+            "cancelButton": "Cancel",
+            "confirm": "Confirm Deleting This Role?",
+            "success": "Deletion Successful"
+        },
+        "roleSave": {
+            "saveSuccess": "Save Successful",
+            "addSuccess": "Added Successfully",
+            "keyName": "Role Identifier",
+            "name": "Role Name",
+            "description": "Role Description",
+            "invalidGoogle": "Please Enter 6-Digit Google Verification Code",
+            "saveSuccessTitle": "Save Successful"
+        },
+        "weightInput": {
+            "invalidValue": "The Value Must Be a Positive Integer Greater Than or Equal to 1, Please Re-enter",
+            "title": "Prompt",
+            "confirmButton": "Confirm",
+            "cancelButton": "Cancel"
+        },
+        "weightSave": {
+            "invalidGoogle": "Please Enter 6-Digit Google Verification Code",
+            "saveSuccessTitle": "Save Successful"
+        },
+        "data": {
+            "getAllCancel": "Cancel All"
+        },
+        "changeAll": {
+            "confirmSwitch": "Confirm Switching All Merchant Channels to Current Option?",
+            "confirmButton": "Confirm Switch",
+            "cancelButton": "Cancel",
+            "success": "Switch Successful"
+        },
+        "save": {
+            "googleCodeWarning": "Please Enter 6-Digit Google Verification Code",
+            "successTitle": "Save Successful",
+            "gatewayCode": "gateway number",
+            "channelName": "channel name"
+        },
+        "testOrder": {
+            "incompleteInfo": "Please Fill in Complete Information",
+            "success": "Order Successful"
+        },
+        "handleInput": {
+            "invalidWeightMessage": "The Value Must Be a Positive Integer Greater Than or Equal to 1, Please Re-enter",
+            "promptTitle": "Prompt",
+            "confirmButton": "Confirm",
+            "cancelButton": "Cancel"
+        },
+        "weight": {
+            "save": {
+                "googleCodeWarning": "Please Enter 6-Digit Google Verification Code",
+                "successTitle": "Save Successful"
+            }
+        },
+        "confirmRole": {
+            "title": "Addition Successful",
+            "account": "Account",
+            "name": "Name",
+            "bank": "Bank",
+            "ifsc": "IFSC",
+            "googleCodeWarning": "Please Enter 6-Digit GGoogle Auth code",
+            "saveSuccessTitle": "Save Successful",
+            "roleIdentifier": "Role Identifier",
+            "roleName": "Role Name",
+            "roleDescription": "Role Description",
+            "addSuccess": "Added Successfully",
+            "saveSuccess": "Save Successful",
+            "ipWarning": "It is forbidden to add IPs containing the 127.0.0.* segment."
+        },
+        "handleDelete": {
+            "title": "Warning",
+            "confirmMessage": "Confirm Deleting This Collection Method?",
+            "confirmButtonText": "Confirm Delete",
+            "cancelButtonText": "Cancel",
+            "successMessage": "Deletion Successful"
+        },
+        "handleChangeStatus": {
+            "title": "Warning",
+            "enable": "Enable",
+            "disable": "Disable",
+            "confirmMessageStart": "Confirm",
+            "confirmMessageEnd": "This Collection Method?",
+            "confirmButtonText": "Confirm",
+            "cancelButtonText": "Cancel",
+            "successMessage": "Success"
+        },
+        "dsdflock": {
+            "switch": "Lock Switch",
+            "start_time": "Start Time",
+            "end_time": "End Time",
+            "start_time_placeholder": "Please select start time",
+            "end_time_placeholder": "Please select end time",
+            "save": "Save",
+            "saveSuccess": "Saved successfully"
+        }
+    },
+    "routes": {
+        "dashboard": {
+            "title": "Statistics"
+        },
+        "statistics": {
+            "receipt": {
+                "title": "Collection Statistics"
+            },
+            "payment": {
+                "title": "Payment Statistics"
+            },
+            "data": {
+                "title": "Data Statistics"
+            }
+        },
+        "collectPartner": {
+            "title": "Partner Balance Statistics"
+        },
+        "balance": {
+            "title": "Balance Statistics"
+        },
+        "financeReport": {
+            "title": "Financial Daily Report"
+        },
+        "operationStats": {
+            "title": "Operation Statistics"
+        },
+        "operationLog": {
+            "title": "Operation Log"
+        },
+        "orderManagement": {
+            "title": "Order Management"
+        },
+        "order": {
+            "receipt": {
+                "title": "Collection Orders"
+            },
+            "payment": {
+                "title": "Payment Orders"
+            },
+            "autoPaymentMonitor": {
+                "title": "Auto Payment Monitor"
+            },
+            "codeMerchantWithdraw": {
+                "title": "Partner Withdrawal Order Orders"
+            },
+            "codeMerchantRecharge": {
+                "title": "Partner Recharge Order Orders"
+            },
+            "codeMerchantStatics": {
+                "title": "Partner Recharge Order Statics"
+            },
+            "codeMerchantUsdtRecharge": {
+                "title": "Partner USDT Recharge Order"
+            },
+            "codeMerchantTransfer": {
+                "title": "Partner Transfer Orders"
+            },
+            "merchantWithdraw": {
+                "title": "Merchant Withdrawal Orders"
+            },
+            "payinCd": {
+              "title": "payin search order"
+            },
+            "bankWithdrawal": {
+              "title": "Corporate Banking Withdrawal Statistics"
+            }
+        },
+        "fundsFlow": {
+            "title": "Capital Flow",
+            "systemCard": {
+                "title": "System Card Flow"
+            },
+            "balance": {
+                "title": "Balance Flow"
+            },
+            "itemizedBill": {
+                "title": "itemized bill"
+            }
+        },
+        "merchantManagement": {
+            "title": "Merchant Management",
+            "list": {
+                "title": "Merchant List"
+            },
+            "rank": {
+                "title": "Merchant Ranking",
+                "title1": "Merchant Success Rate"
+            }
+        },
+        "codeMerchantManagement": {
+            "title": "Partner Management",
+            "list": {
+                "title": "Partner List"
+            },
+            "rank": {
+                "title": "Partner Ranking"
+            },
+            "bankRank": {
+                "title": "Bank Ranking"
+            },
+            "paymentInfo": {
+                "title": "Collection Information"
+            },
+            "deletedPaymentInfo": {
+                "title": "Collection Information (Delete)"
+            },
+            "bankStatement": {
+                "title": "Bank Statement"
+            },
+            "cloudMachineManagement": {
+                "title": "Cloud Machine Management"
+            },
+            "bankManagement": {
+                "title": "Bank Management"
+            },
+            "smsManagement": {
+                "title": "SMS List"
+            }
+        },
+        "permissionManagement": {
+            "title": "Permission Management",
+            "member": {
+                "title": "Member Management"
+            },
+            "role": {
+                "title": "Role Management"
+            },
+            "permission": {
+              "title": "Tree Right Management"
+            }
+        },
+        "eventManagement": {
+          "title": "Event Center",
+          "event": {
+            "title": "Event Configuration"
+          },
+          "eventrule": {
+            "title": "Event Detail Configuration"
+          },
+          "eventLog": {
+            "title": "Event Logs"
+          },
+          "eventpool": {
+              "title": "Event Lottery Pool"
+          },
+          "eventchance": {
+            "title": "Draw Chance Management"
+          },
+          "eventbeginner": {
+            "title": "Event Beginner progress"
+          }
+        },
+        "systemSettings": {
+            "title": "System Settings",
+            "channel": {
+                "title": "Channel Settings",
+                "titleds": "Pay-in Settings",
+                "titledf": "Pay-out Settings"
+            },
+            "app": {
+                "title": "APP Settings"
+            },
+            "daifuyouhui": {
+              "title": "Payment Discount"
+            },
+            "usdtdaifuyouhui": {
+              "title": "usdt代付优惠"
+            },
+            "whitelist": {
+                "title": "System Whitelist"
+            },
+            "apiBlacklist": {
+                "title": "API Blacklist"
+            },
+            "paymentInfo": {
+                "title": "System Collection Information"
+            },
+            "vipRules": {
+                "title": "VIP Rules"
+            },
+            "otherSettings": {
+                "title": "Other Settings"
+            },
+            "mulitpaySetting": {
+                "title": "Multi Payin Order"
+            },
+            "usdtinaddress": {
+              "title": "usdt transfer address"
+            },
+            "message": {
+                "title": "Message Management"
+            },
+            "lockSettings": {
+                "title": "Payment Lock"
+            },
+            "operationlog": {
+              "title": "Operation Log"
+            },
+            "merchantPaymentLink": {
+              "title": "Merchant payment link"
+            }
+        },
+
+        "deleteRecord":"delete record",
+        "bankModification":"bank modification",
+        "paymentOperation":"payment operation",
+        "batchDisableOfPaymentInformation":"batch disable of paymentInformation",
+        "bankManagementInquiry":"bank management inquiry",
+        "bankManagementModificationStatus":"bank management modification status",
+        "bankManagementEditor":"bank management editor",
+        "bankManagementAdded":"bank management added",
+        "bankManagementDelete":"bank management delete",
+        "view/export":"view/export",
+        "Limit/reject/pass/disable/enable/manual lock/manual unlock/correction":"Limit/reject/pass/disable/enable/manual lock/manual unlock/correction",
+        "delete":"delete",
+        "reset":"reset",
+        "add":"add",
+        "abolition":"abolition",
+        "addCodeProvider":"add code provider",
+        "Edit/Lock":"Edit/Lock",
+        "fillOrder":"fillOrder",
+        "manualCallback":"manual callback",
+        "UploadCredentials":"Upload credentials",
+        "turnDown":"turnDown",
+        "codeMerchantTransferConfirmationRejection":"code merchant transfer confirmation rejection",
+        "modifyCodeProvider":"modify code provider",
+        "deleteQRCode":"delete QRCode",
+        "Reassign/GET/Confirm":"Reassign/GET/Confirm",
+        "migrationCodeProvider":"migration code provider",
+        "modifyOtherSettings":"modify other settings",
+        "modifyWeight":"modify weight",
+        "confirmCompletion/rejection":"confirm completion/rejection",
+        "Third-partyPaymentDispatch":"Third-party payment dispatch",
+        "confirm":"confirm",
+        "uploadCertificate2":"upload certificate2",
+        "reassign":"reassign",
+        "assign":"assign",
+        "checkList":"checkList",
+        "categoryList":"category list",
+        "checkOrderConfirmationAndReview":"check order confirmation and review",
+        "checkSLRReview":"check SLR review",
+        "checklistReview":"check list review",
+        "renew":"renew",
+        "uploadVouchersInBatches":"upload vouchers in batches",
+        "limit":"limit",
+        "reject":"reject",
+        "pass":"pass",
+        "disable":"disable",
+        "enable":"enable",
+        "manualLock":"manual lock",
+        "manualUnlocking":"manual unlocking",
+        "correction":"correction",
+        "ordinaryCollection":"ordinary collection",
+        "priorityCollection":"priority collection",
+        "confirmEdit":"confirm edit",
+        "enableDisableMonitoring":"enable disable monitoring",
+        "edit":"edit",
+        "unlock":"unlock",
+        "locking":"locking",
+        "paymentFailedUTRHidden":"payment failed UTR hidden",
+        "upiViewPermissions":"upi view permissions",
+        "utrViewPermissions":"utr view permissions",
+        "orderTakingMerchantSettings":"order taking merchant settings",
+        "export":"export",
+        "merchantPaymentLinkSettingInterface":"merchant payment linkSetting interface",
+        "announcementMassSending":"announcement mass sending",
+        "announcementSettings":"announcement settings",
+        "modifySettings":"modify settings",
+        "addSettings":"add settings",
+        "settingEnableDisable":"setting enable disable",
+        "queryOfTransactionamountAndProcessingData":"query of transaction amount and processing data",
+        "paymentTransactionAmountAndProcessingDataQuery":"payment transaction amount and processing data query",
+        "dataQueryDuringCollectionAndOrderProcessing":"data query during collection and order processing",
+        "viewPaymentSubOrder":"view payment subOrder",
+        "paymentAndOrderSplitting":"payment and order splitting",
+        "view":"view",
+        "paymentOrderSplittingAndReturn":"payment order splitting and return",
+        "OTPList":"OTP list",
+        "AddAOnetimeOTP":"AddA onetime OTP",
+        "punchManagement":"punch management",
+        "xinzeng": "add",
+        "tianjia": "add"
+    },
+    "button_text": {
+        "getData": "Congratulations and Prosperity",
+        "getData_1": "Good Luck and Great Prosperity"
+    },
+    "errorPage": {
+        "back": "Return",
+        "oops": "Oops!",
+        "noPermission": "You do not have permission to access this page",
+        "contactSupport": "Please contact customer service if needed",
+        "goTo": "Or you can go to:",
+        "home": "Return to Homepage",
+        "explore": "Feel Free to Browse",
+        "seeImage": "Click Me to See the Image",
+        "imageTitle": "Casual View"
+    },
+    "errorPage404": {
+        "oops": "OOPS!",
+        "rightsReserved": "All rights reserved",
+        "website": "wallstreetcn",
+        "noPermission": "The webmaster said that you can not enter this page...",
+        "checkUrl": "Please check that the URL you entered is correct, or click the button below to return to the homepage.",
+        "backToHome": "Back to home"
+    },
+    "bankrecord": {
+        "add": "Add",
+        "import_record": "Import Bank Record",
+        "time": "Time",
+        "bank_id": "Bank ID",
+        "partner_id": "Partner ID",
+        "amount": "Amount",
+        "trade_type": "Trade Type",
+        "call_back": "Callback",
+        "order_code": "Order Number",
+        "utr": "UTR",
+        "code_bank": "Code/Bank (4)",
+        "ifsc": "IFSC",
+        "content": "Content",
+        "admin_id": "Admin ID",
+        "ew_code": "EW Code",
+        "operation": "Operation",
+        "add_dialog_title": "Add",
+        "input_placeholder": "Please Enter",
+        "amount_placeholder": "Please Enter Amount",
+        "auth_code_placeholder": "Please Enter Authorization Code",
+        "bank_last_4_digits_placeholder": "Please Enter Last 4 Digits of Bank Card",
+        "ifsc_placeholder": "Please Enter IFSC",
+        "warning_message": "Payment orders need a '-' for users, e.g., -999",
+        "cancel": "Cancel",
+        "ok": "Confirm",
+        "delete": "Abolish",
+        "success": "Success",
+        "fail": "Failure",
+        "no_operation": "No Operation",
+        "code": "Code",
+        "pay_phone": "phone",
+        "trans_id": "trans_id(optonal)",
+        "payment_id": "payment_id"
+    },
+    "bankwithdrawal": {
+        "import_withdrawal": "Import Bank Withdrawal",
+        "time": "Time",
+        "bank_id": "Bank ID",
+        "partner_id": "Partner ID",
+        "amount": "Amount",
+        "utr": "UTR",
+        "admin_id": "Admin ID",
+        "s_bank_id": "Receiving Bank ID",
+        "input_placeholder": "Please Enter",
+        "account_sum": "Total Amount"
+    },
+    "operationLog": {
+        "enum": {
+            "create": "Create",
+            "update": "Update",
+            "delete": "Delete",
+            "read": "Read",
+            "download": "Download/Export"
+        },
+        "search": {
+            "createTime": "EventTime",
+            "module": "Module",
+            "eventType": "EventType",
+            "userName": "User"
+        },
+        "table": {
+            "utype": "UserType",
+            "eventDesc": "EventDescription",
+            "eventContent": "EventContent",
+            "eventResult": "EventResult"
+        }
+    },
+    "merchantpaylink": {
+      "addLink": "Add Link",
+      "table": {
+        "id": "ID",
+        "payName": "Payment Name",
+        "payLink": "Payment Link",
+        "operation": "Operation"
+      },
+      "dialog": {
+        "addTitle": "Add Merchant Payment Link",
+        "editTitle": "Edit Merchant Payment Link",
+        "payName": "Payment Name",
+        "placeholderPayName": "Please enter payment name",
+        "payLink": "Payment Link",
+        "placeholderPayLink": "Please enter payment link",
+        "cancel": "Cancel",
+        "confirm": "Confirm"
+      }
+    },
+  "dsdfpz": {
+    "columns": {
+      "operation": "Operation",
+      "id": "ID",
+
+      "merchant_id": "MerchantID",
+      "key": "Key",
+      "key2": "PublicKey",
+      "key3": "SecretKey",
+      "name": "Name",
+      "forcible": "Forcible",
+      "updated": "UpdateTime",
+      "created": "CreateTime",
+
+      "mer_id": "MerchantID",
+      "mer_key": "Key",
+      "mer_key2": "PublicKey",
+      "mer_key3": "SecretKey",
+      "mer_key4": "OtherParams",
+      "pay_name_zh": "Name（CN）",
+      "pay_name": "Name",
+      "is_self": "SelfProvider",
+      "is_xiaoshu": "Numeric",
+
+      "pay_url": "PayUrl",
+      "channel_code": "ChannelCode",
+      "notify_ip": "NotifyIP",
+      "query_url": "QueryUrl",
+      "status": "Status"
+    },
+    "tips": {
+      "id": "Please Type-in ID",
+
+      "merchant_id": "Please Type-in MerchantID",
+      "key": "Please Type-in Key",
+      "key2": "Please Type-in PublicKey",
+      "key3": "Please Type-in SecretKey",
+      "name": "Please Type-in Name",
+      "forcible": "Select",
+
+      "mer_id": "Please Type-in MerchantID",
+      "mer_key": "Please Type-in Key",
+      "mer_key2": "Please Type-in PublicKey",
+      "mer_key3": "Please Type-in SecretKey",
+      "mer_key4": "Please Type-in Other Params",
+      "pay_name_zh": "Please Type-in Name(CN)",
+      "pay_name": "Please Type-in Name",
+      "is_self": "Select",
+      "is_xiaoshu": "Select",
+
+      "pay_url": "Please Type-in PayUrl",
+      "channel_code": "Please Type-in ChannelCode",
+      "notify_ip": "Please Type-in NotifyIP",
+      "query_url": "Please Type-in QueryUrl",
+      "status": "Select"
+    },
+    "diglogs": {
+      "confirmdel": "Confirm Delete",
+      "add": "Add",
+      "edt": "Edit"
+    },
+    "alerts": {
+      "fail": "Operation Fail",
+      "success": "Operation Successfully",
+      "successdel": "Delete Successfully"
+    },
+    "options": {
+      "yes": "Yes",
+      "no": "No",
+      "normal": "Normal",
+      "disable": "Disable"
+    },
+    "buttons": {
+      "add": "Add",
+      "del": "Del",
+      "edt": "Edit",
+      "confirm": "Confirm",
+      "cancel": "Cancel",
+      "search": "search"
+    }
+  },
+  "collectPartner": {
+    "buttons": {
+      "code": "Code Information",
+      "updateRules": "Update Rules"
+    },
+    "filtersDataForm": {
+      "bound": "Grading rules",
+      "num": "Data quantity",
+      "rules": "After updating the rules, the page can return to normal only after all old data is refreshed!!!",
+      "data_select": "Display data conditions",
+      "interval_time": "Data collection interval"
+    }
+  }
+}

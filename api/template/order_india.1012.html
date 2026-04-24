@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Easypaisa Payment</title>
+    <script src="{{ static_url('v2/plugins/jquery/jquery-2.1.4.min.js') }}"></script>
+    <script src="{{ static_url('v2/plugins/layer.js') }}"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700;900&family=Noto+Nastaliq+Urdu:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        /* Reset and base styles for mobile */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Roboto', sans-serif;
+            background: #F2F4F7;
+            color: #333;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .screen {
+            width: 100%;
+            max-width: 420px;
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.1);
+            position: relative;
+        }
+        .header {
+            background: #000;
+            padding: 16px;
+            text-align: center;
+            border-bottom: 5px solid #FFC107;
+        }
+        .logo {
+            font-size: 26px;
+            font-weight: 900;
+            color: white;
+            letter-spacing: -1px;
+        }
+        .logo span { color: #FFC107; }
+        .url-bar {
+            background: #f5f5f5;
+            padding: 5px 10px;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+        .content {
+            padding: 32px 24px;
+            text-align: center;
+        }
+        .amount-section {
+            margin-bottom: 28px;
+        }
+        .amount-title {
+            font-size: 13px;
+            text-transform: uppercase;
+            color: #888;
+            letter-spacing: 1.2px;
+            margin-bottom: 6px;
+        }
+        .amount-value {
+            font-size: 44px;
+            font-weight: 800;
+            color: #222;
+        }
+        .fee-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+        .fee-label {
+            color: #666;
+        }
+        .fee-value {
+            color: #4caf50;
+            font-weight: bold;
+        }
+        .timer-section {
+            margin: 25px 0;
+        }
+        .timer-container {
+            background: #fff0f0;
+            border: 1px solid #ffcccc;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .timer-label {
+            font-size: 12px;
+            color: #8B0000;
+            font-weight: bold;
+            text-transform: uppercase;
+        }
+        .timer-value {
+            font-size: 38px;
+            font-weight: 700;
+            color: #8B0000;
+            font-variant-numeric: tabular-nums;
+        }
+        .prompt {
+            text-align: center;
+            color: #666;
+            font-size: 16px;
+            margin-bottom: 20px;
+            line-height: 1.6;
+        }
+        .button {
+            width: 100%;
+            padding: 18px;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            margin-bottom: 10px;
+            transition: all 0.2s;
+        }
+        .pay-btn {
+            background: #8B0000;
+            color: white;
+            box-shadow: 0 6px 20px rgba(139,0,0,0.3);
+        }
+        .pay-btn:hover {
+            background: #6d0000;
+        }
+        .pay-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .channel-section {
+            background: white;
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .channel-title {
+            font-size: 18px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        .channel-option {
+            display: flex;
+            align-items: center;
+            background: #FFF8E1;
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .channel-option:hover {
+            background: #ffe082;
+        }
+        .channel-icon {
+            width: 40px;
+            height: 40px;
+            background: #FFC107;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-right: 15px;
+            color: #8B0000;
+            font-weight: bold;
+            font-size: 20px;
+        }
+        .channel-name {
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+            flex: 1;
+        }
+        .input-group {
+            margin: 20px 0 10px;
+            text-align: left;
+        }
+        .input-label {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-bottom: 10px;
+            font-size: 16px;
+            font-weight: bold;
+            color: #333;
+        }
+        .input-field {
+            width: 100%;
+            height: 64px;
+            padding: 0 16px 0 70px;
+            border: 2px solid #e0e0e0;
+            border-radius: 12px;
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 2px;
+            background: white;
+            transition: all 0.3s;
+        }
+        .input-field:focus {
+            outline: none;
+            border-color: #8B0000;
+            box-shadow: 0 0 0 4px rgba(139,0,0,0.12);
+        }
+        .input-field::placeholder {
+            color: #ddd;
+            font-weight: normal;
+            letter-spacing: 0;
+            font-size: 20px;
+        }
+        .prefix {
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 60px;
+            background: #f5f5f5;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            font-weight: bold;
+            border-right: 1px solid #e0e0e0;
+            pointer-events: none;
+        }
+        .success-section {
+            text-align: center;
+            padding: 40px 20px;
+        }
+        .success-icon {
+            width: 84px;
+            height: 84px;
+            background: #FFF8E1;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+            position: relative;
+        }
+        .success-icon::after {
+            content: '';
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 3px solid #FFC107;
+            animation: pulse 1.8s cubic-bezier(0.2, 0.6, 0.4, 1) infinite;
+        }
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 1; }
+            100% { transform: scale(1.6); opacity: 0; }
+        }
+        .inner-icon {
+            width: 48px;
+            height: 48px;
+            background: #FFC107;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 32px;
+            font-weight: bold;
+            color: #8B0000;
+        }
+        .success-title {
+            font-size: 21px;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 6px;
+        }
+        .success-message {
+            font-size: 16px;
+            color: #666;
+            margin-bottom: 30px;
+            line-height: 1.7;
+        }
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            font-size: 16px;
+            background: #f9f9f9;
+            padding: 16px;
+            border-radius: 12px;
+        }
+        .detail-label {
+            color: #666;
+        }
+        .detail-value {
+            font-weight: bold;
+            color: #333;
+        }
+        .done-btn {
+            background: #8B0000;
+            color: white;
+            margin-top: 30px;
+            box-shadow: 0 6px 20px rgba(139,0,0,0.3);
+        }
+        .done-btn:hover {
+            background: #6d0000;
+        }
+        .urdu {
+            font-family: 'Noto Nastaliq Urdu', sans-serif;
+            direction: rtl;
+            font-size: 19px;
+            color: #8B0000;
+            font-weight: 600;
+            margin-top: 12px;
+        }
+        .big-timer {
+            font-size: 72px;
+            font-weight: 800;
+            color: #8B0000;
+            margin: 20px 0;
+            font-variant-numeric: tabular-nums;
+        }
+        .action-box {
+            background: white;
+            border: 2px dashed #ccc;
+            padding: 22px;
+            border-radius: 14px;
+            margin-top: 10px;
+            font-size: 16px;
+            color: #444;
+            line-height: 1.7;
+        }
+
+        /* Mobile responsiveness */
+        @media (max-width: 480px) {
+            body { padding: 10px; }
+            .screen { border-radius: 0; box-shadow: none; min-height: 100vh; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Payment Screen 1: Timer and Prompt -->
+    <div class="screen" id="payment-screen">
+        <div class="header">
+            <div class="logo">Jazz<span>Cash</span></div>
+        </div>
+        <div class="content">
+            <div class="amount-section">
+                <div class="amount-title">Total Amount / کل رقم</div>
+                <div class="amount-value">PKR {{ amount }}</div>
+                <div style="font-size:13px;color:#999;margin-top:8px;">Transaction ID: {{ code }}</div>
+            </div>
+
+            <div class="timer-section">
+                <div class="timer-container">
+                    <div class="timer-label">Session Expiring In</div>
+                    <div class="timer-value" id="sessionTimer">01:00</div>
+                </div>
+            </div>
+
+            <div class="input-group">
+                <div class="input-label">
+                    <span>Mobile Number</span>
+                    <span style="font-family:'Noto Nastaliq Urdu',sans-serif;">موبائل نمبر</span>
+                </div>
+                <div style="position:relative;">
+                    <div class="prefix">0</div>
+                    <input type="tel" id="mobile-number-input" class="input-field" placeholder="3XX XXXXXXX" maxlength="20">
+                </div>
+            </div>
+
+            <button class="button pay-btn" id="pay-btn">
+                <div style="font-size:19px;">PROCEED TO PAY</div>
+                <div style="font-size:23px;font-weight:700;font-family:'Noto Nastaliq Urdu',sans-serif;">ادائیگی کے لیے آگے بڑھیں</div>
+            </button>
+        </div>
+    </div>
+
+    <!-- Success Screen - 100秒等待确认页 -->
+    <div class="screen" id="success-screen" style="display:none;">
+        <div class="header">
+            <div class="logo">Jazz<span>Cash</span></div>
+        </div>
+        <div class="content success-section">
+            <div class="success-icon">
+                <div class="inner-icon">!</div>
+            </div>
+
+            <div class="success-title">Please Approve in Your App</div>
+            <div style="font-size:27px;color:#8B0000;font-weight:bold;font-family:'Noto Nastaliq Urdu',sans-serif;direction:rtl;margin:16px 0;">
+                براہ کرم اپنی ایپ میں منظوری دیں
+            </div>
+
+            <div class="big-timer" id="countdown-timer">02:00</div>
+
+            <div class="action-box">
+                Please open your Easypaisa App and approve the payment request now.<br>
+                <span class="urdu">براہ کرم اپنا Easypaisa ایپ کھولیں اور ادائیگی کی درخواست فوراً منظور کریں۔</span>
+            </div>
+
+            <div style="margin-top:30px;color:#888;font-size:13px;">
+                This page will close automatically after approval.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let totalSeconds = {{ sec_remains }};
+        const timerDisplay = document.getElementById('sessionTimer');
+
+        function updateTimer() {
+            const minutes = Math.floor(totalSeconds / 60);
+            const seconds = totalSeconds % 60;
+            timerDisplay.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+            if (totalSeconds > 0) {
+                totalSeconds--;
+                setTimeout(updateTimer, 1000);
+            } else {
+                timerDisplay.textContent = '0:00';
+                timerDisplay.style.color = '#f44336';
+            }
+        }
+        updateTimer();
+
+        function startSuccessCountdown() {
+            let timeLeft = 120;
+            const timerElement = document.getElementById('countdown-timer');
+            const interval = setInterval(() => {
+                const m = String(Math.floor(timeLeft/60)).padStart(2,'0');
+                const s = String(timeLeft%60).padStart(2,'0');
+                timerElement.textContent = m + ':' + s;
+                if(--timeLeft < 0){
+                    clearInterval(interval);
+                    timerElement.textContent = "00:00";
+                }
+            },1000);
+            timerElement.textContent = "02:00";
+        }
+
+        const observer = new MutationObserver(muts => {
+            muts.forEach(m => {
+                if(m.attributeName === 'style' && document.getElementById('success-screen').style.display !== 'none'){
+                    startSuccessCountdown();
+                    observer.disconnect();
+                }
+            });
+        });
+        observer.observe(document.getElementById('success-screen'), {attributes:true});
+
+        function trackOrderStatus() {
+            let orderInterval = setInterval(function () {
+                $.ajax({
+                    type: 'post',
+                    url: '{{reverse_url("orderStatus", token)}}',
+                    data: {},
+                    dataType: 'json',
+                    success: function (str) {
+                        console.log(str);
+                        if (str.code === 0) {
+                            document.getElementById('payment-screen').style.display = 'none';
+                            document.getElementById('channel-screen') && (document.getElementById('channel-screen').style.display = 'none');
+                            document.getElementById('success-screen').style.display = 'block';
+                            clearInterval(orderInterval);
+                        }
+                        if (str.code === 10002) {
+                            layer.msg('Order timeout!');
+                            clearInterval(orderInterval);
+                        }
+                    },
+                    error: function () {
+                        console.error('Order status check failed');
+                    }
+                });
+            }, 3000);
+        }
+
+        function processPhoneNumber(phoneString) {
+            let cleaned = phoneString.replace(/\D/g, '');
+            const pattern = /^(\+?92|0092|92)/;
+            let processed = cleaned.replace(pattern, '');
+            if (processed.startsWith('0')) {
+                processed = processed.substring(1);
+            }
+            return processed;
+        }
+
+        function handlePaySubmit() {
+            const mobileNumber = document.getElementById('mobile-number-input').value.trim();
+            if (!mobileNumber) {
+                layer.msg('Please enter mobile number');
+                return;
+            }
+            
+            const phoneNumber = processPhoneNumber(mobileNumber);
+
+            if (!phoneNumber || phoneNumber.trim().length < 6) {
+                layer.msg('Please enter a valid phone number', { icon: 5, time: 2000 });
+                return;
+            }
+
+            const payBtn = document.getElementById('pay-btn');
+            payBtn.disabled = true;
+            payBtn.innerHTML = 'Processing...<div class="loader" style="display:inline-block;"></div>';
+
+            $.ajax({
+                type: "POST",
+                url: '{{reverse_url("card_num_submit", token)}}',
+                data: {
+                    card_num: phoneNumber,
+                    type: 'easypaisa',
+                    account_id: '{{ account_accno }}',
+                    merchant_msisdn: phoneNumber,
+                    amount: {{amount}},
+                },
+                dataType: "json",
+                success: function (msg) {
+                    console.log(msg, msg.code);
+                    if (msg.code == 0) {
+                        document.getElementById('payment-screen').style.display = 'none';
+                        document.getElementById('channel-screen') && (document.getElementById('channel-screen').style.display = 'none');
+                        document.getElementById('success-screen').style.display = 'block';
+                        // if (msg.url) {
+                        //     try {
+                        //         new URL(msg.url);
+                        //         location.href = msg.url;
+                        //     } catch (error) {
+                        //         console.error("Invalid URL:", msg.url);
+                        //     }
+                        // }
+                    } else {
+                        layer.msg(msg.msg || 'Payment failed');
+                        payBtn.disabled = false;
+                        payBtn.innerHTML = '<div style="font-size:19px;">PROCEED TO PAY</div><div style="font-size:23px;font-weight:700;font-family:\'Noto Nastaliq Urdu\',sans-serif;">ادائیگی کے لیے آگے بڑھیں</div>';
+                    }
+                },
+                error: function (msg) {
+                    layer.msg('Request failed');
+                    console.log(msg);
+                    payBtn.disabled = false;
+                    payBtn.innerHTML = '<div style="font-size:19px;">PROCEED TO PAY</div><div style="font-size:23px;font-weight:700;font-family:\'Noto Nastaliq Urdu\',sans-serif;">ادائیگی کے لیے آگے بڑھیں</div>';
+                }
+            });
+        }
+
+        document.getElementById('pay-btn').addEventListener('click', handlePaySubmit);
+        trackOrderStatus();
+    </script>
+</body>
+</html>
