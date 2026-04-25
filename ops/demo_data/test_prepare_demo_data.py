@@ -11,6 +11,7 @@ from prepare_demo_data import (
     build_insert_sql,
     build_permission_csv,
     compute_opening_balances,
+    demo_order_created_at,
     ds_timestamps,
     normalize_amount,
 )
@@ -90,6 +91,20 @@ class DemoDataHelperTests(unittest.TestCase):
 
         self.assertEqual(balances[9101], decimal.Decimal("60000.0000"))
         self.assertEqual(balances[9102], decimal.Decimal("14000.0000"))
+
+    def test_demo_order_dates_cover_each_merchant_today_before_aging(self):
+        now = dt.datetime(2026, 4, 25, 16, 0, 0)
+
+        created_days = [
+            demo_order_created_at(now, index, merchant_count=8, minute_step=11).date()
+            for index in range(1, 9)
+        ]
+
+        self.assertEqual(created_days, [now.date()] * 8)
+        self.assertEqual(
+            demo_order_created_at(now, 9, merchant_count=8, minute_step=11).date(),
+            (now - dt.timedelta(days=1)).date(),
+        )
 
 
 if __name__ == "__main__":

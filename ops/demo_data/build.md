@@ -96,7 +96,11 @@ SELECT 'merchant_negative_balance', COUNT(*) FROM merchant WHERE balance < 0 OR 
 SELECT 'sys_info_demo_ip', COUNT(*) FROM sys_info WHERE id=1 AND sys_ip_w LIKE '%103.135.100.192%';
 SELECT 'merchant_demo_ip', COUNT(*) FROM merchant WHERE ip LIKE '%103.135.100.192%' AND ip_df LIKE '%103.135.100.192%';
 SELECT 'api_blacklisted', IF(COALESCE(api_ip_b, '') LIKE '%103.135.100.192%', 1, 0) FROM sys_info WHERE id=1;
+SELECT 'merchant_today_ds', merchant_id, COUNT(*) FROM orders_ds WHERE DATE(time_create)=CURDATE() GROUP BY merchant_id ORDER BY merchant_id;
+SELECT 'orders_df_pending_visible', COUNT(*) FROM orders_df WHERE status=0 AND COALESCE(parent_id,'')='' AND amount < 20000;
+SELECT 'balance_record_last_mismatch', COUNT(*) FROM merchant m LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=1 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=m.id WHERE m.balance <> x.change_after OR x.change_after IS NULL;
 SQL
 ```
 
 `api_blacklisted` 应为 0。API 侧当前按 `api_ip_b` 黑名单判断访问，不使用白名单字段。
+`merchant_today_ds` 应覆盖 8 个商户，`orders_df_pending_visible` 应大于 0，`balance_record_last_mismatch` 应为 0。

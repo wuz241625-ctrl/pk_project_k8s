@@ -88,10 +88,26 @@ orders_df=120
 balance_record=177
 merchant_target_payment_nonempty=0
 merchant_negative_balance=0
+partner_negative_balance=0
+orders_invalid_merchant_ds=0
+orders_invalid_merchant_df=0
+orders_invalid_partner_ds=0
+orders_invalid_partner_df=0
+orders_with_payment_id_ds=0
+orders_with_payment_id_df=0
+orders_df_pending_visible=17
+balance_record_last_mismatch=0
 admin_demo_accounts=5
 merchant_demo_accounts=8
 sys_info_demo_ip=1
 merchant_demo_ip=8
+```
+
+默认展示数据：
+
+```text
+8 个演示商户在当天代收订单中均有数据，每个商户 4 条。
+码商可抢代付单列表有可见订单，金额均满足外部码商 `< 20000` 的业务限制。
 ```
 
 真实接口验收：
@@ -99,10 +115,16 @@ merchant_demo_ip=8
 ```text
 admin /login/singin -> HTTP 200, code=20000
 admin /login/getuserinfo -> HTTP 200, code=20000
+admin /login/getroutes -> HTTP 200, code=20000，5 个角色权限数量分别为 173/28/13/23/68
 admin /merchant/getmerchant -> HTTP 200, code=20000, total=8
 admin /order/getorderds -> HTTP 200, code=20000
+admin /partner/getpayment is_del=0 -> HTTP 200, code=20000, total=0
+admin /partner/getpayment is_del=1 -> HTTP 200, code=20000, total=0
 merchant /login/singin -> HTTP 200, code=20000
 merchant /login/getuserinfo -> HTTP 200, code=20000
 merchant /merchant/getmerchant -> HTTP 200, code=20000
-merchant /order/getorderds -> HTTP 200, code=20000
+merchant /order/getorderds -> HTTP 200, code=20000，8 个商户默认当天列表均有订单
+api /v1/users/sign_in -> HTTP 200，4 个码商均返回 token
+api /v1/user -> HTTP 200，4 个码商均可查看个人信息
+api /v1/orders?min=1&max=19999 -> HTTP 200，4 个码商均可查看可抢单列表
 ```

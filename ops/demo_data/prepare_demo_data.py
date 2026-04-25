@@ -74,6 +74,13 @@ def ds_timestamps(created: dt.datetime, status: int):
     return created, accepted, None, None
 
 
+def demo_order_created_at(now: dt.datetime, index: int, merchant_count: int, minute_step: int) -> dt.datetime:
+    days_ago = ((index - 1) // merchant_count) % 10
+    target_date = now.date() - dt.timedelta(days=days_ago)
+    minute_offset = (index * minute_step) % 600
+    return dt.datetime.combine(target_date, dt.time(8, 0)) + dt.timedelta(minutes=minute_offset)
+
+
 def build_permission_csv(permissions: Sequence[Dict[str, object]], patterns: Sequence[str]) -> str:
     by_id = {int(row["id"]): row for row in permissions}
     selected = set()
@@ -386,7 +393,7 @@ def clone_ds_order(seed: Dict[str, object], index: int, merchant: Dict[str, obje
     row = dict(seed)
     status_cycle = [3, 4, 3, -1, 0, 1, 2]
     status = status_cycle[index % len(status_cycle)]
-    created = now - dt.timedelta(days=index % 10, minutes=(index * 11) % 480)
+    created = demo_order_created_at(now, index, len(DEMO_MERCHANT_IDS), 11)
     amount = normalize_amount(decimal.Decimal(str(seed.get("amount") or 0)), index)
     rate = decimal.Decimal(str(merchant["rate_df"] or "0.0200"))
     poundage = (amount * rate).quantize(decimal.Decimal("0.0001"))
@@ -443,7 +450,7 @@ def clone_df_order(seed: Dict[str, object], index: int, merchant: Dict[str, obje
     row = dict(seed)
     status_cycle = [3, 4, -1, 0, 1, 2]
     status = status_cycle[index % len(status_cycle)]
-    created = now - dt.timedelta(days=index % 10, minutes=(index * 17) % 480)
+    created = demo_order_created_at(now, index, len(DEMO_MERCHANT_IDS), 17)
     amount = normalize_amount(decimal.Decimal(str(seed.get("amount") or 0)), index)
     fee = decimal.Decimal(str(merchant["fee_df"] or "5.0000")).quantize(decimal.Decimal("0.0001"))
     realpay = (amount + fee).quantize(decimal.Decimal("0.0001"))
