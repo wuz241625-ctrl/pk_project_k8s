@@ -70,7 +70,9 @@
 - `mysql` Service selector：`app=mysql`、`statefulset.kubernetes.io/pod-name=mysql-0`
 - `mysql` endpoint：`10.244.1.49:3306`
 - `admin` / `api` / `merchant` 均为 `RUN_ENV=PROD`
-- 白名单：`103.135.100.192` 已写入 `sys_info.sys_ip_w`，8 个演示商户 `ip/ip_df` 均包含该 IP
+- admin 白名单：`103.135.100.192` 已写入 `sys_info.sys_ip_w`
+- merchant 白名单：8 个演示商户 `ip/ip_df` 均包含 `103.135.100.192`
+- api 访问控制：API 代码使用 `sys_info.api_ip_b` 黑名单，不是白名单；验收时 `103.135.100.192` 不在黑名单中
 
 最终 SQL 验收：
 

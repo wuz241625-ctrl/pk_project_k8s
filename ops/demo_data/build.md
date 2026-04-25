@@ -95,5 +95,8 @@ SELECT 'merchant_target_payment_nonempty', COUNT(*) FROM merchant WHERE target_p
 SELECT 'merchant_negative_balance', COUNT(*) FROM merchant WHERE balance < 0 OR balance_frozen < 0;
 SELECT 'sys_info_demo_ip', COUNT(*) FROM sys_info WHERE id=1 AND sys_ip_w LIKE '%103.135.100.192%';
 SELECT 'merchant_demo_ip', COUNT(*) FROM merchant WHERE ip LIKE '%103.135.100.192%' AND ip_df LIKE '%103.135.100.192%';
+SELECT 'api_blacklisted', IF(COALESCE(api_ip_b, '') LIKE '%103.135.100.192%', 1, 0) FROM sys_info WHERE id=1;
 SQL
 ```
+
+`api_blacklisted` 应为 0。API 侧当前按 `api_ip_b` 黑名单判断访问，不使用白名单字段。
