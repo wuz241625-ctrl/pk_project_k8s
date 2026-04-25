@@ -2,6 +2,49 @@
 
 ## 常见问题
 
+### 0.17 MySQL Service 误挂空库导致共享缓存和业务查询异常
+
+现象：
+
+- API、admin、merchant 通过 `mysql` Service 访问数据库时，查询结果偶发为空
+- Redis 共享缓存可能被空库查询结果污染，例如 `cache_info_sys_info_1` 被写成 `{}`
+- admin 登录可能间歇性返回 `账号密码错误`
+
+根因：
+
+- `mysql` Service 原 selector 为 `app=mysql`
+- `mysql` StatefulSet 原配置为 `replicas: 2`
+- `mysql-0` 有生产数据，`mysql-1` 是空库，二者没有配置复制
+- 业务服务连接池经 Service 建连时会随机落到空库 `mysql-1`
+
+处理：
+
+```yaml
+# /opt/cicd/k8s/db-yaml/mysql-svc.yaml
+selector:
+  app: mysql
+  statefulset.kubernetes.io/pod-name: mysql-0
+
+# /opt/cicd/k8s/db-yaml/mysql.yaml
+replicas: 1
+```
+
+应用后重启连接池：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql-svc.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout restart deployment/admin-deploy deployment/api-deploy deployment/merchant-deploy -n pk
+```
+
+验证：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl get endpoints mysql -n pk -o wide
+```
+
+`mysql` endpoint 必须只剩 `mysql-0` 的 Pod IP。
+
 ### 0.16 API 共享缓存缺字段导致 `get_cache_result()` 异常
 
 现象：

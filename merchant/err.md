@@ -2,6 +2,49 @@
 
 ## 常见问题
 
+### 0.3 MySQL Service 误挂空库导致登录或业务查询间歇异常
+
+现象：
+
+- 同一套线上配置下，admin/api/merchant 偶发查不到数据库数据
+- admin 登录可能间歇性提示 `账号密码错误`
+- Redis 共享缓存可能被写入空对象
+
+根因：
+
+- `mysql` Service 原 selector 为 `app=mysql`
+- `mysql` StatefulSet 原配置为 `replicas: 2`
+- `mysql-0` 有生产数据，`mysql-1` 是空库，且没有主从复制
+- 服务连接池随机连到 `mysql-1` 时，会读到空数据
+
+处理：
+
+```yaml
+# /opt/cicd/k8s/db-yaml/mysql-svc.yaml
+selector:
+  app: mysql
+  statefulset.kubernetes.io/pod-name: mysql-0
+
+# /opt/cicd/k8s/db-yaml/mysql.yaml
+replicas: 1
+```
+
+应用并重启依赖 MySQL 的服务：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql-svc.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout restart deployment/admin-deploy deployment/api-deploy deployment/merchant-deploy -n pk
+```
+
+验证：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl get endpoints mysql -n pk -o wide
+```
+
+`mysql` endpoint 必须只剩 `mysql-0`。
+
 ### 0.2 Merchant 线上意外按 DEV 配置启动
 
 现象：

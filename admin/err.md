@@ -2,6 +2,63 @@
 
 ## 常见问题
 
+### 0.7 Admin 登录间歇性提示账号密码错误，或 `sys_info` 缓存变成 `{}`
+
+现象：
+
+- 同一个账号、同一个密码，有时返回 `账号密码错误`
+- 正确密码配错误 Google 码时，本应稳定返回 `谷歌验证码错误`，但会间歇性返回 `账号密码错误`
+- Redis 里的 `cache_info_sys_info_1` 曾被写成 `{}`
+
+根因：
+
+- 线上 `mysql` Service selector 只按 `app=mysql` 选择后端
+- `mysql` StatefulSet 被配置为 `replicas: 2`
+- 两个 MySQL Pod 没有主从复制：
+  - `mysql-0` 有生产数据
+  - `mysql-1` 是空库
+- admin 连接池通过 `mysql` Service 建连接时会随机连到 `mysql-0` 或 `mysql-1`
+- 连到 `mysql-1` 时，管理员账号查不到，所以登录被返回为 `账号密码错误`
+- 连到 `mysql-1` 时查询 `sys_info where id=1` 也查不到，旧缓存逻辑会把 `{}` 写入 Redis，后续触发 `KeyError: 'sys_ip_w'`
+
+处理：
+
+1. 将线上 `/opt/cicd/k8s/db-yaml/mysql-svc.yaml` 收敛到唯一有数据的 `mysql-0`：
+
+```yaml
+selector:
+  app: mysql
+  statefulset.kubernetes.io/pod-name: mysql-0
+```
+
+2. 将线上 `/opt/cicd/k8s/db-yaml/mysql.yaml` 收敛为单副本：
+
+```yaml
+replicas: 1
+```
+
+3. 应用并重启依赖 MySQL 的连接池：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql-svc.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/db-yaml/mysql.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout restart deployment/admin-deploy deployment/api-deploy deployment/merchant-deploy -n pk
+```
+
+验证：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl get endpoints mysql -n pk -o wide
+```
+
+期望只有：
+
+```text
+10.244.1.49:3306
+```
+
+并用 admin Pod 连续读 `mysql` Service，必须全部返回 `mysql-0` 且 `admin` 表有数据。
+
 ### 0.6 Admin 登录 500，日志 `KeyError: 'sys_ip_w'`
 
 现象：
