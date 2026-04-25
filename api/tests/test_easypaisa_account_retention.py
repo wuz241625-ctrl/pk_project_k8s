@@ -41,6 +41,9 @@ class FakeSyncRedis:
         bucket[str(field)] = value
         return 1
 
+    def hget(self, key, field):
+        return self.hashes.get(key, {}).get(str(field))
+
     def hdel(self, key, *fields):
         bucket = self.hashes.setdefault(key, {})
         removed = 0
@@ -164,8 +167,12 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         )
 
         self.redis.sadd(keyspace.INDEX_ONLINE, 533281)
+        self.redis.sadd(keyspace.INDEX_COLLECT_ENABLED, 533281)
+        self.redis.sadd(keyspace.INDEX_DF_ORDER_ENABLED, 533281)
+        self.redis.sadd(keyspace.INDEX_DS_ORDER_ENABLED, 533277)
         self.redis.sadd(keyspace.INDEX_DISPATCH_DF, 533281)
         self.redis.sadd(keyspace.INDEX_DISPATCH_DS, 533277)
+        self.redis.zadd(keyspace.SCHEDULE_COLLECTION, {533281: 1_744_000_001})
         self.redis.zadd(keyspace.INDEX_UPDATED_AT, {533281: 1_744_000_001})
 
         self.redis.set(keyspace.pre_login_key(533277), '{"phase":"otpSent"}')
@@ -174,6 +181,8 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.redis.set(keyspace.session_key(533281), '{"phase":"otpSent"}')
         self.redis.set(keyspace.kickoff_key(533277), "1")
         self.redis.set(keyspace.legacy_kickoff_key(533277), "1")
+        self.redis.set(keyspace.health_pause_order_key(533277), "api_error")
+        self.redis.set(keyspace.health_pause_order_key(533281), "api_error")
         self.redis.set(keyspace.lock_payment_key(533277), "1")
         self.redis.set(keyspace.lock_phone_key("03194937489"), "1")
         self.redis.set(keyspace.legacy_login_on_phone_key("03489696378"), "1")
@@ -205,8 +214,12 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertEqual(plan["orphan_payment_ids"], ["599999"])
         self.assertEqual(plan["disable_phones"], ["03194937489", "03489696378"])
         self.assertEqual(plan["runtime_online_payment_ids"], ["533277", "533281"])
+        self.assertEqual(plan["runtime_collect_payment_ids"], ["533277", "533281"])
+        self.assertEqual(plan["runtime_df_order_payment_ids"], ["533277", "533281"])
+        self.assertEqual(plan["runtime_ds_order_payment_ids"], ["533277"])
         self.assertEqual(plan["runtime_dispatch_df_payment_ids"], ["533277", "533281"])
         self.assertEqual(plan["runtime_dispatch_ds_payment_ids"], ["533277"])
+        self.assertEqual(plan["runtime_schedule_collection_payment_ids"], ["533277", "533281"])
         self.assertEqual(plan["legacy_online_payment_ids"], ["533277"])
         self.assertEqual(plan["legacy_active_payment_ids"], ["533277"])
         self.assertEqual(plan["job_hash_payment_ids"], ["533277", "599999"])
@@ -215,6 +228,8 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertEqual(plan["monitor_set_payment_ids"], ["533277", "599999"])
         self.assertIn(self.keyspace.pre_login_key(533277), plan["matched_keys"])
         self.assertIn(self.keyspace.session_key(533277), plan["matched_keys"])
+        self.assertIn(self.keyspace.health_pause_order_key(533277), plan["matched_keys"])
+        self.assertIn(self.keyspace.health_pause_order_key(533281), plan["matched_keys"])
         self.assertIn(self.keyspace.legacy_login_on_phone_key("03194937489"), plan["matched_keys"])
         self.assertIn(self.keyspace.legacy_login_on_phone_key("03489696378"), plan["matched_keys"])
         self.assertNotIn(self.keyspace.legacy_login_on_phone_key("03045536108"), plan["matched_keys"])
@@ -235,8 +250,12 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertEqual(result["removed_monitor_set"], 2)
 
         self.assertEqual(self.redis.smembers(self.keyspace.INDEX_ONLINE), {"533280"})
+        self.assertEqual(self.redis.smembers(self.keyspace.INDEX_COLLECT_ENABLED), {"533280"})
+        self.assertEqual(self.redis.smembers(self.keyspace.INDEX_DF_ORDER_ENABLED), {"533280"})
+        self.assertEqual(self.redis.smembers(self.keyspace.INDEX_DS_ORDER_ENABLED), set())
         self.assertEqual(self.redis.smembers(self.keyspace.INDEX_DISPATCH_DF), {"533280"})
         self.assertEqual(self.redis.smembers(self.keyspace.INDEX_DISPATCH_DS), set())
+        self.assertEqual(self.redis.zrange(self.keyspace.SCHEDULE_COLLECTION, 0, -1), ["533280"])
         self.assertEqual(self.redis.smembers(self.keyspace.LEGACY_PAYMENT_ONLINE_DF), {"533280", "533999"})
         self.assertEqual(self.redis.lrange(self.keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, -1), ["533280", "533999"])
 
@@ -249,6 +268,8 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertIsNone(self.redis.get(self.keyspace.session_key(533277)))
         self.assertIsNone(self.redis.get(self.keyspace.kickoff_key(533277)))
         self.assertIsNone(self.redis.get(self.keyspace.legacy_kickoff_key(533277)))
+        self.assertIsNone(self.redis.get(self.keyspace.health_pause_order_key(533277)))
+        self.assertIsNone(self.redis.get(self.keyspace.health_pause_order_key(533281)))
         self.assertIsNone(self.redis.get(self.keyspace.lock_payment_key(533277)))
         self.assertIsNone(self.redis.get(self.keyspace.lock_phone_key("03194937489")))
         self.assertIsNone(self.redis.get(self.keyspace.legacy_login_on_payment_key(533277)))

@@ -16,6 +16,7 @@ import tornado
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
+from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 from application.message import msg
 import hashlib
 import requests
@@ -34,6 +35,33 @@ def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=Non
             return None
         return {'field': 'trans_id', 'value': trans_id, 'message_key': 10320}
     return {'field': 'utr', 'value': utr, 'message_key': 10229}
+
+
+def is_easypaisa_payment(payment):
+    return (
+        str((payment or {}).get('bank_type_id') or '') == '97'
+        or str((payment or {}).get('bank_type') or '') == '97'
+    )
+
+
+async def requeue_df_if_online(handler, payment_id):
+    payment = await handler.get_result_by_condition(
+        'payment',
+        ['bank_type', 'bank_type_id'],
+        {'id': payment_id},
+    )
+    if not payment:
+        await handler.redis.lrem('payment_active_df', 0, payment_id)
+        return False
+    bank_type = 97 if is_easypaisa_payment(payment) else (payment or {}).get('bank_type_id') or (payment or {}).get('bank_type')
+    reader = EasyPaisaAdminRuntimeReader(handler.redis)
+    if not await reader.is_payment_online_df(payment_id, bank_type=bank_type):
+        await handler.redis.lrem('payment_active_df', 0, payment_id)
+        return False
+    await handler.redis.lrem('payment_active_df', 0, payment_id)
+    await handler.redis.rpush('payment_active_df', payment_id)
+    return True
+
 
 class BaseOrderHandler(BaseHandler):
     # 确认
@@ -346,9 +374,7 @@ class BaseOrderHandler(BaseHandler):
                 else:
                     await conn.commit()
                     if order['payment_id']:
-                        if await self.redis.sismember('payment_online_df', order['payment_id']):
-                            await self.redis.lrem('payment_active_df', 0, order['payment_id'])
-                            await self.redis.rpush('payment_active_df', order['payment_id'])                    
+                        await requeue_df_if_online(self, order['payment_id'])
                     # 代付回调-确认
                     if order_type in [1, 2]:
                         await self.redis.publish('order_df_notify', code)                        
@@ -2949,8 +2975,7 @@ class cancelOrderdf(BaseHandler):
                     await conn.commit()
                     # 重新接单
                     if order['payment_id'] and order_type in [1, 3] and not (order_type == 3 and status in [0, 1]):
-                        await self.redis.lrem('payment_active_df', 0, order['payment_id'])
-                        await self.redis.rpush('payment_active_df', order['payment_id'])
+                        await requeue_df_if_online(self, order['payment_id'])
                     # 代付回调-驳回
                     if order_type in [1, 2]:
                         await self.redis.publish('order_df_notify', code)

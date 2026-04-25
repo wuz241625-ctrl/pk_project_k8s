@@ -14,6 +14,7 @@ PAYMENT_KEY_PATTERNS: Sequence[tuple[str, str]] = (
     ("kick_off_*", "kick_off_"),
     ("easypaisa_runtime:lock:payment:*", "easypaisa_runtime:lock:payment:"),
     ("easypaisa_runtime:snapshot:*", "easypaisa_runtime:snapshot:"),
+    ("easypaisa_runtime:health_pause:order:*", "easypaisa_runtime:health_pause:order:"),
 )
 PHONE_KEY_PATTERNS: Sequence[tuple[str, str]] = (
     ("easypaisa_runtime:lock:phone:*", "easypaisa_runtime:lock:phone:"),
@@ -78,8 +79,12 @@ def _tracked_payment_ids(redis_client) -> Set[str]:
     payment_ids.update(normalize_payment_ids(redis_client.hkeys(keyspace.MONITOR_HASH)))
     payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.MONITOR_SET, 0, -1)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DS_ORDER_ENABLED)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DF)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DS)))
+    payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.SCHEDULE_COLLECTION, 0, -1)))
     payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.INDEX_UPDATED_AT, 0, -1)))
     return payment_ids
 
@@ -87,8 +92,12 @@ def _tracked_payment_ids(redis_client) -> Set[str]:
 def _force_offline_candidates(redis_client) -> Set[str]:
     payment_ids = set()
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED)))
+    payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DS_ORDER_ENABLED)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DF)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DS)))
+    payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.SCHEDULE_COLLECTION, 0, -1)))
     payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.INDEX_UPDATED_AT, 0, -1)))
     return payment_ids
 
@@ -126,6 +135,7 @@ def _build_delete_keys(disable_payment_ids: Iterable[str], disable_phones: Itera
         matched.add(keyspace.kickoff_key(payment_id))
         matched.add(keyspace.legacy_kickoff_key(payment_id))
         matched.add(keyspace.lock_payment_key(payment_id))
+        matched.add(keyspace.health_pause_order_key(payment_id))
 
     for phone in disable_phones:
         matched.add(keyspace.legacy_login_on_phone_key(phone))
@@ -196,6 +206,15 @@ def build_retention_plan(
     ) - keep_payment_ids
 
     runtime_online_ids = disable_payment_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
+    runtime_collect_ids = disable_payment_ids.intersection(
+        normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED))
+    )
+    runtime_df_order_ids = disable_payment_ids.intersection(
+        normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED))
+    )
+    runtime_ds_order_ids = disable_payment_ids.intersection(
+        normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DS_ORDER_ENABLED))
+    )
     runtime_dispatch_df_ids = disable_payment_ids.intersection(
         normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DF))
     )
@@ -210,6 +229,9 @@ def build_retention_plan(
     )
     runtime_updated_ids = disable_payment_ids.intersection(
         normalize_payment_ids(redis_client.zrange(keyspace.INDEX_UPDATED_AT, 0, -1))
+    )
+    runtime_schedule_collection_ids = disable_payment_ids.intersection(
+        normalize_payment_ids(redis_client.zrange(keyspace.SCHEDULE_COLLECTION, 0, -1))
     )
     job_hash_ids = disable_payment_ids.intersection(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH)))
     job_set_ids = disable_payment_ids.intersection(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1)))
@@ -236,8 +258,12 @@ def build_retention_plan(
         "force_offline_payment_ids": _sorted_payment_ids(force_offline_payment_ids),
         "matched_keys": matched_keys,
         "runtime_online_payment_ids": _sorted_payment_ids(runtime_online_ids),
+        "runtime_collect_payment_ids": _sorted_payment_ids(runtime_collect_ids),
+        "runtime_df_order_payment_ids": _sorted_payment_ids(runtime_df_order_ids),
+        "runtime_ds_order_payment_ids": _sorted_payment_ids(runtime_ds_order_ids),
         "runtime_dispatch_df_payment_ids": _sorted_payment_ids(runtime_dispatch_df_ids),
         "runtime_dispatch_ds_payment_ids": _sorted_payment_ids(runtime_dispatch_ds_ids),
+        "runtime_schedule_collection_payment_ids": _sorted_payment_ids(runtime_schedule_collection_ids),
         "runtime_updated_payment_ids": _sorted_payment_ids(runtime_updated_ids),
         "legacy_online_payment_ids": _sorted_payment_ids(legacy_online_ids),
         "legacy_active_payment_ids": _sorted_payment_ids(legacy_active_ids),
@@ -323,8 +349,12 @@ def summarize_retention_plan(plan: Mapping[str, object]) -> Dict[str, int]:
         "force_offline_payment_ids": len(plan.get("force_offline_payment_ids", [])),
         "matched_keys": len(plan.get("matched_keys", [])),
         "runtime_online_payment_ids": len(plan.get("runtime_online_payment_ids", [])),
+        "runtime_collect_payment_ids": len(plan.get("runtime_collect_payment_ids", [])),
+        "runtime_df_order_payment_ids": len(plan.get("runtime_df_order_payment_ids", [])),
+        "runtime_ds_order_payment_ids": len(plan.get("runtime_ds_order_payment_ids", [])),
         "runtime_dispatch_df_payment_ids": len(plan.get("runtime_dispatch_df_payment_ids", [])),
         "runtime_dispatch_ds_payment_ids": len(plan.get("runtime_dispatch_ds_payment_ids", [])),
+        "runtime_schedule_collection_payment_ids": len(plan.get("runtime_schedule_collection_payment_ids", [])),
         "runtime_updated_payment_ids": len(plan.get("runtime_updated_payment_ids", [])),
         "legacy_online_payment_ids": len(plan.get("legacy_online_payment_ids", [])),
         "legacy_active_payment_ids": len(plan.get("legacy_active_payment_ids", [])),

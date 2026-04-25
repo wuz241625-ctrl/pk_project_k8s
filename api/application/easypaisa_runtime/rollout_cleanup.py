@@ -8,6 +8,7 @@ KEY_PATTERNS: Sequence[str] = (
     "login_on_easypaisa_*",
     "easypaisa_runtime:session:*",
     "easypaisa_runtime:snapshot:*",
+    "easypaisa_runtime:health_pause:order:*",
 )
 
 
@@ -50,8 +51,12 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
     easypaisa_ids.update(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
+    easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED)))
+    easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED)))
+    easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DS_ORDER_ENABLED)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DF)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DS)))
+    easypaisa_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.SCHEDULE_COLLECTION, 0, -1)))
     legacy_online_ids = sorted(
         easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.LEGACY_PAYMENT_ONLINE_DF))),
         key=int,
@@ -66,6 +71,18 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
     )
     runtime_online_ids = sorted(
         easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE))),
+        key=int,
+    )
+    runtime_collect_ids = sorted(
+        easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED))),
+        key=int,
+    )
+    runtime_df_order_ids = sorted(
+        easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED))),
+        key=int,
+    )
+    runtime_ds_order_ids = sorted(
+        easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DS_ORDER_ENABLED))),
         key=int,
     )
     runtime_dispatch_df_ids = sorted(
@@ -86,7 +103,10 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
     )
 
     runtime_updated_ids = []
+    runtime_schedule_collection_ids = []
     for payment_id in sorted(easypaisa_ids, key=int):
+        if redis_client.zscore(keyspace.SCHEDULE_COLLECTION, payment_id) is not None:
+            runtime_schedule_collection_ids.append(payment_id)
         if redis_client.zscore(keyspace.INDEX_UPDATED_AT, payment_id) is not None:
             runtime_updated_ids.append(payment_id)
 
@@ -96,8 +116,12 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
         "legacy_collection_payment_ids": legacy_collection_ids,
         "legacy_active_payment_ids": legacy_active_ids,
         "runtime_online_payment_ids": runtime_online_ids,
+        "runtime_collect_payment_ids": runtime_collect_ids,
+        "runtime_df_order_payment_ids": runtime_df_order_ids,
+        "runtime_ds_order_payment_ids": runtime_ds_order_ids,
         "runtime_dispatch_df_payment_ids": runtime_dispatch_df_ids,
         "runtime_dispatch_ds_payment_ids": runtime_dispatch_ds_ids,
+        "runtime_schedule_collection_payment_ids": runtime_schedule_collection_ids,
         "job_hash_payment_ids": job_hash_ids,
         "job_set_payment_ids": job_set_ids,
         "runtime_updated_payment_ids": runtime_updated_ids,
@@ -110,8 +134,12 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
     legacy_collection_ids = plan.get("legacy_collection_payment_ids", [])
     legacy_active_ids = plan.get("legacy_active_payment_ids", [])
     runtime_online_ids = plan.get("runtime_online_payment_ids", [])
+    runtime_collect_ids = plan.get("runtime_collect_payment_ids", [])
+    runtime_df_order_ids = plan.get("runtime_df_order_payment_ids", [])
+    runtime_ds_order_ids = plan.get("runtime_ds_order_payment_ids", [])
     runtime_dispatch_df_ids = plan.get("runtime_dispatch_df_payment_ids", [])
     runtime_dispatch_ds_ids = plan.get("runtime_dispatch_ds_payment_ids", [])
+    runtime_schedule_collection_ids = plan.get("runtime_schedule_collection_payment_ids", [])
     job_hash_ids = plan.get("job_hash_payment_ids", [])
     job_set_ids = plan.get("job_set_payment_ids", [])
     runtime_updated_ids = plan.get("runtime_updated_payment_ids", [])
@@ -135,6 +163,21 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
     removed_runtime_online = (
         redis_client.srem(keyspace.INDEX_ONLINE, *runtime_online_ids) if runtime_online_ids else 0
     )
+    removed_runtime_collect = (
+        redis_client.srem(keyspace.INDEX_COLLECT_ENABLED, *runtime_collect_ids)
+        if runtime_collect_ids
+        else 0
+    )
+    removed_runtime_df_order = (
+        redis_client.srem(keyspace.INDEX_DF_ORDER_ENABLED, *runtime_df_order_ids)
+        if runtime_df_order_ids
+        else 0
+    )
+    removed_runtime_ds_order = (
+        redis_client.srem(keyspace.INDEX_DS_ORDER_ENABLED, *runtime_ds_order_ids)
+        if runtime_ds_order_ids
+        else 0
+    )
     removed_runtime_dispatch_df = (
         redis_client.srem(keyspace.INDEX_DISPATCH_DF, *runtime_dispatch_df_ids)
         if runtime_dispatch_df_ids
@@ -154,6 +197,11 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
     removed_runtime_updated = (
         redis_client.zrem(keyspace.INDEX_UPDATED_AT, *runtime_updated_ids) if runtime_updated_ids else 0
     )
+    removed_runtime_schedule_collection = (
+        redis_client.zrem(keyspace.SCHEDULE_COLLECTION, *runtime_schedule_collection_ids)
+        if runtime_schedule_collection_ids
+        else 0
+    )
 
     return {
         "deleted_keys": deleted_keys,
@@ -161,8 +209,12 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
         "removed_online_ds": removed_online_ds,
         "removed_active_df": removed_active_df,
         "removed_runtime_online": removed_runtime_online,
+        "removed_runtime_collect": removed_runtime_collect,
+        "removed_runtime_df_order": removed_runtime_df_order,
+        "removed_runtime_ds_order": removed_runtime_ds_order,
         "removed_runtime_dispatch_df": removed_runtime_dispatch_df,
         "removed_runtime_dispatch_ds": removed_runtime_dispatch_ds,
+        "removed_runtime_schedule_collection": removed_runtime_schedule_collection,
         "removed_job_hash": removed_job_hash,
         "removed_job_set": removed_job_set,
         "removed_runtime_updated": removed_runtime_updated,
@@ -176,8 +228,12 @@ def summarize_plan(plan: Dict[str, List[str]]) -> Dict[str, int]:
         "legacy_collection_payment_ids": len(plan.get("legacy_collection_payment_ids", [])),
         "legacy_active_payment_ids": len(plan.get("legacy_active_payment_ids", [])),
         "runtime_online_payment_ids": len(plan.get("runtime_online_payment_ids", [])),
+        "runtime_collect_payment_ids": len(plan.get("runtime_collect_payment_ids", [])),
+        "runtime_df_order_payment_ids": len(plan.get("runtime_df_order_payment_ids", [])),
+        "runtime_ds_order_payment_ids": len(plan.get("runtime_ds_order_payment_ids", [])),
         "runtime_dispatch_df_payment_ids": len(plan.get("runtime_dispatch_df_payment_ids", [])),
         "runtime_dispatch_ds_payment_ids": len(plan.get("runtime_dispatch_ds_payment_ids", [])),
+        "runtime_schedule_collection_payment_ids": len(plan.get("runtime_schedule_collection_payment_ids", [])),
         "job_hash_payment_ids": len(plan.get("job_hash_payment_ids", [])),
         "job_set_payment_ids": len(plan.get("job_set_payment_ids", [])),
         "runtime_updated_payment_ids": len(plan.get("runtime_updated_payment_ids", [])),

@@ -42,6 +42,7 @@ sys.path.insert(0, parent_dir)
 
 from response_logger import ResponseLogger
 import config
+from application.easypaisa_runtime import keyspace
 from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 from application.lakshmi_api.enums.payment_login_progress import PaymentLoginProgress
 from datetime import datetime
@@ -486,6 +487,84 @@ class BankLogin:
             finally:
                 self.db_connection.commit()
 
+    def _runtime_manual_off(self, payment_id):
+        try:
+            runtime_service = getattr(self, "runtime_service", None)
+            if runtime_service is None:
+                runtime_service = SyncEasyPaisaRuntimeService(self.redis)
+                self.runtime_service = runtime_service
+            return runtime_service.is_manual_off(payment_id)
+        except Exception as e:
+            self.logger.error(f"检查 EasyPaisa manual-off 失败 payment_id={payment_id}: {e}", exc_info=True)
+            return False
+
+    def _runtime_health_order_paused(self, payment_id):
+        try:
+            runtime_service = getattr(self, "runtime_service", None)
+            if runtime_service is None:
+                runtime_service = SyncEasyPaisaRuntimeService(self.redis)
+                self.runtime_service = runtime_service
+            return runtime_service.is_order_health_paused(payment_id)
+        except Exception as e:
+            self.logger.error(f"检查 EasyPaisa health-pause 失败 payment_id={payment_id}: {e}", exc_info=True)
+            return True
+
+    def _read_payment_runtime_flags(self, payment_id):
+        if not self.db_connection or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            if not self.db_connection:
+                return None
+
+        with self.db_connection.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT id, phone, status, certified, manual_status, channel
+                    FROM payment
+                    WHERE id = %s
+                    """,
+                    (payment_id,),
+                )
+                return cur.fetchone()
+            except Exception as e:
+                self.logger.error(f"查询 EasyPaisa runtime 状态失败 payment_id={payment_id}: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return None
+            finally:
+                self.db_connection.commit()
+
+    def payment_runtime_policy(self, payment_id, login_data=None):
+        """返回采集 worker 写 runtime 前必须遵守的 DB/runtime 策略。"""
+        payment = self._read_payment_runtime_flags(payment_id)
+        if not payment:
+            return "offline"
+
+        try:
+            status = int(payment.get("status") or 0)
+            certified = int(payment.get("certified") or 0)
+            manual_status = int(payment.get("manual_status") or 0)
+        except Exception:
+            self.logger.error(f"EasyPaisa payment 状态字段异常 payment_id={payment_id}: {payment}")
+            return "offline"
+
+        if status != 1:
+            return "business_paused"
+        if certified != 1:
+            return "order_paused"
+        if self._runtime_health_order_paused(payment_id):
+            return "order_paused"
+        if self._runtime_manual_off(payment_id):
+            return "ds_dispatch_off"
+        if manual_status == 1:
+            return "ds_dispatch_off"
+        return "dispatch_on"
+
+    @staticmethod
+    def _df_order_enabled_for_policy(policy):
+        """代付只受全局接单资格影响，不受代收人工锁定影响。"""
+        return policy in ("dispatch_on", "ds_dispatch_off")
+
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
         """获取日志统计信息"""
@@ -614,6 +693,48 @@ class BankLogin:
             self.logger.error('del_lock 脚本运行错误{}\n{}\n{}'.format(_id, e, error_message))
             return False
 
+    def _load_pre_login_entry(self, value, redis_key):
+        if not value:
+            return None
+        if isinstance(value, bytes):
+            value = value.decode()
+        try:
+            return simplejson.loads(value)
+        except Exception as e:
+            self.logger.error(f"{redis_key} 解析 pre_login 数据失败: {e}")
+            return None
+
+    def _handle_pre_login_alias(self, redis_key, data):
+        if not isinstance(data, dict) or data.get("kind") != "payment_id_alias":
+            return False
+
+        target_payment_id = str(data.get("target_payment_id") or "").strip()
+        if not target_payment_id:
+            self.redis.delete(redis_key)
+            self.logger.warning(f"{redis_key} alias 缺少 target_payment_id，已删除残留 key")
+            return True
+
+        snapshot = self.runtime_service.read_snapshot(target_payment_id)
+        target_online = bool(
+            snapshot
+            and (
+                snapshot.get("session_phase") != "offline"
+                or snapshot.get("online")
+                or snapshot.get("dispatch_df")
+                or snapshot.get("dispatch_ds")
+                or snapshot.get("collect_enabled")
+                or snapshot.get("df_order_enabled")
+                or snapshot.get("ds_order_enabled")
+            )
+        )
+        if target_online:
+            self.logger.info(f"{redis_key} 是 payment_id_alias -> {target_payment_id}，跳过 jobs 扫描")
+            return True
+
+        self.redis.delete(redis_key)
+        self.logger.info(f"{redis_key} 指向 {target_payment_id} 的 alias 已离线，已删除残留 key")
+        return True
+
     async def login_off(self, login_data):
         try:
             # 删除hash和set，退出
@@ -633,6 +754,19 @@ class BankLogin:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
+                policy = self.payment_runtime_policy(login_data['id'], login_data)
+                channels = login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel')
+                if policy == "offline":
+                    self.runtime_service.force_offline(
+                        login_data['id'],
+                        phone=login_data.get('phone'),
+                        source="pakistanpay_v2",
+                        reason="payment_disabled",
+                        channels=channels,
+                    )
+                    self.logger.error(f"{login_data['id']}, {self.list_key} DB已下线，拒绝重新上线采集")
+                    return False
+                df_order_enabled = self._df_order_enabled_for_policy(policy)
                 self.runtime_service.mark_active_successful(
                     login_data['id'],
                     phone=login_data.get('phone'),
@@ -640,10 +774,19 @@ class BankLogin:
                     selected_iban=login_data.get('account_iban') or login_data.get('IBAN'),
                     source="pakistanpay_v2",
                     online_ttl=660,
-                    dispatch_ds=True,
-                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
+                    collect_enabled=True,
+                    ds_order_enabled=policy == "dispatch_on",
+                    df_order_enabled=df_order_enabled,
+                    channels=channels,
                 )
-                self.logger.info(f"{login_data['id']}, {self.list_key} 上线接单： {login_data['id']}")
+                if policy == "dispatch_on":
+                    self.logger.info(f"{login_data['id']}, {self.list_key} 上线采集： {login_data['id']}")
+                elif policy == "business_paused":
+                    self.logger.info(f"{login_data['id']}, {self.list_key} 业务禁用：保留采集但关闭代收/代付派单")
+                elif policy == "order_paused":
+                    self.logger.info(f"{login_data['id']}, {self.list_key} 全局暂停接单：保留采集但关闭代收/代付派单")
+                else:
+                    self.logger.info(f"{login_data['id']}, {self.list_key} 保持采集和代付但关闭代收派单： {login_data['id']}")
                 return True
             self.runtime_service.set_kickoff(
                 login_data['id'],
@@ -672,10 +815,24 @@ class BankLogin:
 
     def update_key(self, login_data):
         try:
+            policy = self.payment_runtime_policy(login_data['id'], login_data)
+            if policy == "offline":
+                self.runtime_service.force_offline(
+                    login_data['id'],
+                    phone=login_data.get('phone'),
+                    source="pakistanpay_v2",
+                    reason="payment_disabled",
+                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
+                )
+                return
+            df_order_enabled = self._df_order_enabled_for_policy(policy)
             self.runtime_service.sync_collection_job_state(
                 login_data,
                 source="pakistanpay_v2",
                 schedule_score=int(time.time()),
+                collect_enabled=True,
+                ds_order_enabled=policy == "dispatch_on",
+                df_order_enabled=df_order_enabled,
             )
         except Exception as e:
             tb_str = traceback.format_exc()
@@ -1389,7 +1546,7 @@ class BankLogin:
                 if grabUpi['is_success'] is False:
                     login_data['upi_try'] = 1 if 'upi_try' not in login_data else login_data['upi_try'] + 1
                     self.logger.info(f"{login_data['id']} 爬取upi失败：" + simplejson.dumps(login_data))
-                    self.on_off(login_data, 0)
+                    self.logger.warning(f"{login_data['id']} UPI 临时失败，保留采集 worker 并继续账单采集")
                     # login_data['upi_try_fail'] = 1  # 标定是否upi爬取失败
                     login_data['upi_time'] = int(time.time()) - 4 * 60  # 更新时间，否则爬取失败会一直爬取，约1分钟爬取一次
                     login_data['time'] = int(time.time()) - self.time_grab2 + 1 * 60  # 更新时间，爬取upi失败后，约1分钟爬取一次，加快爬取，在限制次数下尝试多次不成功则退出
@@ -1431,17 +1588,13 @@ class BankLogin:
             self.logger.info(f"easypaisa {login_data['id']} 当前接口返回数据 {getBills} , code: {getBills.get('error_code', 'N/A')}")
             if isinstance(getBills, dict) and getBills.get('error_code') == 501:
                 self.logger.error(f"easypaisa {login_data['id']} 抓取流水返回501错误，重新登录。")
-                await self.login_off(login_data)
                 return 'logout'
             # 如果爬取失败（返回False），则下线
             elif isinstance(getBills['is_success'], bool) and getBills['is_success'] is False:
-                if self._should_force_statement_worker_offline(getBills):
-                    self.logger.error(f"easypaisa {login_data['id']} 抓取流水失败（非501），下线该payment ID。")
-                    self.on_off(login_data, 0)
-                else:
-                    self.logger.warning(f"easypaisa {login_data['id']} 抓取流水临时失败，保留当前接单态。")
+                self.logger.warning(f"easypaisa {login_data['id']} 抓取流水失败，保留当前采集态并等待短间隔重试。")
                 login_data[f"last_grab_failed_{login_data['id']}"] = True
                 self.logger.info(f"easypaisa 抓单失败，为 payment_id {login_data['id']} 标记失败状态，下次强制60秒重试")
+                return False
             else:
                 key = f"last_grab_failed_{login_data['id']}"
                 if key in login_data:
@@ -1680,8 +1833,8 @@ class BankLogin:
                 #     self.logger.error(f"{self.list_key} 180分钟之后通知监控下线，登出:" + simplejson.dumps(login_data))
                 #     self.login_off()
                 #     return 'logout'
-                # 下线接单
-                self.on_off(login_data, 0)
+                self.redis.delete(_key2)
+                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按 runtime 策略继续采集:" + simplejson.dumps(login_data))
 
             # 通知监控一键下线
             _key3 = 'login_off_realtime_{}_{}'.format(self.name, login_data['id'])
@@ -1756,7 +1909,14 @@ class BankLogin:
                 #     login_data['try_count'] = 1 if 'try_count' not in login_data else login_data['try_count'] + 1
                 #     self.logger.info(f"{login_data['id']} 抓取流水失败或返回501，当前重试次数: {login_data['try_count']}")
 
-                if (isinstance(grabstatement, str) and grabstatement == 'logout') or ('count' in login_data and login_data['try_count'] > self.try_count_limit):
+                if isinstance(grabstatement, str) and grabstatement == 'logout':
+                    self.redis.delete(_key1)
+                    self.redis.delete(_key2)
+                    self.redis.delete(_key3)
+                    self.logger.error(f"{self.list_key} 需要登出，交由上层统一 login_off:" + simplejson.dumps(login_data))
+                    return 'logout'
+
+                if 'count' in login_data and login_data['try_count'] > self.try_count_limit:
                     # 删除标识在线的key
                     self.redis.delete(_key1)
                     self.redis.delete(_key2)
@@ -1932,15 +2092,11 @@ class BankLogin:
                 self.logger.info(f"easypaisa verify_and_handle_abnormal_payout {login_data['id']} 当前接口返回数据 {bill_result} , code: {bill_result.get('error_code', 'N/A')}")
                 if isinstance(bill_result, dict) and bill_result.get('error_code') == 501:
                     self.logger.error(f"easypaisa {login_data['id']} 抓取流水返回501错误，重新登录。")
-                    await self.login_off(login_data)
                     return 'logout'
                 # 如果爬取失败（返回False），则下线
                 elif isinstance(bill_result['is_success'], bool) and bill_result['is_success'] is False:
-                    if self._should_force_statement_worker_offline(bill_result):
-                        self.logger.error(f"easypaisa {login_data['id']} 抓取流水失败（非501），下线该payment ID。")
-                        self.on_off(login_data, 0)
-                    else:
-                        self.logger.warning(f"easypaisa {login_data['id']} 异常补核临时失败，保留当前接单态。")
+                    self.logger.warning(f"easypaisa {login_data['id']} 异常补核抓取流水失败，保留当前采集态。")
+                    return False
 
             transaction_history = bill_result.get('transaction_history_list', [])
             #  爬取交易记录：{transaction_history} 移除
@@ -2193,7 +2349,9 @@ class BankLogin:
                             'time_created': order_data.get('time_created', '')
                         }
 
-                        await self.verify_and_handle_abnormal_payout(login_data, converted_order_data)
+                        abnormal_result = await self.verify_and_handle_abnormal_payout(login_data, converted_order_data)
+                        if abnormal_result == 'logout':
+                            res = 'logout'
                         self.redis.delete(ABNORMAL_PAYOUTS_KEY)
                         self.logger.info(f"{_id}, 失败订单 {ABNORMAL_PAYOUTS_KEY} 处理完成并移除")
                     except Exception as e:
@@ -2271,19 +2429,37 @@ class BankLogin:
             for key in keys:
                 _id = key.decode()
                 self.logger.info(f"当前正在处理: {_id}")
+
+                # 获取 key 对应的 value（json string）
+                value = self.redis.get(_id)
+                if not value:
+                    self.logger.warning(f"{_id} 对应值为空，跳过处理")
+                    continue
+
+                data = self._load_pre_login_entry(value, _id)
+                if not data:
+                    continue
+                if self._handle_pre_login_alias(_id, data):
+                    continue
+
                 _lock = self.get_lock(_id)
                 if not _lock:
                     self.logger.warning(f"{_id} 未获取到锁，跳过")
                     continue
 
-                # 获取 key 对应的 value（json string）
-                value = self.redis.get(key)
+                value = self.redis.get(_id)
                 if not value:
                     self.logger.warning(f"{_id} 对应值为空，跳过处理")
                     self.del_lock(_id, _lock)
                     continue
 
-                data = simplejson.loads(value.decode())
+                data = self._load_pre_login_entry(value, _id)
+                if not data:
+                    self.del_lock(_id, _lock)
+                    continue
+                if self._handle_pre_login_alias(_id, data):
+                    self.del_lock(_id, _lock)
+                    continue
                 if self.redis.hexists(self.hash_key, data['id']):
                     # 如果有，则抛弃 删除pre_login*
                     self.redis.delete(_id)
@@ -2297,10 +2473,25 @@ class BankLogin:
                         self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
                         data['status'] = "grabstatement"
                         data['id'] = data['real_payment_id']
+                        policy = self.payment_runtime_policy(data['id'], data)
+                        if policy == "offline":
+                            self.runtime_service.force_offline(
+                                data['id'],
+                                phone=data.get('phone'),
+                                source="pakistanpay_v2",
+                                reason="payment_disabled",
+                                channels=data.get('channels') or data.get('qr_channel') or data.get('channel'),
+                            )
+                            self.redis.delete(_id)
+                            self.del_lock(_id, _lock)
+                            continue
                         self.runtime_service.sync_collection_job_state(
                             data,
                             source="pakistanpay_v2",
                             schedule_score=0,
+                            collect_enabled=True,
+                            ds_order_enabled=policy == "dispatch_on",
+                            df_order_enabled=self._df_order_enabled_for_policy(policy),
                         )
                         self.logger.info(f"已将 {data['id']} {data['real_payment_id']}推入 hash_key: {self.hash_key} 和 zset: {self.set_key}")
                         # 删除pre_login*

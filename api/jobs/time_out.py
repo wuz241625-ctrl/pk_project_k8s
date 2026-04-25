@@ -21,6 +21,23 @@ logger.addHandler(fh)
 conf = get_config()
 
 
+class TimeOutGuard:
+    """EP 专用回压校验器；任一银行字段为 97 时必须以 runtime 派单索引为准。"""
+    INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
+
+    def __init__(self, redis_client):
+        self.redis = redis_client
+
+    @staticmethod
+    def _is_easypaisa(bank_type_id=None, bank_type=None) -> bool:
+        return str(bank_type_id or "") == "97" or str(bank_type or "") == "97"
+
+    def check(self, payment_id, bank_type_id=None, bank_type=None) -> bool:
+        if not self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
+            return True
+        return bool(self.redis.sismember(self.INDEX_DISPATCH_DS, str(payment_id)))
+
+
 def main():
     try:
         connection = pymysql.connect(host=conf['mysql_host'],
@@ -55,16 +72,19 @@ def order_timeout(conn, rds):
             
             # 订单
             orders_select = """
-                SELECT code, channel_code, partner_id, amount, payment_id, original_amount 
-                FROM orders_ds 
-                WHERE status IN (0, 1, 2) 
-                AND time_create BETWEEN %s AND %s
+                SELECT o.code, o.channel_code, o.partner_id, o.amount, o.payment_id, o.original_amount,
+                       p.bank_type_id AS bank_type_id,
+                       p.bank_type AS bank_type
+                FROM orders_ds o
+                LEFT JOIN payment p ON p.id = o.payment_id
+                WHERE o.status IN (0, 1, 2)
+                AND o.time_create BETWEEN %s AND %s
                 AND (
                     -- 1002 和 1003 通道使用 3 分钟超时
-                    (channel_code IN (1002, 1003) AND time_create < %s)
+                    (o.channel_code IN (1002, 1003) AND o.time_create < %s)
                     OR
                     -- 其他所有通道使用 7 分钟超时
-                    (channel_code NOT IN (1002, 1003) AND time_create < %s)
+                    (o.channel_code NOT IN (1002, 1003) AND o.time_create < %s)
                 )
             """
             # 注意：execute 的参数列表需要增加一个参数，对应 SQL 中的两个 %s
@@ -152,9 +172,17 @@ def order_timeout(conn, rds):
                         continue
                     # 放入队列
                     list_name = 'payment_active_{channel_code}'.format(channel_code=i['channel_code'])
-                    rds.lrem(list_name, 0, payment_id)
-                    rds.rpush(list_name, payment_id)  # 尾部插入
-                    logging.info(f"【码监控】: 准备将码 {payment_id} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
+                    guard = TimeOutGuard(rds)
+                    if not guard.check(
+                        payment_id=payment_id,
+                        bank_type_id=i.get('bank_type_id'),
+                        bank_type=i.get('bank_type'),
+                    ):
+                        logging.info(f"【码监控】: 码 {payment_id} 不在 INDEX_DISPATCH_DS, 跳过 rpush {list_name}")
+                    else:
+                        rds.lrem(list_name, 0, payment_id)
+                        rds.rpush(list_name, payment_id)  # 尾部插入
+                        logging.info(f"【码监控】: 准备将码 {payment_id} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
                     key = 'msg_timeout_{partner_id}'.format(partner_id=partner_id)
                     rds.set(key, 1, 60)    # 保持60秒
                 rds.delete(busy_key)

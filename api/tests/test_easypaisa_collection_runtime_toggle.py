@@ -17,13 +17,15 @@ class FakeRedis:
 
 
 class FakePayment:
-    def __init__(self, *, payment_id=533280, certified=0, status=1, phone="923045536108", channel=1001, bank_type_id=97):
+    def __init__(self, *, payment_id=533280, certified=0, status=1, manual_status=0, phone="923045536108", channel=1001, bank_type_id=97, bank_type=None):
         self.id = payment_id
         self.certified = certified
         self.status = status
+        self.manual_status = manual_status
         self.phone = phone
         self.channel = channel
         self.bank_type_id = bank_type_id
+        self.bank_type = bank_type
 
 
 class FakeQuery:
@@ -75,8 +77,18 @@ class FakeRuntimeService:
         self.redis = redis
 
     async def set_collection_dispatch(self, payment_id, *, enabled, phone=None, channels=None, source):
+        return await self.set_ds_order_dispatch(
+            payment_id,
+            enabled=enabled,
+            phone=phone,
+            channels=channels,
+            source=source,
+        )
+
+    async def set_ds_order_dispatch(self, payment_id, *, enabled, phone=None, channels=None, source):
         FakeRuntimeService.calls.append(
             {
+                "method": "set_ds_order_dispatch",
                 "payment_id": payment_id,
                 "enabled": enabled,
                 "phone": phone,
@@ -85,6 +97,32 @@ class FakeRuntimeService:
             }
         )
         return {"payment_id": payment_id, "dispatch_ds": enabled}
+
+    async def pause_order_dispatch(self, payment_id, *, phone=None, channels=None, source):
+        FakeRuntimeService.calls.append(
+            {
+                "method": "pause_order_dispatch",
+                "payment_id": payment_id,
+                "phone": phone,
+                "channels": channels,
+                "source": source,
+            }
+        )
+        return {"payment_id": payment_id, "dispatch_ds": False, "dispatch_df": False}
+
+    async def resume_order_dispatch(self, payment_id, *, ds_enabled=True, df_enabled=True, phone=None, channels=None, source):
+        FakeRuntimeService.calls.append(
+            {
+                "method": "resume_order_dispatch",
+                "payment_id": payment_id,
+                "ds_enabled": ds_enabled,
+                "df_enabled": df_enabled,
+                "phone": phone,
+                "channels": channels,
+                "source": source,
+            }
+        )
+        return {"payment_id": payment_id, "dispatch_ds": ds_enabled, "dispatch_df": df_enabled}
 
 
 class EasyPaisaCollectionRuntimeToggleTests(unittest.IsolatedAsyncioTestCase):
@@ -112,8 +150,92 @@ class EasyPaisaCollectionRuntimeToggleTests(unittest.IsolatedAsyncioTestCase):
                 FakeRuntimeService.calls,
                 [
                     {
+                        "method": "resume_order_dispatch",
                         "payment_id": 533280,
-                        "enabled": True,
+                        "ds_enabled": True,
+                        "df_enabled": True,
+                        "phone": "923045536108",
+                        "channels": 1001,
+                        "source": "app_selling_active",
+                    }
+                ],
+            )
+        finally:
+            handler_module.EasyPaisaRuntimeService = original_runtime_service
+
+    async def test_selling_active_uses_runtime_when_legacy_bank_type_marks_easypaisa(self):
+        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+        from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
+
+        payment = FakePayment(certified=0, status=1, bank_type_id=14, bank_type='97')
+        db_orm = FakeDbOrm(payment)
+        original_runtime_service = handler_module.EasyPaisaRuntimeService
+        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
+        try:
+            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+
+            result = await service.selling_active(payment.id)
+
+            self.assertTrue(result)
+            self.assertEqual(FakeRuntimeService.calls[0]["method"], "resume_order_dispatch")
+        finally:
+            handler_module.EasyPaisaRuntimeService = original_runtime_service
+
+    async def test_selling_active_keeps_ds_paused_when_admin_manual_lock_exists(self):
+        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+        from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
+
+        payment = FakePayment(certified=0, status=1, manual_status=1)
+        db_orm = FakeDbOrm(payment)
+        original_runtime_service = handler_module.EasyPaisaRuntimeService
+        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
+        try:
+            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+
+            result = await service.selling_active(payment.id)
+
+            self.assertTrue(result)
+            self.assertEqual(payment.certified, 1)
+            self.assertEqual(
+                FakeRuntimeService.calls,
+                [
+                    {
+                        "method": "resume_order_dispatch",
+                        "payment_id": 533280,
+                        "ds_enabled": False,
+                        "df_enabled": True,
+                        "phone": "923045536108",
+                        "channels": 1001,
+                        "source": "app_selling_active",
+                    }
+                ],
+            )
+        finally:
+            handler_module.EasyPaisaRuntimeService = original_runtime_service
+
+    async def test_selling_active_keeps_dispatch_paused_when_payment_disabled(self):
+        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+        from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
+
+        payment = FakePayment(certified=0, status=0, manual_status=0)
+        db_orm = FakeDbOrm(payment)
+        original_runtime_service = handler_module.EasyPaisaRuntimeService
+        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
+        try:
+            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+
+            result = await service.selling_active(payment.id)
+
+            self.assertTrue(result)
+            self.assertEqual(payment.certified, 1)
+            self.assertEqual(
+                FakeRuntimeService.calls,
+                [
+                    {
+                        "method": "resume_order_dispatch",
+                        "payment_id": 533280,
+                        "ds_enabled": False,
+                        "df_enabled": False,
                         "phone": "923045536108",
                         "channels": 1001,
                         "source": "app_selling_active",
@@ -138,12 +260,13 @@ class EasyPaisaCollectionRuntimeToggleTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(result)
             self.assertEqual(payment.certified, 0)
+            self.assertNotIn("login_off_easypaisa_533280", self.redis.kv)
             self.assertEqual(
                 FakeRuntimeService.calls,
                 [
                     {
+                        "method": "pause_order_dispatch",
                         "payment_id": 533280,
-                        "enabled": False,
                         "phone": "923045536108",
                         "channels": 1001,
                         "source": "app_selling_inactive",

@@ -5,7 +5,7 @@ import bcrypt
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import update, and_, text
+from sqlalchemy import update, and_, text, or_, not_
 from sqlalchemy.orm import joinedload
 
 from application.lakshmi_api.base import BaseHandler, ApiError
@@ -37,6 +37,10 @@ OTP_DIGITS = {
 }
 PAYMENT_STATUS = {0: 'inactive', 1: 'active'}
 CERTIFIED_STATUS = {'inactive': 0, 'active': 1}
+
+
+def _is_easypaisa_payment_type(bank_type_id=None, bank_type=None):
+    return str(bank_type_id) == '97' or str(bank_type) == '97'
 
 
 class UpiHandler(BaseHandler):
@@ -145,22 +149,40 @@ class UpiHandler(BaseHandler):
             return result_count_orders_df[0]
         return 0
 
-    async def _check_place_order_status(self, payment_id):
-        reader = EasyPaisaRuntimeReader(self.redis)
-        return await reader.is_place_order_online(payment_id)
+    @staticmethod
+    def _is_easypaisa_payment_type(bank_type_id=None, bank_type=None):
+        return _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type)
 
-    async def _check_selling_order_status(self, payment_id):
-        reader = EasyPaisaRuntimeReader(self.redis)
-        return await reader.is_selling_order_online(payment_id)
+    async def _check_place_order_status(self, payment_id, bank_type_id=None, bank_type=None):
+        if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+            reader = EasyPaisaRuntimeReader(self.redis)
+            return await reader.is_place_order_online(payment_id)
+        return await self.redis.sismember('payment_online_df', payment_id)
+
+    async def _check_selling_order_status(self, payment_id, bank_type_id=None, bank_type=None):
+        if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+            reader = EasyPaisaRuntimeReader(self.redis)
+            return await reader.is_selling_order_online(payment_id)
+        return await self.redis.sismember('payment_online_ds', payment_id)
 
     async def _collection_online_payment_ids(self):
         reader = EasyPaisaRuntimeReader(self.redis)
-        payment_ids = set()
+        legacy_ids = set()
         for value in await self.redis.smembers('payment_online_ds'):
             if isinstance(value, bytes):
                 value = value.decode("utf-8")
-            payment_ids.add(str(value).strip())
-        payment_ids.update(await reader.collection_online_payment_ids())
+            legacy_ids.add(str(value).strip())
+        runtime_ids = set(await reader.collection_online_payment_ids())
+        legacy_ids.difference_update(runtime_ids)
+        payment_ids = set()
+        if legacy_ids:
+            with self.db_orm.sessionmaker() as session:
+                rows = session.query(Payment.id).filter(
+                    Payment.id.in_(legacy_ids),
+                    not_(or_(Payment.bank_type_id == 97, Payment.bank_type == 97, Payment.bank_type == '97')),
+                ).all()
+                payment_ids.update(str(row[0]) for row in rows)
+        payment_ids.update(runtime_ids)
         return sorted(payment_id for payment_id in payment_ids if payment_id)
 
     async def _upi_online_status_via_redis(self, bank_name, payment_id):
@@ -278,7 +300,7 @@ class Upi(UpiHandler):
             for payment in payments:
                 service_class = BANK_SERVICES[payment['bank_name']]
                 service = service_class(session, self.redis, self.redis_pub, self.logger)
-                payment['place_order_status'] = await self._check_place_order_status(payment['id'])
+                payment['place_order_status'] = await service.place_order_status(payment['id'])
                 payment['selling_order_status'] = await service.selling_order_status(payment['id'])
 
                 # 锁定状态
@@ -1027,7 +1049,7 @@ class UpiDetail(UpiHandler):
         with self.db_orm.sessionmaker() as session:
             service_class = BANK_SERVICES[payment['bank_name']]
             service = service_class(session, self.redis, self.redis_pub, self.logger)
-            payment['place_order_status'] = await self._check_place_order_status(payment['id'])
+            payment['place_order_status'] = await service.place_order_status(payment['id'])
             payment['selling_order_status'] = await service.selling_order_status(payment['id'])
 
             payment_id = payment['id']

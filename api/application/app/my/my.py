@@ -130,8 +130,15 @@ def _is_easypaisa_bank_type(bank_type):
     return str(bank_type) == '97'
 
 
+def _is_easypaisa_payment(payment_row):
+    return (
+        _is_easypaisa_bank_type((payment_row or {}).get('bank_type_id'))
+        or _is_easypaisa_bank_type((payment_row or {}).get('bank_type'))
+    )
+
+
 async def _apply_payment_online_fields(self, payment_row, runtime_reader):
-    if _is_easypaisa_bank_type(payment_row.get('bank_type')):
+    if _is_easypaisa_payment(payment_row):
         payment_row['online_ds'] = 1 if await runtime_reader.is_selling_order_online(payment_row['id']) else 0
         payment_row['online_df'] = 1 if await runtime_reader.is_place_order_online(payment_row['id']) else 0
         return
@@ -143,7 +150,7 @@ async def _apply_payment_online_fields(self, payment_row, runtime_reader):
 async def getpayment(self, data):
     if await self.is_null(data, ['offset']):
         return msg[10100]
-    keys = ['id', 'bank_type', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
+    keys = ['id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
     data_r = await self.get_result('payment', keys, {'partner_id': self.current_user['id']}, data['offset'])
     runtime_reader = EasyPaisaRuntimeReader(self.redis)
     for i in data_r:  # 展示在线
@@ -153,7 +160,7 @@ async def getpayment(self, data):
 
 # 获取收款信息
 async def getOnlinePayment(self, data):
-    keys = ['id', 'bank_type', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
+    keys = ['id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
     data_r = await self.get_results_by_condition('payment', keys, {'partner_id': self.current_user['id']})
     data = []
     runtime_reader = EasyPaisaRuntimeReader(self.redis)
@@ -186,22 +193,35 @@ async def change_payment(self, data):
     if await self.is_null(data, ['id', 'status']):
         return msg[10100]
     payment_id = data['id']
-    payment = await self.get_result_by_condition('payment', ['certified', 'bank_type', 'phone', 'account_type', 'partner_id', 'channel'], {'id': payment_id})
+    payment = await self.get_result_by_condition('payment', ['certified', 'manual_status', 'bank_type', 'bank_type_id', 'phone', 'account_type', 'partner_id', 'channel'], {'id': payment_id})
     if not payment:
         return msg[10100]
     # if data['status'] and not payment['certified']:
     #     return msg[10610]
     # qr_channel = 1002 if payment['account_type'] == 2 else 1001
     qr_channel = payment['channel']
-    if _is_easypaisa_bank_type(payment['bank_type']):
+    if _is_easypaisa_payment(payment):
         if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
             return msg[10604]
-        if not data['status']:
-            runtime_service = EasyPaisaRuntimeService(self.redis)
-            await runtime_service.force_reset(
+        runtime_service = EasyPaisaRuntimeService(self.redis)
+        channels = [str(qr_channel)] if not isinstance(qr_channel, str) else qr_channel.split(',')
+        certified_enabled = str(payment.get('certified')) == '1'
+        manual_locked = str(payment.get('manual_status') or 0) == '1'
+        if str(data['status']) == '1':
+            await runtime_service.resume_order_dispatch(
+                payment_id,
+                ds_enabled=certified_enabled and not manual_locked,
+                df_enabled=certified_enabled,
+                phone=payment.get('phone'),
+                channels=channels,
+                source='app_change_payment_on',
+            )
+        else:
+            await runtime_service.pause_order_dispatch(
                 payment_id,
                 phone=payment.get('phone'),
-                source='app_change_payment',
+                channels=channels,
+                source='app_change_payment_off',
             )
         return msg[10603]
     # if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):

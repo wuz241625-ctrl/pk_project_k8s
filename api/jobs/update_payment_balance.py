@@ -146,12 +146,11 @@ class BalanceUpdateMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT id, phone, account, name, bank_type, partner_id, status, certified,
+                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
                                account_accno
                         FROM payment 
                         WHERE status = 1 
-                          AND certified = 1
-                          AND bank_type = 97
+                          AND (bank_type = 97 OR bank_type_id = 97)
                           AND account_accno IS NOT NULL 
                           AND account_accno != ''
                         ORDER BY id

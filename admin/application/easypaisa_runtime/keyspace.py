@@ -6,6 +6,9 @@ LOCK_PAYMENT_KEY = "easypaisa_runtime:lock:payment:{payment_id}"
 LOCK_PHONE_KEY = "easypaisa_runtime:lock:phone:{phone}"
 
 INDEX_ONLINE = "easypaisa_runtime:index:online"
+INDEX_COLLECT_ENABLED = "easypaisa_runtime:index:collect_enabled"
+INDEX_DS_ORDER_ENABLED = "easypaisa_runtime:index:ds_order_enabled"
+INDEX_DF_ORDER_ENABLED = "easypaisa_runtime:index:df_order_enabled"
 INDEX_DISPATCH_DF = "easypaisa_runtime:index:dispatch_df"
 INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
 INDEX_UPDATED_AT = "easypaisa_runtime:index:updated_at"
@@ -15,6 +18,11 @@ LEGACY_PAYMENT_ONLINE_DS = "payment_online_ds"
 LEGACY_PAYMENT_ACTIVE_DF = "payment_active_df"
 LEGACY_LOGIN_ON_PAYMENT = "login_on_easypaisa_{payment_id}"
 LEGACY_LOGIN_ON_PHONE = "login_on_easypaisa_{phone}"
+MANUAL_OFF_COLLECTION_KEY = "easypaisa_runtime:manual_off:collection:{payment_id}"
+HEALTH_PAUSE_ORDER_KEY = "easypaisa_runtime:health_pause:order:{payment_id}"
+SCHEDULE_COLLECTION = "easypaisa_runtime:schedule:collection"
+JOB_HASH = "hash_easypaisa"
+JOB_SET = "set_easypaisa"
 
 
 def normalize_channels(channels) -> list[str]:
@@ -67,3 +75,11 @@ def legacy_login_on_phone_key(phone: str) -> str:
 
 def legacy_payment_active_channel_key(channel) -> str:
     return f"payment_active_{str(channel).strip()}"
+
+
+def manual_off_collection_key(payment_id) -> str:
+    return MANUAL_OFF_COLLECTION_KEY.format(payment_id=payment_id)
+
+
+def health_pause_order_key(payment_id) -> str:
+    return HEALTH_PAUSE_ORDER_KEY.format(payment_id=payment_id)

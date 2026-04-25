@@ -11,8 +11,16 @@ from tornado.ioloop import IOLoop
 from application.base import BaseHandler, RewriteJsonEncoder
 import bcrypt
 
+from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
 from application.message import msg
 from application.websocket import bank_analysis, callback
+
+
+def _is_easypaisa_payment(payment):
+    return (
+        str((payment or {}).get('bank_type_id') or '') == '97'
+        or str((payment or {}).get('bank_type') or '') == '97'
+    )
 
 
 class Websocket(BaseHandler, websocket.WebSocketHandler):
@@ -110,52 +118,101 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
     # 在线状态
     async def qrcode_online(self, online, _type):
         if online:
-            bank = await self.get_result_by_condition('payment', ['certified', 'channel'], {'id': self.qr_id})
-            # self.qr_channel = bank['channel']
+            bank = await self.get_result_by_condition(
+                'payment', ['certified', 'manual_status', 'status', 'channel', 'bank_type', 'bank_type_id'], {'id': self.qr_id}
+            )
             self.qr_channels = bank['channel'].split(',')
             self.logger.info(f"QR channels for qr_id={self.qr_id}: {self.qr_channels}")
-            if bank['certified']:
+            if str(bank.get('certified')) == '1':
                 if _type == 'ds':
-                    await self.redis.sadd('payment_online_ds', self.qr_id)
-                    # await self.redis.lrem('payment_active_{}'.format(self.qr_channel), 0, self.qr_id)
-                    # await self.redis.rpush('payment_active_{}'.format(self.qr_channel), self.qr_id)
-                    for channel in self.qr_channels:
-                        self.logger.info(f"Removing qr_id from payment_active_{channel}")
-                        await self.redis.lrem(f'payment_active_{channel}', 0, self.qr_id)
-                        self.logger.info(f"Adding qr_id to payment_active_{channel}")
-                        await self.redis.rpush(f'payment_active_{channel}', self.qr_id)
-                        self.logger.info(f"【码监控】: 准备将码 {self.qr_id} 重新添加到 Redis 队列 'payment_active_{channel}' 的队尾。")
-
-                    # if self.qr_channel == 1002:
-                    #     await self.redis.lrem('payment_active_1001', 0, self.qr_id)
-                    #     await self.redis.rpush('payment_active_1001', self.qr_id)
+                    if _is_easypaisa_payment(bank):
+                        # EP 码商：经 runtime service 分流，更新 snapshot / INDEX_DISPATCH_DS / SCHEDULE_COLLECTION
+                        runtime_service = EasyPaisaRuntimeService(self.redis)
+                        ds_enabled = (
+                            str(bank.get('status')) == '1'
+                            and str(bank.get('certified')) == '1'
+                            and str(bank.get('manual_status') or 0) != '1'
+                        )
+                        await runtime_service.set_ds_order_dispatch(
+                            self.qr_id, enabled=ds_enabled, channels=self.qr_channels,
+                            source='websocket_online')
+                        self.logger.info(f"[runtime] EP {self.qr_id} set_ds_order_dispatch({ds_enabled}) channels={self.qr_channels}")
+                        if not ds_enabled:
+                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
+                    else:
+                        # 非 EP 通道：保留原 legacy 写入
+                        await self.redis.sadd('payment_online_ds', self.qr_id)
+                        for channel in self.qr_channels:
+                            self.logger.info(f"Removing qr_id from payment_active_{channel}")
+                            await self.redis.lrem(f'payment_active_{channel}', 0, self.qr_id)
+                            self.logger.info(f"Adding qr_id to payment_active_{channel}")
+                            await self.redis.rpush(f'payment_active_{channel}', self.qr_id)
+                            self.logger.info(f"【码监控】: 准备将码 {self.qr_id} 重新添加到 Redis 队列 'payment_active_{channel}' 的队尾。")
                 elif _type == 'df':
                     sql = """select * from orders_df where payment_id=%s and status in (1,2)"""
                     order = await self.query(sql, self.qr_id)
                     if order:
                         return dict(code=201, msg='On Fail.Old order not success',
                                     data=json.dumps({'status': 0, 'type': _type}))
-                    await self.redis.sadd('payment_online_df', self.qr_id)
-                    await self.redis.lrem('payment_active_df', 0, self.qr_id)
-                    await self.redis.rpush('payment_active_df', self.qr_id)
+                    if _is_easypaisa_payment(bank):
+                        runtime_service = EasyPaisaRuntimeService(self.redis)
+                        df_enabled = str(bank.get('status')) == '1' and str(bank.get('certified')) == '1'
+                        await runtime_service.set_df_order_dispatch(
+                            self.qr_id,
+                            enabled=df_enabled,
+                            channels=self.qr_channels,
+                            source='websocket_df_online',
+                        )
+                        self.logger.info(f"[runtime] EP {self.qr_id} set_df_order_dispatch({df_enabled}) channels={self.qr_channels}")
+                        if not df_enabled:
+                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
+                    else:
+                        await self.redis.sadd('payment_online_df', self.qr_id)
+                        await self.redis.lrem('payment_active_df', 0, self.qr_id)
+                        await self.redis.rpush('payment_active_df', self.qr_id)
                 return dict(code=201, msg='On Success.', data=json.dumps({'status': 1, 'type': _type}))
             return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
         else:
             if not _type or _type == 'ds':
-                await self.redis.srem('payment_online_ds', self.qr_id)
-                # 下线删除所有通道
-                pattern_t = 'payment_active_*'
-                _active_channel = await self.redis.keys(pattern=pattern_t)
-                self.logger.info(f"Active channels for offline removal: {_active_channel}")
-                for i in _active_channel:
-                    self.logger.info(f"Removing qr_id from {i}")
-                    await self.redis.lrem(i, 0, self.qr_id)
-
-                # if self.qr_channel == 1002:
-                #     await self.redis.lrem('payment_active_1001'.format(self.qr_channel), 0, self.qr_id)
+                # 下线需先读 bank_type 再分流
+                bank = await self.get_result_by_condition(
+                    'payment', ['bank_type', 'bank_type_id', 'channel'], {'id': self.qr_id}
+                )
+                if _is_easypaisa_payment(bank):
+                    # EP 码商：经 runtime service 下线
+                    runtime_service = EasyPaisaRuntimeService(self.redis)
+                    resolved_channels = (bank.get('channel') or '').split(',') if bank.get('channel') else None
+                    await runtime_service.set_ds_order_dispatch(
+                        self.qr_id, enabled=False, channels=resolved_channels,
+                        source='websocket_offline')
+                    self.logger.info(f"[runtime] EP {self.qr_id} set_ds_order_dispatch(False)")
+                else:
+                    # 非 EP 通道：保留原 legacy 写入
+                    await self.redis.srem('payment_online_ds', self.qr_id)
+                    # 下线删除所有通道
+                    pattern_t = 'payment_active_*'
+                    _active_channel = await self.redis.keys(pattern=pattern_t)
+                    self.logger.info(f"Active channels for offline removal: {_active_channel}")
+                    for i in _active_channel:
+                        self.logger.info(f"Removing qr_id from {i}")
+                        await self.redis.lrem(i, 0, self.qr_id)
             if not _type or _type == 'df':
-                await self.redis.srem('payment_online_df', self.qr_id)
-                await self.redis.lrem('payment_active_df', 0, self.qr_id)
+                bank = await self.get_result_by_condition(
+                    'payment', ['bank_type', 'bank_type_id', 'channel'], {'id': self.qr_id}
+                )
+                if _is_easypaisa_payment(bank):
+                    runtime_service = EasyPaisaRuntimeService(self.redis)
+                    resolved_channels = (bank.get('channel') or '').split(',') if bank and bank.get('channel') else None
+                    await runtime_service.set_df_order_dispatch(
+                        self.qr_id,
+                        enabled=False,
+                        channels=resolved_channels,
+                        source='websocket_df_offline',
+                    )
+                    self.logger.info(f"[runtime] EP {self.qr_id} set_df_order_dispatch(False)")
+                else:
+                    await self.redis.srem('payment_online_df', self.qr_id)
+                    await self.redis.lrem('payment_active_df', 0, self.qr_id)
             if not _type:
                 await self.redis.delete('qrcode_key_{id}'.format(id=self.qr_id))
             return dict(code=201, msg='Off success.', data=json.dumps({'status': 0, 'type': _type}))

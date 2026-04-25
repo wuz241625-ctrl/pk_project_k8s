@@ -40,6 +40,7 @@ from jobs.easypaisa.scheduling_state import (
     classify_round_state,
     should_return_account_to_pool,
 )
+from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 
 # ========== 日志系统 ==========
 # 程序名称（用于日志）
@@ -427,6 +428,7 @@ class EasyPaisaAutoPayout:
 
         # 连接Redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
+        self.runtime_service = SyncEasyPaisaRuntimeService(self.redis)
         
         # 会议决策：异常当成功处理（已内置到逻辑中）
         
@@ -815,9 +817,7 @@ class EasyPaisaAutoPayout:
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
             
             # 9. 重新接单（复制success_df逻辑）
-            if self.qr_id and self.redis.sismember('payment_online_df', self.qr_id):
-                self.redis.lrem('payment_active_df', 0, self.qr_id)
-                self.redis.rpush('payment_active_df', self.qr_id)
+            if self.qr_id and self.return_df_account_to_active_queue(self.qr_id):
                 self.logger.info(f"代付账户{self.qr_id}重新进入活跃轮询队列")
             
             # 10. Redis通知
@@ -1941,6 +1941,28 @@ class EasyPaisaAutoPayout:
 
     
     # ========== Redis防护机制 ==========
+
+    def _runtime_service(self):
+        runtime_service = getattr(self, "runtime_service", None)
+        if runtime_service is None:
+            runtime_service = SyncEasyPaisaRuntimeService(self.redis)
+            self.runtime_service = runtime_service
+        return runtime_service
+
+    def is_df_order_online(self, payment_id) -> bool:
+        snapshot = self._runtime_service().read_snapshot(payment_id)
+        if not snapshot:
+            return False
+        collect_enabled = bool(snapshot.get("collect_enabled")) if "collect_enabled" in snapshot else True
+        df_enabled = bool(snapshot.get("df_order_enabled")) if "df_order_enabled" in snapshot else bool(snapshot.get("dispatch_df"))
+        return bool(snapshot.get("online") and collect_enabled and df_enabled)
+
+    def return_df_account_to_active_queue(self, payment_id) -> bool:
+        if not self.is_df_order_online(payment_id):
+            return False
+        self.redis.lrem(self.REDIS_KEYS['easypaisa_active_df'], 0, payment_id)
+        self.redis.rpush(self.REDIS_KEYS['easypaisa_active_df'], payment_id)
+        return True
     
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
@@ -1964,42 +1986,39 @@ class EasyPaisaAutoPayout:
             api_result = await self._check_account_online_via_api(phone)
             
             if api_result is not None:
-                # API检查成功，根据结果同步Redis状态（使用payment_id作为键）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
+                # API检查成功后仍以 runtime snapshot 的 DF 派单资格为准。
+                runtime_df_online = self.is_df_order_online(payment_id)
                 
                 if api_result:
                     # API显示在线
-                    if not redis_online:
-                        # 🔥 修改逻辑：API在线但Redis中不存在，认为账号不在线，跳过处理
-                        # Redis中不存在，添加到Redis（使用payment_id）
-                        # self.redis.sadd(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                        # self.logger.info(f"账号payment_id:{payment_id} phone:{phone} API检查在线，已添加到Redis")
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但Redis中不存在，认为不在线，跳过处理")
+                    if not runtime_df_online:
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但runtime DF不可派单，跳过处理")
                         return False  # 返回False表示账号不可用
                     else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，Redis状态一致")
+                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，runtime DF可派单")
                 else:
                     # API显示离线
-                    if redis_online:
-                        # Redis中存在，从Redis移除（使用payment_id）
-                        self.redis.srem(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从Redis移除")
+                    if runtime_df_online:
+                        self._runtime_service().pause_order_dispatch(
+                            payment_id,
+                            phone=phone,
+                            source="auto_payout_api_offline",
+                        )
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已通过runtime暂停派单")
                     else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，Redis状态一致")
+                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，runtime已不可派单")
                 
                 return api_result
             else:
-                # API检查失败，降级使用Redis状态（使用payment_id）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用Redis状态: {redis_online}")
-                return bool(redis_online)
+                runtime_df_online = self.is_df_order_online(payment_id)
+                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用runtime DF状态: {runtime_df_online}")
+                return runtime_df_online
                 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}在线状态失败: {e}")
             # 异常时也降级使用Redis状态
             try:
-                redis_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                return bool(redis_online)
+                return self.is_df_order_online(payment_id)
             except:
                 return False
     
@@ -2102,11 +2121,12 @@ class EasyPaisaAutoPayout:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, partner_id, status, certified,
+                        SELECT phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
                                account_accno
                         FROM payment
-                        WHERE id = %s AND status = 1 AND certified = 1
-                          AND bank_type = 97
+                        WHERE id = %s AND status = 1
+                          AND certified = 1
+                          AND (bank_type = 97 OR bank_type_id = 97)
                     """
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
@@ -2117,11 +2137,11 @@ class EasyPaisaAutoPayout:
                         return result
                     else:
                         # 检查是否存在但状态不符合条件
-                        check_sql = "SELECT status, certified FROM payment WHERE id = %s"
+                        check_sql = "SELECT status, certified, manual_status FROM payment WHERE id = %s"
                         cur.execute(check_sql, payment_id)
                         check_result = cur.fetchone()
                         if check_result:
-                            self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不可用: status={check_result['status']}, certified={check_result['certified']}, 耗时: {query_time:.3f}s")
+                            self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不可用: status={check_result['status']}, certified={check_result['certified']}, manual_status={check_result.get('manual_status')}, 耗时: {query_time:.3f}s")
                         else:
                             self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不存在, 耗时: {query_time:.3f}s")
                         return None
@@ -2180,12 +2200,8 @@ class EasyPaisaAutoPayout:
                 payment_id = str(account_info)
                 phone = 'UNKNOWN'
             
-            # 只有在线的账号才重新加入活跃列表（使用payment_id检查）
-            is_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-            if is_online:
-                # 先删除可能的重复项，再加入列表末尾
-                self.redis.lrem(self.REDIS_KEYS['easypaisa_active_df'], 0, payment_id)
-                self.redis.rpush(self.REDIS_KEYS['easypaisa_active_df'], payment_id)
+            # 只有 runtime snapshot 仍允许 DF 派单时才重新加入活跃列表。
+            if self.return_df_account_to_active_queue(payment_id):
                 self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 重新加入活跃列表")
         except Exception as e:
             self.logger.error(f"账号重新加入活跃列表失败: {e}, account_info: {account_info}")

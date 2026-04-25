@@ -5,6 +5,7 @@ from decimal import Decimal
 import redis
 import pymysql
 
+from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 from config import get_config
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -21,6 +22,32 @@ logger.addHandler(fh)
 conf = get_config()
 
 
+def _is_easypaisa_payment(payment):
+    return (
+        str(payment.get('bank_type_id') or '') == '97'
+        or str(payment.get('bank_type') or '') == '97'
+    )
+
+
+def _df_order_online(rds, payment):
+    payment_id = payment.get('id')
+    if _is_easypaisa_payment(payment):
+        return SyncEasyPaisaRuntimeService(rds).is_df_order_online(payment_id)
+    return rds.sismember('payment_online_df', payment_id)
+
+
+def _requeue_df_if_online(rds, payment):
+    payment_id = payment.get('id')
+    if _is_easypaisa_payment(payment):
+        return SyncEasyPaisaRuntimeService(rds).requeue_df_if_online(payment_id)
+    if not rds.sismember('payment_online_df', payment_id):
+        rds.lrem('payment_active_df', 0, payment_id)
+        return False
+    rds.lrem('payment_active_df', 0, payment_id)
+    rds.rpush('payment_active_df', payment_id)
+    return True
+
+
 def main():
     try:
         connection = pymysql.connect(host=conf['mysql_host'],
@@ -35,7 +62,7 @@ def main():
         logging.exception('连接redis或数据库错误')
         return
     sql_select = """select id from orders_df where code=%s and status=0 limit 1"""
-    sql_select_payment = """select b.status,partner_id,p.status,df_min,df_max from payment b left join partner p on  
+    sql_select_payment = """select b.id, b.status, b.bank_type, b.bank_type_id, partner_id, p.status, df_min, df_max from payment b left join partner p on
         p.id=b.partner_id and p.status=1 left join vip v on v.vip=p.vip where b.certified=1 and b.status=1 and b.id=%s"""
     sql_update = """update orders_df set status=1,partner_id=%s,payment_id=%s,time_accept=%s where code=%s and status=0"""
     ps = rds.pubsub()
@@ -60,20 +87,22 @@ def main():
                             if payment_id is None:
                                 break
 
-                            if not rds.sismember('payment_online_df', payment_id):
-                                continue
-
                             cur.execute(sql_select_payment, payment_id)
-                            _payment = dict((cur.fetchall())[0])
+                            rows = cur.fetchall()
                             connection.commit()
 
                             # 没有码商
-                            if not _payment:
+                            if not rows:
+                                continue
+                            _payment = dict(rows[0])
+
+                            if not _df_order_online(rds, _payment):
+                                rds.lrem('payment_active_df', 0, payment_id)
                                 continue
 
                             # 金额不符
                             if amount < _payment['df_min'] or amount > _payment['df_max']:
-                                back_key.append(payment_id)
+                                back_key.append(_payment)
                                 continue
 
                             # 已有订单
@@ -85,9 +114,7 @@ def main():
                         except Exception:
                             continue
                     for j in back_key:
-                        if rds.sismember('payment_online_df', j):
-                            rds.lrem('payment_active_df', 0, j)
-                            rds.rpush('payment_active_df', j)
+                        _requeue_df_if_online(rds, j)
                     # 更新订单码商及状态
                     if payment:
                         cur.execute(sql_update, (payment['partner_id'], payment_id, datetime.datetime.now(), code))

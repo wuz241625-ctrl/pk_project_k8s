@@ -131,7 +131,7 @@ class EWalletHandler:
             payment = session.query(Payment).filter(Payment.id == payment_id).first()
             payment.certified = 0
             session.commit()
-            if payment.status:
+            if payment.status and not self._is_easypaisa_payment(payment):
                 await self.push_log_off_key(payment)
             await self._sync_easypaisa_collection_dispatch(payment, enabled=False, source="app_selling_inactive")
             if payment.certified == 0:
@@ -179,19 +179,33 @@ class EWalletHandler:
 
     @staticmethod
     def _is_easypaisa_payment(payment):
-        return str(getattr(payment, "bank_type_id", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
+        return (
+            str(getattr(payment, "bank_type_id", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
+            or str(getattr(payment, "bank_type", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
+        )
 
     async def _sync_easypaisa_collection_dispatch(self, payment, *, enabled: bool, source: str):
         if not self._is_easypaisa_payment(payment):
             return
         runtime_service = EasyPaisaRuntimeService(self.redis)
-        await runtime_service.set_collection_dispatch(
-            payment.id,
-            enabled=enabled,
-            phone=getattr(payment, "phone", None),
-            channels=getattr(payment, "channel", None),
-            source=source,
-        )
+        if enabled:
+            manual_status = int(getattr(payment, "manual_status", 0) or 0)
+            status_enabled = int(getattr(payment, "status", 0) or 0) == 1
+            await runtime_service.resume_order_dispatch(
+                payment.id,
+                ds_enabled=status_enabled and manual_status == 0,
+                df_enabled=status_enabled,
+                phone=getattr(payment, "phone", None),
+                channels=getattr(payment, "channel", None),
+                source=source,
+            )
+        else:
+            await runtime_service.pause_order_dispatch(
+                payment.id,
+                phone=getattr(payment, "phone", None),
+                channels=getattr(payment, "channel", None),
+                source=source,
+            )
 
     # TODO: Fix use payment_id, different with others service problem
     async def selling_order_status(self, payment_id):

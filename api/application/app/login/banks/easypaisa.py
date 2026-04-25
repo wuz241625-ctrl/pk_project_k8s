@@ -745,15 +745,107 @@ class EasyPaisa:
             return False
 
     # ================== 会话管理方法 ==================
+    async def _read_prelogin_entry(self, redis_key):
+        """读取 pre_login Redis 记录，可能是真实 session，也可能是 alias 文档。"""
+        try:
+            if not redis_key:
+                return None
+            session_json = await self.redis.get(redis_key)
+            if not session_json:
+                return None
+            return json.loads(session_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            self.logger.warning(f'{self._log_key("读取pre_login记录")} JSON解析失败: key={redis_key}, exc={exc}')
+            return None
+
+    @staticmethod
+    def _normalize_payment_id(payment_id):
+        if payment_id in [None, '']:
+            return None
+        return str(payment_id)
+
+    @staticmethod
+    def _is_payment_id_alias_entry(entry):
+        return bool(
+            isinstance(entry, dict)
+            and entry.get('kind') == 'payment_id_alias'
+            and entry.get('target_payment_id') not in [None, '']
+        )
+
+    def _build_payment_id_alias_entry(self, *, target_payment_id, bankname, phone=None):
+        return {
+            'kind': 'payment_id_alias',
+            'target_payment_id': self._normalize_payment_id(target_payment_id),
+            'bankname': bankname,
+            'phone': phone,
+            'updated_at': int(time.time()),
+        }
+
+    async def _resolve_session_context(self, bankname, payment_id):
+        """把请求携带的 payment_id 解析到当前真实会话。"""
+        requested_payment_id = self._normalize_payment_id(payment_id)
+        requested_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=requested_payment_id)
+        resolved_payment_id = requested_payment_id
+        resolved_redis_key = requested_redis_key
+        visited = set()
+
+        while resolved_payment_id and resolved_payment_id not in visited:
+            visited.add(resolved_payment_id)
+            resolved_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
+            entry = await self._read_prelogin_entry(resolved_redis_key)
+            if self._is_payment_id_alias_entry(entry):
+                resolved_payment_id = self._normalize_payment_id(entry.get('target_payment_id'))
+                continue
+            if entry:
+                return {
+                    'requested_payment_id': requested_payment_id,
+                    'resolved_payment_id': resolved_payment_id,
+                    'requested_redis_key': requested_redis_key,
+                    'redis_key': resolved_redis_key,
+                    'session_data': entry,
+                    'is_aliased': requested_payment_id != resolved_payment_id,
+                }
+            session_data = await self.runtime_service.read_session(resolved_payment_id)
+            if session_data:
+                return {
+                    'requested_payment_id': requested_payment_id,
+                    'resolved_payment_id': resolved_payment_id,
+                    'requested_redis_key': requested_redis_key,
+                    'redis_key': resolved_redis_key,
+                    'session_data': session_data,
+                    'is_aliased': requested_payment_id != resolved_payment_id,
+                }
+            break
+
+        return {
+            'requested_payment_id': requested_payment_id,
+            'resolved_payment_id': resolved_payment_id or requested_payment_id,
+            'requested_redis_key': requested_redis_key,
+            'redis_key': resolved_redis_key,
+            'session_data': None,
+            'is_aliased': requested_payment_id != (resolved_payment_id or requested_payment_id),
+        }
+
     async def _get_session_data(self, redis_key):
         """获取会话数据"""
         funcName = '获取会话数据'
         try:
             if not redis_key:
                 return None
-            session_json = await self.redis.get(redis_key)
-            if session_json:
-                return json.loads(session_json)
+            entry = await self._read_prelogin_entry(redis_key)
+            if entry:
+                if self._is_payment_id_alias_entry(entry):
+                    target_payment_id = self._normalize_payment_id(entry.get('target_payment_id'))
+                    if target_payment_id:
+                        target_redis_key = self.PRELOGIN_KEY.format(
+                            bankname=entry.get('bankname') or self.name,
+                            payment_id=target_payment_id,
+                        )
+                        target_entry = await self._read_prelogin_entry(target_redis_key)
+                        if target_entry and not self._is_payment_id_alias_entry(target_entry):
+                            return target_entry
+                        return await self.runtime_service.read_session(target_payment_id)
+                return entry
             payment_id = self._extract_payment_id_from_redis_key(redis_key)
             if payment_id is not None:
                 return await self.runtime_service.read_session(payment_id)
@@ -801,6 +893,19 @@ class EasyPaisa:
         expire_time = self._session_ttl_for_status(session_data.get('status'))
         session_data['se_until'] = int(time.time() + expire_time)
         await self.redis.setex(redis_key, expire_time, json.dumps(session_data))
+        previous_payment_id = self._normalize_payment_id(session_data.get('previous_payment_id'))
+        current_payment_id = self._normalize_payment_id(session_data.get('id'))
+        if previous_payment_id and current_payment_id and previous_payment_id != current_payment_id:
+            alias_key = self.PRELOGIN_KEY.format(
+                bankname=session_data.get('bankname') or self.name,
+                payment_id=previous_payment_id,
+            )
+            alias_entry = self._build_payment_id_alias_entry(
+                target_payment_id=current_payment_id,
+                bankname=session_data.get('bankname') or self.name,
+                phone=session_data.get('phone'),
+            )
+            await self.redis.setex(alias_key, expire_time, json.dumps(alias_entry))
         await self._sync_runtime_state(redis_key, session_data, expire_time)
         return session_data['se_until']
 
@@ -828,6 +933,9 @@ class EasyPaisa:
             'session_phase': status,
             'session_expires_at': session_data.get('se_until'),
             'online': status == LoginStatus.ACTIVE_SUCCESSFUL,
+            'collect_enabled': status == LoginStatus.ACTIVE_SUCCESSFUL,
+            'ds_order_enabled': False,
+            'df_order_enabled': status == LoginStatus.ACTIVE_SUCCESSFUL,
             'dispatch_df': status == LoginStatus.ACTIVE_SUCCESSFUL,
             'dispatch_ds': False,
             'channels': keyspace.normalize_channels(
@@ -1614,7 +1722,7 @@ class EasyPaisa:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
+            payment_id = self._normalize_payment_id(data['payment_id'])
             otp = data.get('otp', '').strip()
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
 
@@ -1688,12 +1796,13 @@ class EasyPaisa:
             if not real_payment_id:
                 raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
 
-            old_payment_id = session_payment_id
+            old_payment_id = self._normalize_payment_id(session_payment_id)
+            real_payment_id_text = self._normalize_payment_id(real_payment_id)
             old_redis_key = redis_key
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
+            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id_text)
             if old_redis_key != redis_key:
                 await self.redis.delete(old_redis_key)
-                if old_payment_id not in [None, '', real_payment_id]:
+                if old_payment_id not in [None, '', real_payment_id_text]:
                     await self.runtime_service.clear_session(old_payment_id)
 
             login_lock_payment_key = self._login_lock_payment_key(real_payment_id)
@@ -1739,6 +1848,8 @@ class EasyPaisa:
                     'serv_gen_id': api_result_verify_otp['data'].get('serv_gen_id'),
                     'se_until': se_until,
                     'next_phase': next_phase,
+                    'payment_id': real_payment_id,
+                    'previous_payment_id': old_payment_id,
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -1774,16 +1885,23 @@ class EasyPaisa:
                 raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
 
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
 
-            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
             payment_lock_id = lock_result.get('lock_id')
             payment_lock_value = lock_result.get('lock_value')
 
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_otp_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                )
 
             self._assert_status_transition(
                 session_data,
@@ -1846,14 +1964,14 @@ class EasyPaisa:
                     }
                 }
 
-            fingerprint_path = self._get_payment_fingerprint_path(payment_id)
+            fingerprint_path = self._get_payment_fingerprint_path(resolved_payment_id)
             self._assert_status_transition(
                 session_data,
                 LoginStatus.FINGERPRINT_UPLOADED,
                 LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
                 funcName,
             )
-            await self._clear_payment_fingerprint_path(payment_id)
+            await self._clear_payment_fingerprint_path(resolved_payment_id)
             if fingerprint_path:
                 try:
                     os.remove(fingerprint_path)
@@ -1894,16 +2012,23 @@ class EasyPaisa:
                 raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
 
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
 
-            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
             payment_lock_id = lock_result.get('lock_id')
             payment_lock_value = lock_result.get('lock_value')
 
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_fingerprint_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                )
 
             self._assert_status_transition(
                 session_data,
@@ -2022,13 +2147,14 @@ class EasyPaisa:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
             pin = data['pin']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
             
-            # [LOCK] 获取基于payment_id的接口锁
+            # [LOCK] 获取基于真实payment_id的接口锁
             try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+                resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
+                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
                 payment_lock_value = lock_result.get('lock_value')
@@ -2038,11 +2164,17 @@ class EasyPaisa:
             
             # 获取会话数据
             self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             
             if not session_data:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                )
             
             self._assert_status_transition(
                 session_data,
@@ -2173,8 +2305,7 @@ class EasyPaisa:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
             
             if not file:
                 raise NewApiError(ErrorCode.MissingParams, 'file cannot be empty')
@@ -2187,9 +2318,11 @@ class EasyPaisa:
             if len(file["body"]) > 1024 * 1024 * 16:
                 raise NewApiError(ErrorCode.MissingParams, 'file size can not over 16MB')
             
-            # [LOCK] 获取基于payment_id的接口锁
+            # [LOCK] 获取基于真实payment_id的接口锁
             try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+                resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
+                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
                 payment_lock_value = lock_result.get('lock_value')
@@ -2199,11 +2332,17 @@ class EasyPaisa:
             
             # 获取会话数据
             self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             
             if not session_data:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                )
             
             self._assert_status_transition(
                 session_data,
@@ -2304,10 +2443,12 @@ class EasyPaisa:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
             
-            # [LOCK] 获取基于payment_id的接口锁
+            # [LOCK] 获取基于真实payment_id的接口锁
             try:
+                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+                payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
                 lock_result = await self._get_payment_interface_lock(payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
@@ -2316,10 +2457,15 @@ class EasyPaisa:
                 self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
                 raise lock_error
             
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call second_login_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={payment_id}'
+                )
 
             self._assert_status_transition(
                 session_data,
@@ -2513,11 +2659,13 @@ class EasyPaisa:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
             accno = data['accno']
             
-            # [LOCK] 获取基于payment_id的接口锁
+            # [LOCK] 获取基于真实payment_id的接口锁
             try:
+                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+                payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
                 lock_result = await self._get_payment_interface_lock(payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
@@ -2526,10 +2674,15 @@ class EasyPaisa:
                 self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
                 raise lock_error
             
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-            session_data = await self._get_session_data(redis_key)
+            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            redis_key = session_ctx.get('redis_key')
+            session_data = session_ctx.get('session_data')
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call query_accts_http first')
+            if session_ctx.get('is_aliased'):
+                self.logger.info(
+                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={payment_id}'
+                )
 
             self._assert_status_transition(
                 session_data,
@@ -2652,13 +2805,31 @@ class EasyPaisa:
                     objs.append(obj)
                     continue
 
-                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-                session_data = await self._get_session_data(redis_key)
+                session_ctx = await self._resolve_session_context(bankname, payment_id)
+                resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+                if session_ctx.get('is_aliased'):
+                    runtime_snapshot = await self.runtime_service.read_snapshot(resolved_payment_id)
+                    if runtime_snapshot:
+                        status = runtime_snapshot.get('session_phase', '')
+                        objs.append(
+                            {
+                                "payment_id": payment_id,
+                                "resolved_payment_id": resolved_payment_id,
+                                "status": status,
+                                "error": runtime_snapshot.get('last_error'),
+                                "cd_until": runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0)),
+                                "next_action": next_action_map.get(status, 'unknown'),
+                            }
+                        )
+                        continue
+
+                session_data = session_ctx.get('session_data')
                 if not session_data:
                     continue
 
                 obj = {
                     "payment_id": payment_id,
+                    "resolved_payment_id": resolved_payment_id if resolved_payment_id != payment_id else None,
                     "status": session_data.get('status', ''),
                     "error": session_data.get('last_error'),
                     "cd_until": session_data.get('cd_until', 0),
@@ -2952,74 +3123,55 @@ class EasyPaisa:
         
         try:
             self.logger.warning(f'{self._log_key(funcName)} 开始执行: payment_id={payment_id}, bankname={bankname}, reason={reason}')
-            
-            # === 1. 设置下线标记（防止派单时操作，20分钟有效期） ===
-            kick_off_key = f'kick_off_{payment_id}'
-            await self.redis.setex(kick_off_key, 60 * 20, 1)
-            self.logger.info(f'{self._log_key(funcName)} [1/8] 设置下线标记: {kick_off_key}, 有效期20分钟')
-            
-            # === 2. 从代收在线集合中移除 ===
-            removed_ds = await self.redis.srem('payment_online_ds', payment_id)
-            self.logger.info(f'{self._log_key(funcName)} [2/8] 从代收在线集合移除: payment_online_ds, removed={removed_ds}')
-            
-            # === 3. 从代付在线集合中移除 ===
-            removed_df = await self.redis.srem('payment_online_df', payment_id)
-            self.logger.info(f'{self._log_key(funcName)} [3/8] 从代付在线集合移除: payment_online_df, removed={removed_df}')
-            
-            # === 4. 从活跃队列中移除（需要查询 channel） ===
+
+            # === 1. 查询 payment / phone / channel，用于统一 runtime 下线 ===
             payment = None
             try:
-                # 从数据库查询 payment 记录
                 with self.handler.db_orm.sessionmaker() as session:
                     payment = session.query(Payment).filter(Payment.id == payment_id).first()
-                    
+
                 if not payment:
-                    self.logger.error(f'{self._log_key(funcName)} [4/8] ❌ 数据库中未找到 payment_id={payment_id}，无法完整清理活跃队列')
-                elif payment.channel:
-                    qr_channel = payment.channel
-                    active_key = f'payment_active_{qr_channel}'
-                    removed_active = await self.redis.lrem(active_key, 0, payment_id)
-                    self.logger.info(f'{self._log_key(funcName)} [4/8] 从活跃队列移除: {active_key}, removed={removed_active}')
+                    self.logger.error(f'{self._log_key(funcName)} [1/4] 数据库中未找到 payment_id={payment_id}，将仅按 runtime 快照清理')
                 else:
-                    self.logger.warning(f'{self._log_key(funcName)} [4/8] payment.channel 为空，跳过活跃队列移除')
-                    
+                    self.logger.info(f'{self._log_key(funcName)} [1/4] 查询 payment 成功: phone={getattr(payment, "phone", None)}, channel={getattr(payment, "channel", None)}')
+
             except Exception as e:
-                self.logger.error(f'{self._log_key(funcName)} [4/8] 查询payment失败: {e}')
-            
+                self.logger.error(f'{self._log_key(funcName)} [1/4] 查询 payment 失败: {e}')
+
             runtime_snapshot = await self.runtime_service.read_snapshot(payment_id)
             resolved_phone = None
             if payment and getattr(payment, 'phone', None):
                 resolved_phone = payment.phone
             elif runtime_snapshot:
                 resolved_phone = runtime_snapshot.get('phone')
+            resolved_channels = keyspace.normalize_channels(
+                [
+                    runtime_snapshot.get('channels') if runtime_snapshot else None,
+                    payment.channel if payment and getattr(payment, 'channel', None) else None,
+                ]
+            )
 
-            # === 5. 删除在线标记 ===
-            legacy_payment_online_key = keyspace.legacy_login_on_payment_key(payment_id)
-            deleted_on = await self.redis.delete(legacy_payment_online_key)
-            self.logger.info(f'{self._log_key(funcName)} [5/8] 删除在线标记(payment): {legacy_payment_online_key}, deleted={deleted_on}')
-            if resolved_phone:
-                legacy_phone_online_key = keyspace.legacy_login_on_phone_key(resolved_phone)
-                deleted_on_phone = await self.redis.delete(legacy_phone_online_key)
-                self.logger.info(f'{self._log_key(funcName)} [5/8] 删除在线标记(phone): {legacy_phone_online_key}, deleted={deleted_on_phone}')
-            
-            # === 6. 删除登录锁（payment_id / phone 锁） ===
-            login_lock_payment_key = self._login_lock_payment_key(payment_id)
-            deleted_lock_payment = await self.redis.delete(login_lock_payment_key)
-            self.logger.info(f'{self._log_key(funcName)} [6/8] 删除登录锁(payment): {login_lock_payment_key}, deleted={deleted_lock_payment}')
-            if resolved_phone:
-                login_lock_phone_key = self._login_lock_phone_key(resolved_phone)
-                deleted_lock_phone = await self.redis.delete(login_lock_phone_key)
-                self.logger.info(f'{self._log_key(funcName)} [6/8] 删除登录锁(phone): {login_lock_phone_key}, deleted={deleted_lock_phone}')
-            
-            # === 7. 删除会话数据 ===
-            pre_login_key = f'pre_login_{bankname}_{payment_id}'
+            # === 2. 用 runtime service 统一写离线 + kickoff，避免只删 legacy key ===
+            await self.runtime_service.set_kickoff(
+                payment_id,
+                phone=resolved_phone,
+                ttl=60 * 20,
+                source='force_logout',
+                reason=reason,
+                channels=resolved_channels,
+            )
+            self.logger.info(f'{self._log_key(funcName)} [2/4] runtime 下线完成: phone={resolved_phone}, channels={resolved_channels}')
+
+            # === 3. 清理会话数据，避免下次登录被旧 session / pre_login 卡住 ===
+            await self.runtime_service.clear_session(payment_id)
+            pre_login_key = keyspace.pre_login_key(payment_id)
             deleted_session = await self.redis.delete(pre_login_key)
-            self.logger.info(f'{self._log_key(funcName)} [7/8] 删除会话数据: {pre_login_key}, deleted={deleted_session}')
-            
-            # === 8. 更新数据库 payment.status = 0, certified = 0 ===
+            self.logger.info(f'{self._log_key(funcName)} [3/4] 清理会话完成: pre_login={pre_login_key}, deleted={deleted_session}')
+
+            # === 4. 更新数据库 payment.status = 0, certified = 0 ===
             try:
                 if not payment:
-                    self.logger.warning(f'{self._log_key(funcName)} [8/8] payment 不存在，跳过数据库更新（Redis 已清理）')
+                    self.logger.warning(f'{self._log_key(funcName)} [4/4] payment 不存在，跳过数据库更新（Redis 已清理）')
                 else:
                     with self.handler.db_orm.sessionmaker() as session:
                         result = session.execute(
@@ -3031,16 +3183,16 @@ class EasyPaisa:
                             )
                         )
                         session.commit()
-                        
+
                         if result.rowcount > 0:
-                            self.logger.info(f'{self._log_key(funcName)} [8/8] ✅ 更新数据库成功: payment_id={payment_id}, status=0, certified=0, rows={result.rowcount}')
+                            self.logger.info(f'{self._log_key(funcName)} [4/4] 更新数据库成功: payment_id={payment_id}, status=0, certified=0, rows={result.rowcount}')
                         else:
-                            self.logger.warning(f'{self._log_key(funcName)} [8/8] ⚠️ 更新数据库: 没有匹配的记录 (rowcount=0)')
-                    
+                            self.logger.warning(f'{self._log_key(funcName)} [4/4] 更新数据库: 没有匹配的记录 (rowcount=0)')
+
             except Exception as e:
-                self.logger.error(f'{self._log_key(funcName)} [8/8] ❌ 更新数据库失败: {e}')
+                self.logger.error(f'{self._log_key(funcName)} [4/4] 更新数据库失败: {e}')
                 return False
-            
+
             self.logger.warning(f'{self._log_key(funcName)} 执行完成: payment_id={payment_id}, reason={reason}')
             return True
             
@@ -3229,24 +3381,6 @@ class EasyPaisa:
                 return {'outcome': 'rejected', 'message': response_data}
             return {'outcome': 'transient', 'message': response_data}
 
-    @staticmethod
-    def _is_verify_fingerprint_rejected_message(message) -> bool:
-        if not message:
-            return False
-
-        text = str(message)
-        normalized = text.lower()
-        return any(
-            marker in text or marker in normalized
-            for marker in (
-                '缺少指纹数据',
-                '不支持的action',
-                '指纹数据失败',
-                '指纹数据包',
-                'fingerprint data corruption',
-            )
-        )
-
         if not isinstance(response_data, dict):
             return {'outcome': 'transient', 'message': raw_text}
 
@@ -3265,6 +3399,24 @@ class EasyPaisa:
         if code == 500 or self._is_verify_fingerprint_rejected_message(message):
             return {'outcome': 'rejected', 'message': message}
         return {'outcome': 'transient', 'message': message or raw_text}
+
+    @staticmethod
+    def _is_verify_fingerprint_rejected_message(message) -> bool:
+        if not message:
+            return False
+
+        text = str(message)
+        normalized = text.lower()
+        return any(
+            marker in text or marker in normalized
+            for marker in (
+                '缺少指纹数据',
+                '不支持的action',
+                '指纹数据失败',
+                '指纹数据包',
+                'fingerprint data corruption',
+            )
+        )
 
     async def _perform_second_login(self, session_data):
         funcName = '二次登录'
@@ -3527,7 +3679,11 @@ class EasyPaisa:
         json_str = json.dumps(request_msg, ensure_ascii=False, indent=2)
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
         
-        encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_fingerprint'], json_str)
+        encoded_msg = self._encode_indus_request(
+            funcName,
+            self.API_ENDPOINTS['verify_fingerprint'],
+            request_msg,
+        )
         self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
         
         return encoded_msg

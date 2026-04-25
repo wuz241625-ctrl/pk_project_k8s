@@ -28,6 +28,7 @@ parent2_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, parent2_dir)
 
 import config
+from application.easypaisa_runtime import keyspace
 from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 
 # EasyPaisa自动代付监控系统
@@ -414,6 +415,25 @@ class AutoPayoutMonitor:
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
         self.runtime_service = SyncEasyPaisaRuntimeService(self.redis)
 
+    def _runtime_service(self):
+        runtime_service = getattr(self, "runtime_service", None)
+        if runtime_service is None:
+            runtime_service = SyncEasyPaisaRuntimeService(self.redis)
+            self.runtime_service = runtime_service
+        return runtime_service
+
+    def _runtime_manual_off_active(self, payment_id):
+        value = self._runtime_service().is_manual_off(payment_id)
+        if isinstance(value, bool):
+            return value
+        return bool(self.redis.get(keyspace.manual_off_collection_key(payment_id)))
+
+    def _runtime_health_order_paused_active(self, payment_id):
+        value = self._runtime_service().is_order_health_paused(payment_id)
+        if isinstance(value, bool):
+            return value
+        return bool(self.redis.get(keyspace.health_pause_order_key(payment_id)))
+
     def _init_easypaisa_config(self):
         """初始化 EasyPaisa 自动代付监控特定配置"""
         # 监控配置
@@ -550,13 +570,12 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT id, phone, account, name, bank_type, partner_id, status, certified,
-                               account_accno, account_iban
-                        FROM payment 
-                        WHERE status = 1 
-                          AND certified = 1
-                          AND bank_type = 97
-                          AND account_accno IS NOT NULL 
+                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
+                               manual_status, account_accno, account_iban
+                        FROM payment
+                        WHERE status = 1
+                          AND (bank_type = 97 OR bank_type_id = 97)
+                          AND account_accno IS NOT NULL
                           AND account_accno != ''
                         ORDER BY id
                     """
@@ -702,61 +721,179 @@ class AutoPayoutMonitor:
         return payment_info
     
     def check_payment_status_in_db(self, payment_id):
-        """检查payment在数据库中的状态是否仍然在线"""
+        """检查 payment 是否存在且可保留采集。
+
+        后台禁用 status=0 只是暂停派单，不代表上游 API/session 失效。
+        只有 DB 不存在或查询失败才禁止 monitor 恢复采集投影。
+        """
         import pymysql
         import time
-        
+
         start_time = time.time()
         self.logger.debug(f"检查payment_id: {payment_id} 的数据库状态")
-        
+
         try:
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT status, certified
-                        FROM payment 
+                        SELECT status, certified, manual_status
+                        FROM payment
                         WHERE id = %s
                     """
-                    
+
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
-                    
+
                     if result:
-                        is_online = result['status'] == 1 and result['certified'] == 1
-                        self.logger.debug(f"payment_id {payment_id} 数据库状态: status={result['status']}, certified={result['certified']}, is_online={is_online}")
-                        return is_online
+                        collect_enabled = True
+                        self.logger.debug(
+                            f"payment_id {payment_id} 数据库状态: status={result['status']}, "
+                            f"certified={result['certified']}, manual_status={result.get('manual_status')}, "
+                            f"collect_enabled={collect_enabled}"
+                        )
+                        return collect_enabled
                     else:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return False
-                        
+
             finally:
                 connection.close()
                 query_time = time.time() - start_time
                 self.logger.debug(f"payment_id {payment_id} 状态检查耗时: {query_time:.3f}s")
-                
+
         except Exception as e:
             query_time = time.time() - start_time
             self.logger.error(f"检查payment_id {payment_id} 数据库状态失败: {e}, 耗时: {query_time:.3f}s")
             # 出错时为了安全，返回False（不在线）
             return False
 
-    def should_enable_collection_dispatch(self, payment_id, payment_data=None):
-        """仅对数据库仍允许接单的账号恢复 dispatch_ds。"""
+    def should_enable_collection(self, payment_id, payment_data=None):
+        """判断是否允许采集账单/余额/限额。"""
+        if isinstance(payment_data, dict):
+            status = payment_data.get('status')
+            if status is not None:
+                try:
+                    int(status)
+                    return True
+                except Exception:
+                    pass
+        return self.check_payment_status_in_db(payment_id)
+
+    def check_payment_ds_order_in_db(self, payment_id):
+        """检查 payment 是否仍允许代收派单。"""
+        import pymysql
+
+        try:
+            connection = pymysql.connect(
+                host=conf['mysql_host'],
+                user=conf['mysql_user'],
+                password=conf['mysql_password'],
+                db=conf['mysql_database'],
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            try:
+                with connection.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT status, certified, manual_status
+                        FROM payment
+                        WHERE id = %s
+                        """,
+                        payment_id,
+                    )
+                    result = cur.fetchone()
+                    if not result:
+                        return False
+                    return (
+                        int(result.get('status') or 0) == 1
+                        and int(result.get('certified') or 0) == 1
+                        and int(result.get('manual_status') or 0) == 0
+                    )
+            finally:
+                connection.close()
+        except Exception as e:
+            self.logger.error(f"检查payment_id {payment_id} 代收派单资格失败: {e}")
+            return False
+
+    def should_enable_ds_order(self, payment_id, payment_data=None):
+        """判断是否允许代收派单。"""
+        if self._runtime_health_order_paused_active(payment_id):
+            return False
+        if self._runtime_manual_off_active(payment_id):
+            return False
         if isinstance(payment_data, dict):
             status = payment_data.get('status')
             certified = payment_data.get('certified')
             if status is not None and certified is not None:
-                return int(status) == 1 and int(certified) == 1
-        return self.check_payment_status_in_db(payment_id)
+                manual_status = payment_data.get('manual_status')
+                try:
+                    if manual_status is not None and int(manual_status) == 1:
+                        return False
+                    return int(status) == 1 and int(certified) == 1
+                except Exception:
+                    pass
+        return self.check_payment_ds_order_in_db(payment_id)
+
+    def check_payment_df_order_in_db(self, payment_id):
+        """检查 payment 是否仍允许代付派单。"""
+        import pymysql
+
+        try:
+            connection = pymysql.connect(
+                host=conf['mysql_host'],
+                user=conf['mysql_user'],
+                password=conf['mysql_password'],
+                db=conf['mysql_database'],
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            try:
+                with connection.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT status, certified
+                        FROM payment
+                        WHERE id = %s
+                        """,
+                        payment_id,
+                    )
+                    result = cur.fetchone()
+                    if not result:
+                        return False
+                    return int(result.get('status') or 0) == 1 and int(result.get('certified') or 0) == 1
+            finally:
+                connection.close()
+        except Exception as e:
+            self.logger.error(f"检查payment_id {payment_id} 代付派单资格失败: {e}")
+            return False
+
+    def should_enable_df_order(self, payment_id, payment_data=None):
+        """判断是否允许代付派单。人工代收锁定不影响代付。"""
+        if self._runtime_health_order_paused_active(payment_id):
+            return False
+        if isinstance(payment_data, dict):
+            status = payment_data.get('status')
+            certified = payment_data.get('certified')
+            if status is not None and certified is not None:
+                try:
+                    return int(status) == 1 and int(certified) == 1
+                except Exception:
+                    pass
+        return self.check_payment_df_order_in_db(payment_id)
+
+    def should_enable_collection_dispatch(self, payment_id, payment_data=None):
+        """兼容旧调用名：现在只代表代收派单资格，不代表采集资格。"""
+        return self.should_enable_ds_order(payment_id, payment_data)
     
     async def get_online_easypaisa_accounts(self):
         """从hash_{self.name}中获取已登录成功的EasyPaisa账号列表"""
@@ -955,7 +1092,7 @@ class AutoPayoutMonitor:
                 
                 # 根据错误类型输出不同的日志
                 if api_result and api_result.get('should_retry'):
-                    self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} 重试{max_retries}次后仍收到423错误，将执行下线: {api_result.get('error')}")
+                    self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} 重试{max_retries}次后仍收到423错误，将临时禁止派单: {api_result.get('error')}")
                 else:
                     self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} API调用失败: {api_result.get('error') if api_result else 'API无响应'}")
             
@@ -1309,6 +1446,11 @@ class AutoPayoutMonitor:
             if status_info['is_online'] and status_info['status'] == 'online':
                 # 200成功：更新余额到有序集合和状态缓存，上线处理
                 balance = float(status_info['balance'])
+                self.runtime_service.clear_order_health_pause(
+                    account_id,
+                    source="easypaisa_monitor_success",
+                )
+                self.redis.delete(keyspace.health_pause_order_key(account_id))
                 
                 # 🔥 使用有序集合存储余额（账号ID作为member，余额作为score）
                 # 不设置过期时间，数据永久保存，离线时手动删除
@@ -1332,7 +1474,9 @@ class AutoPayoutMonitor:
                     selected_iban=None,
                     source="easypaisa_monitor",
                     online_ttl=660,
-                    dispatch_ds=self.should_enable_collection_dispatch(account_id, status_info),
+                    collect_enabled=self.should_enable_collection(account_id),
+                    ds_order_enabled=self.should_enable_ds_order(account_id),
+                    df_order_enabled=self.should_enable_df_order(account_id),
                     channels=status_info.get('channels') or status_info.get('qr_channel') or status_info.get('channel'),
                 )
                 
@@ -1347,14 +1491,7 @@ class AutoPayoutMonitor:
                     # 注意：不包含balance字段，保持原有余额不变
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
-                
-                self.runtime_service.force_offline(
-                    account_id,
-                    phone=status_info.get('phone'),
-                    source="easypaisa_monitor",
-                    reason=status_info['status'],
-                )
-                
+
                 # 根据错误类型记录日志和特殊处理
                 if status_info.get('force_offline'):
                     # 501错误：完全删除账号数据
@@ -1363,9 +1500,9 @@ class AutoPayoutMonitor:
                     self.remove_account_completely(account_id, f"501账号无效: {error_msg}")
                     return True  # 返回True表示账号已删除，调用方应停止后续处理
                 elif status_info['status'] == 'api_error':
-                    self.logger.warning(f"账号 {account_id} 因API错误被下线: {status_info.get('error_message')}")
+                    self.logger.warning(f"账号 {account_id} API健康检查失败但不下线: {status_info.get('error_message')}")
                 else:
-                    self.logger.info(f"账号 {account_id} 已下线: {status_info['status']}")
+                    self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改 runtime 在线态")
             
             self.logger.debug(f"账号 {account_id} Redis缓存更新完成")
             return False  # 正常处理，账号未删除
@@ -1728,6 +1865,12 @@ class AutoPayoutMonitor:
         try:
             payment_info = self.get_phone_by_payment_id_cached(account_id)
             phone = payment_info.get('phone') if payment_info else None
+            self.runtime_service.set_ds_order_dispatch(
+                account_id,
+                enabled=False,
+                source="monitor:remove_account_completely",
+                channels=["1001"],
+            )
             self.runtime_service.force_offline(
                 account_id,
                 phone=phone,
@@ -1746,6 +1889,7 @@ class AutoPayoutMonitor:
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
             # balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
             # balance_deleted = self.redis.zrem(balance_sorted_set, account_id)
+            balance_deleted = 0
             self.redis.delete(f'easypaisa_status:{account_id}')
             
             # 🔥 保留限额数据，不删除（用于历史查询和统计）
@@ -1783,7 +1927,9 @@ class AutoPayoutMonitor:
             selected_iban=payment_data.get('account_iban') or payment_data.get('IBAN'),
             source="easypaisa_monitor",
             online_ttl=660,
-            dispatch_ds=self.should_enable_collection_dispatch(payment_id, payment_data),
+            collect_enabled=self.should_enable_collection(payment_id, payment_data),
+            ds_order_enabled=self.should_enable_ds_order(payment_id, payment_data),
+            df_order_enabled=self.should_enable_df_order(payment_id, payment_data),
             channels=payment_data.get('channels') or payment_data.get('qr_channel') or payment_data.get('channel'),
         )
 
@@ -1829,6 +1975,12 @@ class AutoPayoutMonitor:
         return True
 
     def cleanup_missing_db_payment(self, payment_id, phone=None):
+        self.runtime_service.set_ds_order_dispatch(
+            payment_id,
+            enabled=False,
+            source="monitor:payment_missing_in_db",
+            channels=["1001"],
+        )
         self.runtime_service.force_offline(
             payment_id,
             phone=phone,
@@ -1890,7 +2042,9 @@ class AutoPayoutMonitor:
                     selected_iban=login_data.get('account_iban'),
                     source="easypaisa_monitor",
                     online_ttl=660,
-                    dispatch_ds=self.should_enable_collection_dispatch(login_data['id'], login_data),
+                    collect_enabled=self.should_enable_collection(login_data['id'], login_data),
+                    ds_order_enabled=self.should_enable_ds_order(login_data['id'], login_data),
+                    df_order_enabled=self.should_enable_df_order(login_data['id'], login_data),
                     channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
                 )
                 self.logger.info(f"{login_data['id']}, {self.name} 上线接单： {login_data['id']}")
@@ -2419,10 +2573,17 @@ class AutoPayoutMonitor:
                 self.update_key(login_data, next_check_interval=300)  # 5分钟后重新检查
                 self.logger.info(f"账号 {_id} 监控正常，5分钟后重新检查")
             else:
-                # ❌ 账号监控异常（网络错误、API错误等），下线接单
-                self.on_off(login_data, 0)
-                self.update_key(login_data, next_check_interval=60)   # 1分钟后重新检查 ⚡
-                self.logger.warning(f"账号 {_id} 监控异常({status_info.get('status')})，已下线接单，1分钟后重新检查: {status_info.get('error_message')}")
+                # 网络、423、HTTP 5xx 只代表本轮健康探测失败；不能踢采集 worker。
+                self.runtime_service.set_order_health_pause(
+                    payment_id,
+                    reason=status_info.get('status') or 'api_error',
+                    ttl=180,
+                    source="easypaisa_monitor_health_error",
+                    phone=login_data.get('phone'),
+                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
+                )
+                self.update_key(login_data, next_check_interval=60)   # 1分钟后重新检查
+                self.logger.warning(f"账号 {_id} 监控异常({status_info.get('status')})，临时禁止派单、保留采集态并1分钟后重试: {status_info.get('error_message')}")
             
             self.logger.info(f"账号 {_id} 的 EasyPaisa 自动代付监控检查完成")
             return True

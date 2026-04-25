@@ -20,7 +20,7 @@ from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 
 async def load_easypaisa_monitor_counts(redis, runtime_reader):
     return {
-        "online_accounts": await runtime_reader.online_df_count(),
+        "online_accounts": await runtime_reader.df_order_count(),
         "active_accounts": await runtime_reader.active_df_count(),
     }
 

@@ -37,8 +37,12 @@ from application.pay.thirdPart import lucky_payment, apay_payment, kingpay_payme
 EASYPAISA_BANK_TYPE_ID = "97"
 
 
-def _is_easypaisa_bank_type_id(bank_type_id) -> bool:
-    return str(bank_type_id) == EASYPAISA_BANK_TYPE_ID
+def _is_easypaisa_bank_type(bank_type) -> bool:
+    return str(bank_type) == EASYPAISA_BANK_TYPE_ID
+
+
+def _is_easypaisa_payment_type(*, bank_type_id=None, bank_type=None) -> bool:
+    return _is_easypaisa_bank_type(bank_type_id) or _is_easypaisa_bank_type(bank_type)
 
 
 def _redis_text(value) -> str:
@@ -47,8 +51,8 @@ def _redis_text(value) -> str:
     return str(value)
 
 
-async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None):
-    if _is_easypaisa_bank_type_id(bank_type_id):
+async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None, bank_type=None):
+    if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
         runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
         return await runtime_reader.is_collection_order_online(payment_id)
     return await self.redis.sismember('payment_online_ds', payment_id)
@@ -57,9 +61,49 @@ async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_
 async def _collection_online_payment_ids(self, runtime_reader=None):
     runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
     raw_ids = await self.redis.smembers('payment_online_ds')
-    payment_ids = {_redis_text(value).strip() for value in raw_ids}
-    payment_ids.update(await runtime_reader.collection_online_payment_ids())
+    legacy_ids = {_redis_text(value).strip() for value in raw_ids}
+    runtime_ids = set(await runtime_reader.collection_online_payment_ids())
+    legacy_ids.difference_update(runtime_ids)
+    payment_ids = await _non_easypaisa_legacy_collection_ids(self, legacy_ids)
+    payment_ids.update(runtime_ids)
     return sorted((payment_id for payment_id in payment_ids if payment_id.isdigit()), key=int)
+
+
+async def _non_easypaisa_legacy_collection_ids(self, payment_ids):
+    legacy_ids = sorted(
+        {str(payment_id).strip() for payment_id in payment_ids if str(payment_id).strip().isdigit()},
+        key=int,
+    )
+    if not legacy_ids:
+        return set()
+    ids_sql = ",".join(legacy_ids)
+    rows = await self.query(
+        """
+        select id from payment
+        where id in ({ids})
+          and COALESCE(bank_type_id, 0) != 97
+          and COALESCE(bank_type, 0) != 97
+        """.format(ids=ids_sql)
+    )
+    return {str(row["id"]) for row in rows or []}
+
+
+async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=None):
+    payment = await self.get_result_by_condition(
+        'payment',
+        ['bank_type', 'bank_type_id'],
+        {'id': payment_id},
+    )
+    if not payment:
+        return False
+    return await _is_collection_payment_online(
+        self,
+        payment_id,
+        (payment or {}).get('bank_type_id'),
+        runtime_reader,
+        bank_type=(payment or {}).get('bank_type'),
+    )
+
 
 def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
     """计算CRC-16/CCITT-FALSE校验和 - 匹配Java实现"""
@@ -1116,7 +1160,13 @@ class Pay(BaseHandler):
                     continue
 
                 # 检查支付码是否在线
-                if not await _is_collection_payment_online(self, payment_id, bank_id, runtime_reader):
+                if not await _is_collection_payment_online(
+                    self,
+                    payment_id,
+                    bank_id,
+                    runtime_reader,
+                    bank_type=payment.get('bank_type'),
+                ):
                     self.logger.warn(f"码 {payment_id} 已停止接单，不允许接单 code: {code}")
                     continue
 
@@ -1678,6 +1728,7 @@ class Pay(BaseHandler):
         
         # 确保初始化
         back_key = []
+        runtime_reader = EasyPaisaRuntimeReader(self.redis)
         self.logger.info("初始化 back_key")
 
         try:
@@ -1791,7 +1842,9 @@ class Pay(BaseHandler):
                                     from payment pay 
                                     left join partner p on pay.partner_id=p.id 
                                     where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 
-                                    and pay.bank_type not in ({_bank_type_list}) and p.balance>={amount} 
+                                    and pay.bank_type not in ({_bank_type_list})
+                                    and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
+                                    and p.balance>={amount}
                                     and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
                                     and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount)
 
@@ -1925,8 +1978,9 @@ class Pay(BaseHandler):
                             is_online = await _is_collection_payment_online(
                                 self,
                                 i['id'],
-                                i.get('bank_type_id') or i.get('bank_type'),
+                                i.get('bank_type_id'),
                                 runtime_reader,
+                                bank_type=i.get('bank_type'),
                             )
                             self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
 
@@ -2013,8 +2067,9 @@ class Pay(BaseHandler):
                             is_online = await _is_collection_payment_online(
                                 self,
                                 i['id'],
-                                i.get('bank_type_id') or i.get('bank_type'),
+                                i.get('bank_type_id'),
                                 runtime_reader,
+                                bank_type=i.get('bank_type'),
                             )
                             self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
 
@@ -2072,7 +2127,7 @@ class Pay(BaseHandler):
                 
                 # 检查是否在 'payment_online_ds' 集合中
                 try:
-                    is_member = await self.redis.sismember('payment_online_ds', i)
+                    is_member = await _is_collection_payment_online_by_id(self, i, runtime_reader)
                     self.logger.info(f"Step 24.3: {i} 是否在 'payment_online_ds': {is_member}, 订单 {code}, 金额 {amount}")
                     if not is_member:
                         continue
@@ -2157,7 +2212,7 @@ class Pay(BaseHandler):
         gonghu_ds_payment_ids = []
         if gonghu_ds_payment:
             for i in gonghu_ds_payment.split(','):
-                if i and await self.redis.sismember('payment_online_ds', i):
+                if i and await _is_collection_payment_online_by_id(self, i, runtime_reader):
                     gonghu_ds_payment_ids.append(i)
                     payment_id_list.append(i)
             self.logger.warn('code: {code}, 有效公户{gonghu_ds_payment_ids}'.format(code=code, gonghu_ds_payment_ids=' '.join(gonghu_ds_payment_ids)))
@@ -2225,7 +2280,7 @@ class Pay(BaseHandler):
                 _bank_type_list.append(i['id'])
             _bank_type_list = ','.join(str(id) for id in _bank_type_list)
             # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 and pay.bank_type not in ({_bank_type_list}) and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount)
+            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list})) and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount)
         # 获取vip信息
         vip_list = await self.get_results_no_condition('vip', ['*'])
         _vip_list = []
@@ -2395,7 +2450,13 @@ class Pay(BaseHandler):
                 continue
 
             # 已停止接单
-            if not await _is_collection_payment_online(self, payment_id, bank_id, runtime_reader):
+            if not await _is_collection_payment_online(
+                self,
+                payment_id,
+                bank_id,
+                runtime_reader,
+                bank_type=payment.get('bank_type'),
+            ):
                 self.logger.warn('码{payment_id}已停止接单，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
                 continue
 
@@ -2742,7 +2803,7 @@ class Pay(BaseHandler):
                         break
         # 能继续接单的重新加入队列
         for i in back_key:
-            if await self.redis.sismember('payment_online_ds', i):
+            if await _is_collection_payment_online_by_id(self, i, runtime_reader):
                 # 检查支付码是否在通道中
                 # if not await self.redis.lpos(list_name, i):
                 #     self.logger.warn(f"【码监控】: 码 {payment_id} 不在通道中 {list_name}")

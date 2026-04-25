@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 
 CURRENT_DIR = os.path.dirname(__file__)
@@ -84,6 +85,24 @@ class FakeRedis:
         bucket[str(field)] = value
         return True
 
+    async def hdel(self, key, *fields):
+        bucket = self.hashes.get(key, {})
+        removed = 0
+        for field in fields:
+            if str(field) in bucket:
+                del bucket[str(field)]
+                removed += 1
+        return removed
+
+    async def zrem(self, key, *members):
+        bucket = self.zsets.get(key, {})
+        removed = 0
+        for member in members:
+            if str(member) in bucket:
+                del bucket[str(member)]
+                removed += 1
+        return removed
+
     async def lrem(self, key, count, value):
         bucket = self.lists.setdefault(key, [])
         target = str(value)
@@ -97,6 +116,12 @@ class FakeRedis:
         bucket = self.lists.setdefault(key, [])
         bucket.append(str(value))
         return len(bucket)
+
+    async def lrange(self, key, start, end):
+        bucket = self.lists.get(key, [])
+        if end == -1:
+            return bucket[start:]
+        return bucket[start:end + 1]
 
     async def llen(self, key):
         return len(self.lists.get(key, []))
@@ -126,6 +151,49 @@ class EasyPaisaAdminRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await reader.is_payment_online_df(533280, bank_type=97))
         self.assertTrue(await reader.is_payment_online_status(533280, bank_type=97))
 
+    async def test_reader_legacy_snapshot_keeps_df_online_when_dispatch_ds_is_false(self):
+        from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
+
+        await self.redis.set(
+            "easypaisa_runtime:snapshot:533280",
+            json.dumps(
+                {
+                    "payment_id": 533280,
+                    "online": True,
+                    "dispatch_df": True,
+                    "dispatch_ds": False,
+                    "session_phase": "activeSuccessful",
+                }
+            ),
+        )
+        reader = EasyPaisaAdminRuntimeReader(self.redis)
+
+        self.assertTrue(await reader.is_payment_online_df(533280, bank_type=97))
+        self.assertTrue(await reader.is_payment_online_status(533280, bank_type=97))
+
+    async def test_reader_returns_ds_from_runtime_snapshot_for_easypaisa(self):
+        from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
+
+        await self.redis.set(
+            "easypaisa_runtime:snapshot:533280",
+            json.dumps(
+                {
+                    "payment_id": 533280,
+                    "online": True,
+                    "collect_enabled": True,
+                    "ds_order_enabled": True,
+                    "df_order_enabled": False,
+                    "session_phase": "activeSuccessful",
+                }
+            ),
+        )
+        await self.redis.sadd("payment_online_df", 533280)
+
+        reader = EasyPaisaAdminRuntimeReader(self.redis)
+
+        self.assertTrue(await reader.is_payment_online_ds(533280, bank_type=97))
+        self.assertFalse(await reader.is_payment_online_df(533280, bank_type=97))
+
     async def test_reader_falls_back_to_legacy_for_non_easypaisa(self):
         from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 
@@ -146,15 +214,28 @@ class EasyPaisaAdminRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await reader.is_payment_online_status(533280, bank_type=97))
 
+    async def test_reader_does_not_trust_legacy_df_for_easypaisa_without_snapshot(self):
+        from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
+
+        await self.redis.sadd("payment_online_df", 533280)
+        await self.redis.sadd("payment_online_ds", 533280)
+        await self.redis.set("login_on_easypaisa_533280", "1")
+        reader = EasyPaisaAdminRuntimeReader(self.redis)
+
+        self.assertFalse(await reader.is_payment_online_df(533280, bank_type=97))
+        self.assertFalse(await reader.is_payment_online_ds(533280, bank_type=97))
+        self.assertFalse(await reader.is_payment_online_status(533280, bank_type=97))
+
     async def test_reader_returns_active_queue_length_from_list(self):
         from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 
         await self.redis.rpush("payment_active_df", 533280)
         await self.redis.rpush("payment_active_df", 533281)
 
-        reader = EasyPaisaAdminRuntimeReader(self.redis)
+        with patch.dict(os.environ, {"EASYPAISA_RUNTIME_READ_ENABLED": "0"}):
+            reader = EasyPaisaAdminRuntimeReader(self.redis)
 
-        self.assertEqual(await reader.active_df_count(), 2)
+            self.assertEqual(await reader.active_df_count(), 2)
 
 
 class EasyPaisaAdminRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -212,7 +293,7 @@ class PartnerAndMonitorHelperTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.redis = FakeRedis()
 
-    async def test_apply_easypaisa_runtime_fields_updates_partner_row(self):
+    async def test_apply_easypaisa_runtime_fields_updates_partner_row_from_snapshot(self):
         from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
         from application.partner.partner import apply_easypaisa_runtime_fields
 
@@ -222,30 +303,39 @@ class PartnerAndMonitorHelperTests(unittest.IsolatedAsyncioTestCase):
                 {
                     "payment_id": 533280,
                     "online": True,
-                    "dispatch_df": True,
+                    "collect_enabled": True,
+                    "ds_order_enabled": False,
+                    "df_order_enabled": False,
+                    "dispatch_df": False,
+                    "dispatch_ds": False,
                     "session_phase": "activeSuccessful",
                 }
             ),
         )
-        row = {"id": 533280, "bank_type": 97, "online_status": 0, "online_df": 0}
+        await self.redis.sadd("payment_online_df", 533280)
+        await self.redis.sadd("payment_online_ds", 533280)
+        row = {"id": 533280, "bank_type": 14, "bank_type_id": 97, "online_status": 0, "online_ds": 1, "online_df": 1}
         reader = EasyPaisaAdminRuntimeReader(self.redis)
 
         await apply_easypaisa_runtime_fields(row, reader)
 
         self.assertEqual(row["online_status"], 1)
-        self.assertEqual(row["online_df"], 1)
+        self.assertEqual(row["online_ds"], 0)
+        self.assertEqual(row["online_df"], 0)
 
-    async def test_load_easypaisa_monitor_counts_uses_runtime_online_and_list_length(self):
+    async def test_load_easypaisa_monitor_counts_uses_runtime_df_order_and_list_length(self):
         from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
         from application.order.auto_payout import load_easypaisa_monitor_counts
 
         await self.redis.sadd("easypaisa_runtime:index:online", 533280, 533281)
+        await self.redis.sadd("easypaisa_runtime:index:df_order_enabled", 533280)
         await self.redis.rpush("payment_active_df", 533280)
+        await self.redis.rpush("payment_active_df", 533999)
 
         reader = EasyPaisaAdminRuntimeReader(self.redis)
         counts = await load_easypaisa_monitor_counts(self.redis, reader)
 
-        self.assertEqual(counts["online_accounts"], 2)
+        self.assertEqual(counts["online_accounts"], 1)
         self.assertEqual(counts["active_accounts"], 1)
 
 

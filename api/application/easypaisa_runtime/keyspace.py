@@ -8,6 +8,9 @@ KICKOFF_KEY = "easypaisa_runtime:kickoff:{payment_id}"
 PRE_LOGIN_KEY = "pre_login_easypaisa_{payment_id}"
 
 INDEX_ONLINE = "easypaisa_runtime:index:online"
+INDEX_COLLECT_ENABLED = "easypaisa_runtime:index:collect_enabled"
+INDEX_DS_ORDER_ENABLED = "easypaisa_runtime:index:ds_order_enabled"
+INDEX_DF_ORDER_ENABLED = "easypaisa_runtime:index:df_order_enabled"
 INDEX_DISPATCH_DF = "easypaisa_runtime:index:dispatch_df"
 INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
 INDEX_UPDATED_AT = "easypaisa_runtime:index:updated_at"
@@ -18,6 +21,9 @@ LEGACY_PAYMENT_ACTIVE_DF = "payment_active_df"
 LEGACY_LOGIN_ON_PAYMENT = "login_on_easypaisa_{payment_id}"
 LEGACY_LOGIN_ON_PHONE = "login_on_easypaisa_{phone}"
 LEGACY_KICKOFF = "kick_off_{payment_id}"
+MANUAL_OFF_COLLECTION_KEY = "easypaisa_runtime:manual_off:collection:{payment_id}"
+HEALTH_PAUSE_ORDER_KEY = "easypaisa_runtime:health_pause:order:{payment_id}"
+SCHEDULE_COLLECTION = "easypaisa_runtime:schedule:collection"
 JOB_HASH = "hash_easypaisa"
 JOB_SET = "set_easypaisa"
 MONITOR_HASH = "hash_ep_monitor"
@@ -86,3 +92,11 @@ def legacy_kickoff_key(payment_id) -> str:
 
 def legacy_payment_active_channel_key(channel) -> str:
     return f"payment_active_{str(channel).strip()}"
+
+
+def manual_off_collection_key(payment_id) -> str:
+    return MANUAL_OFF_COLLECTION_KEY.format(payment_id=payment_id)
+
+
+def health_pause_order_key(payment_id) -> str:
+    return HEALTH_PAUSE_ORDER_KEY.format(payment_id=payment_id)
