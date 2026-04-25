@@ -756,7 +756,10 @@ class BaseHandler(tornado.web.RequestHandler):
         data_info = await self.redis.get(redis_key)
         if data_info:
             data_info = simplejson.loads(data_info, parse_float=Decimal)
-        else:
+            if keys != ['*'] and any(key not in data_info for key in keys):
+                self.logger.info(f'缓存数据缺少字段，准备刷新： {table} {condition} {keys}')
+                data_info = None
+        if not data_info:
             data_info = await self.get_result_by_condition(table, ['*'], condition)
             await self.redis.set(redis_key, simplejson.dumps(data_info))
             self.logger.info(f'缓存数据已更新： {table} {condition}')

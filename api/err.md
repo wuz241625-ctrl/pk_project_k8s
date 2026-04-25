@@ -2,6 +2,32 @@
 
 ## 常见问题
 
+### 0.16 API 共享缓存缺字段导致 `get_cache_result()` 异常
+
+现象：
+
+- Redis 里的 `cache_info_sys_info_1` 变成 `{}` 或缺少调用方需要的字段
+- API 读取 `sys_info` 的局部字段时可能抛 `KeyError`
+
+根因：
+
+- 旧 `get_cache_result()` 只判断缓存 key 是否存在
+- 没有校验缓存里的字段是否覆盖本次 `keys`
+
+处理：
+
+- `api/application/base.py` 中 `get_cache_result()` 改为：
+  - 缓存存在但缺字段时丢弃缓存
+  - 回源数据库查询 `['*']`
+  - 重新写入完整缓存
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m py_compile api/application/base.py
+```
+
 ### 0.15 API 线上意外按 DEV 配置启动
 
 现象：

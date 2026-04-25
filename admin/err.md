@@ -2,6 +2,40 @@
 
 ## 常见问题
 
+### 0.6 Admin 登录 500，日志 `KeyError: 'sys_ip_w'`
+
+现象：
+
+- `POST /prod-api/login/singin` 返回 500
+- admin 后端日志出现：
+  - `KeyError: 'sys_ip_w'`
+  - 请求 IP 已经是真实公网 IP，例如 `103.135.100.192`
+
+根因：
+
+- Redis 共享缓存 `cache_info_sys_info_1` 被写成 `{}` 这类缺字段脏数据
+- `get_cache_result('sys_info', ['sys_ip_w'], {'id': 1})` 旧逻辑只要缓存 key 存在就直接使用，没有校验请求字段是否齐全
+
+处理：
+
+1. 先清理坏缓存，让线上立即恢复：
+
+```bash
+REDIS_POD=$(KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -n pk -l app=redis -o jsonpath='{.items[0].metadata.name}')
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk "$REDIS_POD" -- redis-cli DEL cache_info_sys_info_1
+```
+
+2. 代码层修复 `get_cache_result()`：
+   - 缓存存在但缺少本次请求字段时，丢弃缓存并回源数据库刷新
+   - 避免 `{}` 再次导致登录前置白名单检查 500
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest admin.tests.test_cache_result -v
+```
+
 ### 0.5 Admin 线上意外按 DEV 配置启动
 
 现象：
