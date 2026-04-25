@@ -18,6 +18,7 @@ from decimal import Decimal
 from aiomysql import DictCursor
 from tornado.options import define, options
 
+from application.client_ip import resolve_client_ip
 from application.message import msg
 
 # 定义全局 TRACE_ID
@@ -76,17 +77,14 @@ class BaseHandler(tornado.web.RequestHandler):
 
     # 获取IP
     async def get_ip(self):
-        self.logger.warning('获取IP1,host={host}'.format(host=self.request.host))
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        if ip:
-            self.logger.warning('获取IP2,CF-Connecting-IP={ip}'.format(ip=ip))
-        if not ip: # 其他cdn
-            ip = self.request.headers.get('X-Real-Ip', None)
-            if ip:
-                self.logger.warning('获取IP3,X-Real-Ip={ip}'.format(ip=ip))
-        if not ip:
-            ip = self.request.remote_ip
-            self.logger.warning('获取IP4,remote_ip={ip}'.format(ip=ip))
+        ip = resolve_client_ip(self.request.headers, self.request.remote_ip)
+        self.logger.info(
+            '获取IP,host={host},remote_ip={remote_ip},client_ip={client_ip}'.format(
+                host=self.request.host,
+                remote_ip=self.request.remote_ip,
+                client_ip=ip,
+            )
+        )
         return ip
 
     # 检查IP是否在白名单

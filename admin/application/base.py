@@ -23,6 +23,7 @@ import traceback
 from decimal import Decimal
 from aiomysql import DictCursor
 from tornado.options import define, options
+from application.client_ip import resolve_client_ip, sanitize_request_body
 from application.message import msg
 from config import get_config
 
@@ -89,28 +90,16 @@ class BaseHandler(tornado.web.RequestHandler):
 
     # 获取IP
     async def get_ip(self):
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        # if not ip: # 其他cdn
-        #     ip = self.request.headers.get('X-Real-Ip', None)
-        if not ip:
-            ip = self.request.remote_ip
-        return ip
+        return resolve_client_ip(self.request.headers, self.request.remote_ip)
 
     # 获取IP
     def _get_ip(self):
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        # if not ip: # 其他cdn
-        #     ip = self.request.headers.get('X-Real-Ip', None)
-        if not ip:
-            ip = self.request.remote_ip
-        return ip
+        return resolve_client_ip(self.request.headers, self.request.remote_ip)
 
     # 请求日志
     def _request_summary(self):
         user_id = self.current_user['id'] if self.current_user else 0
-        _request = self.request.body if not self.request.arguments else self.request.body
-        # 如果是上传文件则不需要打印日志
-        _request = "上传文件.." if self.request.files else _request
+        _request = sanitize_request_body(self.request.body, has_files=bool(self.request.files))
         return "%s %s (%s@%s) %s" % (
             self.request.method,
             self.request.uri,

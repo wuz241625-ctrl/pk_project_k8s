@@ -11,13 +11,13 @@ docker compose up -d admin
 
 ## 单独运行
 
-`admin` 没有单独的 requirements 文件，复用 API 依赖集。
+`admin/requirements.txt` 与 `api/requirements.txt` 保持一致，K8s Dockerfile 会直接读取 `admin/requirements.txt`。
 
 ```bash
 cd /Users/tear/pk_project
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r api/requirements.txt
+pip install -r admin/requirements.txt
 cd admin
 export RUN_ENV=DEV
 export REDIS_HOST=127.0.0.1
@@ -36,6 +36,14 @@ python main.py --port=6000 --logfile=admin_6000.log
 - [config.py](/Users/tear/pk_project/admin/config.py)
 
 ## 相关测试
+
+真实客户端 IP 与登录日志脱敏测试：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest admin.tests.test_client_ip -v
+python3 -m py_compile admin/application/client_ip.py admin/application/base.py
+```
 
 后端标签序列化测试：
 

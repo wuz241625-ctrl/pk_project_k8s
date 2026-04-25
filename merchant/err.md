@@ -2,6 +2,72 @@
 
 ## 常见问题
 
+### 0.1 Merchant 登录白名单看到 `10.244.x.x` 或 `/prod-api/login/singin` 返回 404
+
+现象：
+
+- 用户从 `merchant.awekay.com` 登录商户后台
+- 后端日志中的客户端 IP 是 `10.244.x.x`
+- 某些请求进入后端时 URI 仍是 `/prod-api/login/singin`，导致 404
+
+根因：
+
+- 宿主机 Nginx 没有重设 `X-Real-IP` / `X-Forwarded-For`
+- `merchant-h5` Pod 内 Nginx 把 `X-Real-IP` 覆盖成 Pod 侧 `$remote_addr`
+- `merchant-h5` ConfigMap 里 `proxy_pass http://merchant:8000;` 缺少尾部 `/`，不会剥离 `/prod-api/`
+
+处理：
+
+1. `merchant/application/client_ip.py` 统一解析真实客户端 IP：
+   - 只在直接来源是内网/本机可信代理时读取代理头
+   - 从 `X-Forwarded-For` / `X-Real-IP` 里优先取公网地址
+   - 不再把客户端传入的 `CF-Connecting-IP` 作为白名单依据
+2. `merchant/application/base.py` 改用统一解析函数
+3. 宿主机 Nginx 入口重设并清洗请求头：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header CF-Connecting-IP "";
+```
+
+4. `merchant-h5` ConfigMap 的 `/prod-api/` 反代改为：
+
+```nginx
+location /prod-api/ {
+    proxy_pass http://merchant:8000/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $http_x_real_ip;
+    proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+    proxy_set_header CF-Connecting-IP "";
+}
+```
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest merchant.tests.test_client_ip -v
+
+curl -s -o /tmp/merchant_ip.out -w '%{http_code}\n' \
+  -H 'Host: merchant.awekay.com' \
+  -H 'CF-Connecting-IP: 8.8.8.8' \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"debug","password":"debug","googlecode":"debug"}' \
+  http://127.0.0.1/prod-api/login/singin
+
+kubectl logs -n pk deploy/merchant-deploy --since=2m --tail=80
+```
+
+验收：
+
+- `/prod-api/login/singin` 不再以原路径透传到 merchant 后端
+- 白名单拒绝时显示真实公网 IP，不再显示 `10.244.x.x`
+- 伪造 `CF-Connecting-IP` 不会影响白名单判断
+
 ### 1. Merchant 启动成功但接口返回空数据
 
 最常见原因是本地数据库没有导入种子数据，导致商户、订单和通道配置为空。

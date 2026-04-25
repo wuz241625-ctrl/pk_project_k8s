@@ -17,15 +17,23 @@ docker compose up -d merchant
 
 否则登录和订单查询会直接返回 `403 ip 禁止登录`。
 
+真实客户端 IP 白名单测试：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest merchant.tests.test_client_ip -v
+python3 -m py_compile merchant/application/client_ip.py merchant/application/base.py
+```
+
 ## 单独运行
 
-`merchant` 同样复用 API 依赖集。
+`merchant/requirements.txt` 与 `api/requirements.txt` 保持一致，K8s Dockerfile 会直接读取 `merchant/requirements.txt`。
 
 ```bash
 cd /Users/tear/pk_project
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r api/requirements.txt
+pip install -r merchant/requirements.txt
 cd merchant
 export RUN_ENV=DEV
 export REDIS_HOST=127.0.0.1

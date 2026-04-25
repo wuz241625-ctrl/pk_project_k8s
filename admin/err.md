@@ -2,6 +2,70 @@
 
 ## 常见问题
 
+### 0.4 Admin 登录白名单看到 `10.244.x.x`
+
+现象：
+
+- 用户从 `admin.awekay.com` 登录后台
+- 宿主机 Nginx access log 里是真实公网 IP
+- `admin` 后端 403 日志里显示 `ip:10.244.x.x 禁止登录`
+
+根因：
+
+- 宿主机 Nginx 只做 `proxy_pass`，没有重设真实客户端 IP 请求头
+- `admin-h5` Pod 内 Nginx 把 `X-Real-IP` 覆盖成自己的 `$remote_addr`
+- 后端旧逻辑优先信任 `CF-Connecting-IP`，否则回落 `request.remote_ip`，最终白名单拿到 Pod/CNI 内网地址
+
+处理：
+
+1. `admin/application/client_ip.py` 统一解析真实客户端 IP：
+   - 只在直接来源是内网/本机可信代理时读取代理头
+   - 从 `X-Forwarded-For` / `X-Real-IP` 里优先取公网地址
+   - 不再把客户端传入的 `CF-Connecting-IP` 作为白名单依据
+2. `admin/application/base.py` 改用统一解析函数
+3. 登录请求日志通过 `sanitize_request_body()` 脱敏 `password` / `googlecode`
+4. 入口 Nginx 需要清洗并重设请求头：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header CF-Connecting-IP "";
+```
+
+5. `admin-h5` ConfigMap 中 `/prod-api/` 反代继续透传入口 Nginx 传来的头，不再覆盖成 Pod 地址：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $http_x_real_ip;
+proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+proxy_set_header CF-Connecting-IP "";
+```
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest admin.tests.test_client_ip -v
+
+curl -s -o /tmp/admin_ip.out -w '%{http_code}\n' \
+  -H 'Host: admin.awekay.com' \
+  -H 'CF-Connecting-IP: 8.8.8.8' \
+  -H 'Content-Type: application/json' \
+  --data '{"username":"debug","password":"debug","googlecode":"debug"}' \
+  http://127.0.0.1/prod-api/login/singin
+
+kubectl logs -n pk deploy/admin-deploy --since=2m --tail=80
+```
+
+验收：
+
+- 后端 403 日志里的 IP 是真实公网 IP 或入口 Nginx 的 `$remote_addr`
+- 日志不再出现明文 `password` / `googlecode`
+- 伪造 `CF-Connecting-IP` 不会影响白名单判断
+
 ### 0.3 admin 已有 EasyPaisa runtime 代码，但线上还是旧 helper
 
 现象：
