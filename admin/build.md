@@ -35,6 +35,14 @@ python main.py --port=6000 --logfile=admin_6000.log
 - [router.py](/Users/tear/pk_project/admin/router.py)
 - [config.py](/Users/tear/pk_project/admin/config.py)
 
+## 线上 K8s
+
+生产环境 Deployment 必须显式设置 `RUN_ENV=PROD`，否则 `config.get_config()` 会按默认值回落到 `DEV`。
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/admin-deploy -- printenv RUN_ENV
+```
+
 ## 相关测试
 
 真实客户端 IP 与登录日志脱敏测试：

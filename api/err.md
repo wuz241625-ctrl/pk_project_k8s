@@ -2,6 +2,31 @@
 
 ## 常见问题
 
+### 0.15 API 线上意外按 DEV 配置启动
+
+现象：
+
+- Deployment 里没有 `RUN_ENV`
+- `config.get_config()` 默认读取 `DEV`
+- Lakshmi 路由、短信、WebSocket 推送等逻辑会出现 DEV/生产分支不一致
+
+处理：
+
+1. `/opt/cicd/k8s/api/k8s/api-deployment.yaml` 的容器环境变量显式增加：
+
+```yaml
+- name: RUN_ENV
+  value: "PROD"
+```
+
+2. 应用并等待滚动：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/api/k8s/api-deployment.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/api-deploy -n pk --timeout=180s
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/api-deploy -- printenv RUN_ENV
+```
+
 ### 0.14 API 白名单/黑名单看到内网 IP 或被伪造 `CF-Connecting-IP`
 
 现象：

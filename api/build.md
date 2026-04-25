@@ -37,6 +37,14 @@ python3.12 -m py_compile router.py application/pay/order.py application/pay/pay.
 python3.12 -m pytest tests/test_router_easypay_cleanup.py tests/test_easypay_soap.py -q
 ```
 
+## 线上 K8s
+
+生产环境 Deployment 必须显式设置 `RUN_ENV=PROD`，否则 `config.get_config()` 会按默认值回落到 `DEV`。
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/api-deploy -- printenv RUN_ENV
+```
+
 真实客户端 IP 白名单/黑名单解析验证：
 
 ```bash

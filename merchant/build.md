@@ -50,3 +50,11 @@ python main.py --port=8000 --logfile=merchant_8000.log
 - [main.py](/Users/tear/pk_project/merchant/main.py)
 - [router.py](/Users/tear/pk_project/merchant/router.py)
 - [config.py](/Users/tear/pk_project/merchant/config.py)
+
+## 线上 K8s
+
+生产环境 Deployment 必须显式设置 `RUN_ENV=PROD`，否则 `config.get_config()` 会按默认值回落到 `DEV`。
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/merchant-deploy -- printenv RUN_ENV
+```

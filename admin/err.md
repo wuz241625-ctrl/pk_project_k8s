@@ -2,6 +2,31 @@
 
 ## 常见问题
 
+### 0.5 Admin 线上意外按 DEV 配置启动
+
+现象：
+
+- Deployment 里没有 `RUN_ENV`
+- `config.get_config()` 默认读取 `DEV`
+- 线上服务可能使用 DEV 配置里的 `api_url`、cookie key、token key 等
+
+处理：
+
+1. `/opt/cicd/k8s/admin/k8s/admin-deployment.yaml` 的容器环境变量显式增加：
+
+```yaml
+- name: RUN_ENV
+  value: "PROD"
+```
+
+2. 应用并等待滚动：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/admin/k8s/admin-deployment.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/admin-deploy -n pk --timeout=180s
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/admin-deploy -- printenv RUN_ENV
+```
+
 ### 0.4 Admin 登录白名单看到 `10.244.x.x`
 
 现象：
