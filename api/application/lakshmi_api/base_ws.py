@@ -3,6 +3,7 @@ import tornado.web
 import jwt
 import datetime
 from config import get_config
+from application.client_ip import resolve_client_ip
 from application.lakshmi_api.models import User
 from tornado.options import define, options
 import uuid
@@ -52,12 +53,7 @@ class BaseHandler(tornado.web.RequestHandler):
         pass
 
     async def get_ip(self) -> object:
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        # if not ip: # 其他cdn
-        #     ip = self.request.headers.get('X-Real-Ip', None)
-        if not ip:
-            ip = self.request.remote_ip
-        return ip
+        return resolve_client_ip(self.request.headers, self.request.remote_ip)
 
     async def encode_jwt_token(self, value, days=30):
         dic = {

@@ -22,6 +22,7 @@ import jwt
 import requests
 import tornado.web
 from aiomysql import DictCursor
+from application.client_ip import resolve_client_ip
 from application.message import msg
 from itsdangerous import URLSafeTimedSerializer
 from itsdangerous.exc import SignatureExpired, BadTimeSignature
@@ -93,20 +94,10 @@ class BaseHandler(tornado.web.RequestHandler):
 
     # 获取IP
     async def get_ip(self):
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        # if not ip: # 其他cdn
-        #     ip = self.request.headers.get('X-Real-Ip', None)
-        if not ip:
-            ip = self.request.remote_ip
-        return ip
+        return resolve_client_ip(self.request.headers, self.request.remote_ip)
 
     def _get_ip(self):
-        ip = self.request.headers.get('CF-Connecting-IP', None)
-        # if not ip: # 其他cdn
-        #     ip = self.request.headers.get('X-Real-Ip', None)
-        if not ip:
-            ip = self.request.remote_ip
-        return ip
+        return resolve_client_ip(self.request.headers, self.request.remote_ip)
 
     # 检查IP
     async def check_ip(self):

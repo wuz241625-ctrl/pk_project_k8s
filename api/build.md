@@ -37,6 +37,37 @@ python3.12 -m py_compile router.py application/pay/order.py application/pay/pay.
 python3.12 -m pytest tests/test_router_easypay_cleanup.py tests/test_easypay_soap.py -q
 ```
 
+真实客户端 IP 白名单/黑名单解析验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3 -m unittest api.tests.test_client_ip -v
+python3 -m py_compile api/application/client_ip.py api/application/base.py api/application/lakshmi_api/base.py api/application/lakshmi_api/base_ws.py
+```
+
+线上 `api.awekay.com` 入口需要宿主机 Nginx 先清洗并重设真实 IP 请求头：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header CF-Connecting-IP "";
+```
+
+`api-h5` ConfigMap 的 `/api/` 反代需要继续透传宿主机 Nginx 已清洗的请求头：
+
+```nginx
+location /api/ {
+  proxy_pass http://api:9000/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $http_x_real_ip;
+  proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+  proxy_set_header CF-Connecting-IP "";
+}
+```
+
 本轮 EasyPaisa “手机号归属约束”补充验证命令：
 
 ```bash

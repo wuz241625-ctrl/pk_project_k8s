@@ -2,6 +2,64 @@
 
 ## 常见问题
 
+### 0.14 API 白名单/黑名单看到内网 IP 或被伪造 `CF-Connecting-IP`
+
+现象：
+
+- `api` 的 `api_ip_b` 黑名单或三方回调白名单判断使用了 `10.244.x.x`、NodePort 内网地址等非真实客户端 IP
+- 客户端手工带 `CF-Connecting-IP` 时，旧代码会直接把该值当成真实 IP
+- `pay`、`thirdCallback`、`third_df`、Lakshmi 登录限频等所有调用 `get_ip()` 的链路都会受影响
+
+根因：
+
+1. 宿主机 Nginx 的 `api.awekay.com` 反代只做 `proxy_pass`，没有重设 `X-Real-IP` / `X-Forwarded-For`
+2. `api-h5` Pod 内 Nginx 把 `X-Real-IP` 覆盖成 `$remote_addr`，容易变成上游内网地址
+3. `api/application/base.py`、`application/lakshmi_api/base.py`、`application/lakshmi_api/base_ws.py` 旧逻辑优先信任 `CF-Connecting-IP`
+
+处理：
+
+1. 新增 `application/client_ip.py`
+   - 只有直接来源是可信代理地址时才读取代理头
+   - 从 `X-Forwarded-For` / `X-Real-IP` 优先取公网客户端 IP
+   - 不再把客户端传入的 `CF-Connecting-IP` 作为白名单依据
+2. `api` 三个 BaseHandler 的 `get_ip()` / `_get_ip()` 统一调用 `resolve_client_ip(...)`
+3. 宿主机 Nginx 的 `api.awekay.com` 增加：
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_set_header CF-Connecting-IP "";
+```
+
+4. `api-h5` ConfigMap 的 `/api/` 反代改为：
+
+```nginx
+location /api/ {
+  proxy_pass http://api:9000/;
+  proxy_set_header Host $host;
+  proxy_set_header X-Real-IP $http_x_real_ip;
+  proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+  proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+  proxy_set_header CF-Connecting-IP "";
+}
+```
+
+本地验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3 -m unittest api.tests.test_client_ip -v
+python3 -m py_compile api/application/client_ip.py api/application/base.py api/application/lakshmi_api/base.py api/application/lakshmi_api/base_ws.py
+```
+
+验收点：
+
+- 白名单/黑名单拒绝或通过时使用真实公网 IP，不再使用 `10.244.x.x`
+- 伪造 `CF-Connecting-IP` 不会影响判断
+- `/api/` 路径仍由 `api-h5` 正确剥离后转发到 `api:9000`
+
 ### 0.13 EasyPaisa 数据库里已经有 `account_iban`，但 runtime/hash 还是空
 
 现象：
