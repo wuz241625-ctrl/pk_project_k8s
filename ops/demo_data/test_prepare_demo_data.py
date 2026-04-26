@@ -10,10 +10,13 @@ from prepare_demo_data import (
     DEMO_IP,
     build_insert_sql,
     build_permission_csv,
+    compute_opening_balances_from_events,
     compute_opening_balances,
     demo_order_created_at,
     ds_timestamps,
+    merge_csv_values,
     normalize_amount,
+    quote_identifier,
 )
 
 
@@ -105,6 +108,37 @@ class DemoDataHelperTests(unittest.TestCase):
             demo_order_created_at(now, 9, merchant_count=8, minute_step=11).date(),
             (now - dt.timedelta(days=1)).date(),
         )
+
+    def test_quote_identifier_rejects_unsafe_database_names(self):
+        self.assertEqual(quote_identifier("pakistan_backup_20260425"), "`pakistan_backup_20260425`")
+        with self.assertRaises(ValueError):
+            quote_identifier("pakistan;drop")
+
+    def test_merge_csv_values_preserves_order_and_dedupes(self):
+        merged = merge_csv_values("103.135.100.192, 1.54.194.2", ["1.54.194.2", "47.238.21.150"])
+
+        self.assertEqual(merged, "103.135.100.192,1.54.194.2,47.238.21.150")
+
+    def test_opening_balances_cover_realistic_negative_swing(self):
+        base_time = dt.datetime(2026, 4, 25, 10, 0, 0)
+        events = [
+            {
+                "user_type": 1,
+                "user_id": 195,
+                "amount": decimal.Decimal("-250000.0000"),
+                "time_create": base_time,
+            },
+            {
+                "user_type": 1,
+                "user_id": 195,
+                "amount": decimal.Decimal("50000.0000"),
+                "time_create": base_time + dt.timedelta(minutes=1),
+            },
+        ]
+
+        balances = compute_opening_balances_from_events([195], events, 1, decimal.Decimal("100000.0000"))
+
+        self.assertEqual(balances[195], decimal.Decimal("260000.0000"))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import decimal
 import fnmatch
 import hashlib
 import random
+import re
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 
@@ -15,6 +16,25 @@ DEMO_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
 DEMO_ADMIN_IDS = [1, 9001, 9002, 9003, 9004]
 DEMO_MERCHANT_IDS = [9101, 9102, 9103, 9104, 9105, 9106, 9107, 9108]
 DEMO_PARTNER_IDS = [9201, 9202, 9203, 9204]
+REALISTIC_ADMIN_IDS = [1, 24, 46, 51, 169, 297]
+REALISTIC_MERCHANT_LIMIT = 8
+REALISTIC_PARTNER_LIMIT = 8
+REALISTIC_PAYMENT_LIMIT = 24
+REALISTIC_DS_SUCCESS_LIMIT = 220
+REALISTIC_DS_FAIL_LIMIT = 100
+REALISTIC_DF_SUCCESS_LIMIT = 120
+REALISTIC_DF_FAIL_LIMIT = 40
+DEMO_WHITELIST_IPS = [
+    "103.135.100.192",
+    "1.54.194.2",
+    "47.238.21.150",
+    "169.150.222.78",
+    "169.150.222.77",
+    "169.150.222.76",
+    "199.234.95.39",
+]
+
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 RESET_TABLES = [
     "orders_ds",
@@ -101,6 +121,7 @@ def parse_args():
     parser.add_argument("--user", default="root")
     parser.add_argument("--password", default="Pass_1234")
     parser.add_argument("--database", default="pakistan")
+    parser.add_argument("--source-database", default=None)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--i-understand-this-rewrites-test-data", action="store_true")
     return parser.parse_args()
@@ -132,6 +153,46 @@ def table_exists(cur, table: str) -> bool:
 def execute_insert(cur, table: str, row: Dict[str, object]):
     sql, values = build_insert_sql(table, row)
     cur.execute(sql, values)
+
+
+def quote_identifier(identifier: str) -> str:
+    if not identifier or not IDENTIFIER_RE.match(identifier):
+        raise ValueError(f"invalid mysql identifier: {identifier!r}")
+    return f"`{identifier}`"
+
+
+def qualified_table(database: str, table: str) -> str:
+    return f"{quote_identifier(database)}.{quote_identifier(table)}"
+
+
+def placeholders(values: Sequence[object]) -> str:
+    if not values:
+        raise ValueError("empty values are not allowed")
+    return ",".join(["%s"] * len(values))
+
+
+def merge_csv_values(*values: object) -> str:
+    merged = []
+    seen = set()
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = str(value).split(",")
+        for item in items:
+            text = str(item).strip()
+            if text and text not in seen:
+                seen.add(text)
+                merged.append(text)
+    return ",".join(merged)
+
+
+def to_decimal(value: object, default: str = "0") -> decimal.Decimal:
+    if value is None or value == "":
+        value = default
+    return decimal.Decimal(str(value))
 
 
 def password_hash() -> str:
@@ -381,6 +442,514 @@ def prepare_partners(cur, hashed_password: str):
     return partners
 
 
+def collect_whitelist_ips(cur) -> str:
+    ips = list(DEMO_WHITELIST_IPS)
+    row = fetch_one(cur, "SELECT sys_ip_w FROM sys_info WHERE id=1")
+    if row:
+        ips.append(row.get("sys_ip_w"))
+    for row in fetch_all(cur, "SELECT ip, ip_df FROM merchant"):
+        ips.append(row.get("ip"))
+        ips.append(row.get("ip_df"))
+    return merge_csv_values(ips)
+
+
+def select_realistic_admins(cur, source_db: str):
+    table = qualified_table(source_db, "admin")
+    rows = fetch_all(cur, f"SELECT * FROM {table} WHERE id IN ({placeholders(REALISTIC_ADMIN_IDS)})", REALISTIC_ADMIN_IDS)
+    by_id = {int(row["id"]): row for row in rows}
+    selected = [by_id[admin_id] for admin_id in REALISTIC_ADMIN_IDS if admin_id in by_id and by_id[admin_id]["status"] == 1]
+    if len(selected) < 5:
+        extra = fetch_all(
+            cur,
+            f"SELECT * FROM {table} WHERE status=1 ORDER BY id LIMIT %s",
+            [8],
+        )
+        seen = {int(row["id"]) for row in selected}
+        for row in extra:
+            if int(row["id"]) not in seen:
+                selected.append(row)
+                seen.add(int(row["id"]))
+            if len(selected) >= 6:
+                break
+    return selected[:6]
+
+
+def select_realistic_roles(cur, source_db: str, role_ids: Sequence[int]):
+    if not role_ids:
+        return []
+    roles_table = qualified_table(source_db, "roles")
+    permissions_table = qualified_table(source_db, "permissions")
+    role_ids = sorted(set(int(role_id) for role_id in role_ids))
+    roles = fetch_all(cur, f"SELECT * FROM {roles_table} WHERE id IN ({placeholders(role_ids)})", role_ids)
+    deny_rows = fetch_all(cur, f"SELECT id FROM {permissions_table} WHERE name LIKE %s", ["禁止查看%"])
+    deny_ids = {str(row["id"]) for row in deny_rows}
+    for row in roles:
+        if int(row["id"]) == 1 and row.get("permissions"):
+            permissions = [item for item in str(row["permissions"]).split(",") if item and item not in deny_ids]
+            row["permissions"] = ",".join(permissions)
+    return roles
+
+
+def select_realistic_merchants(cur, source_db: str):
+    merchant_table = qualified_table(source_db, "merchant")
+    ds_table = qualified_table(source_db, "orders_ds")
+    df_table = qualified_table(source_db, "orders_df")
+    sql = f"""
+        SELECT m.*
+        FROM {merchant_table} m
+        LEFT JOIN (SELECT merchant_id, COUNT(*) count_ds FROM {ds_table} GROUP BY merchant_id) ds ON ds.merchant_id=m.id
+        LEFT JOIN (SELECT merchant_id, COUNT(*) count_df FROM {df_table} GROUP BY merchant_id) df ON df.merchant_id=m.id
+        WHERE m.status=1
+        ORDER BY (COALESCE(ds.count_ds,0)+COALESCE(df.count_df,0)) DESC, m.balance DESC, m.id ASC
+        LIMIT %s
+    """
+    return fetch_all(cur, sql, [REALISTIC_MERCHANT_LIMIT])
+
+
+def select_realistic_partners(cur, source_db: str):
+    partner_table = qualified_table(source_db, "partner")
+    payment_table = qualified_table(source_db, "payment")
+    ds_table = qualified_table(source_db, "orders_ds")
+    df_table = qualified_table(source_db, "orders_df")
+    sql = f"""
+        SELECT p.*
+        FROM {partner_table} p
+        JOIN (
+            SELECT partner_id, COUNT(*) payment_count
+            FROM {payment_table}
+            WHERE certified=1 AND (bank_type_id IN (97,98) OR bank_type IN ('97','98'))
+            GROUP BY partner_id
+        ) pay ON pay.partner_id=p.id
+        LEFT JOIN (SELECT partner_id, COUNT(*) count_ds FROM {ds_table} GROUP BY partner_id) ds ON ds.partner_id=p.id
+        LEFT JOIN (SELECT partner_id, COUNT(*) count_df FROM {df_table} GROUP BY partner_id) df ON df.partner_id=p.id
+        WHERE p.status=1 AND p.certified=1
+        ORDER BY (COALESCE(ds.count_ds,0)+COALESCE(df.count_df,0)) DESC, p.balance DESC, p.id ASC
+        LIMIT %s
+    """
+    return fetch_all(cur, sql, [REALISTIC_PARTNER_LIMIT])
+
+
+def select_realistic_payments(cur, source_db: str, partner_ids: Sequence[int]):
+    payment_table = qualified_table(source_db, "payment")
+    sql = f"""
+        SELECT *
+        FROM {payment_table}
+        WHERE partner_id IN ({placeholders(partner_ids)})
+          AND certified=1
+          AND (bank_type_id IN (97,98) OR bank_type IN ('97','98'))
+          AND COALESCE(account_iban, '') != ''
+        ORDER BY partner_id, status DESC, manual_status ASC, id DESC
+    """
+    rows = fetch_all(cur, sql, partner_ids)
+    selected = []
+    per_partner = {}
+    for row in rows:
+        partner_id = int(row["partner_id"])
+        per_partner[partner_id] = per_partner.get(partner_id, 0) + 1
+        if per_partner[partner_id] <= 3:
+            selected.append(row)
+        if len(selected) >= REALISTIC_PAYMENT_LIMIT:
+            break
+    return selected
+
+
+def select_realistic_merchant_channels(cur, source_db: str, merchant_ids: Sequence[int]):
+    merchant_channel_table = qualified_table(source_db, "merchant_channel")
+    sql = f"""
+        SELECT *
+        FROM {merchant_channel_table}
+        WHERE merchant_id IN ({placeholders(merchant_ids)})
+          AND status=1
+        ORDER BY merchant_id, code
+    """
+    return fetch_all(cur, sql, merchant_ids)
+
+
+def select_order_subset(cur, source_db: str, table: str, merchant_ids: Sequence[int], partner_ids: Sequence[int],
+                        payment_ids: Sequence[int], statuses: Sequence[int], limit: int):
+    order_table = qualified_table(source_db, table)
+    params = list(merchant_ids) + list(partner_ids) + list(payment_ids) + list(statuses) + [limit]
+    sql = f"""
+        SELECT *
+        FROM {order_table}
+        WHERE merchant_id IN ({placeholders(merchant_ids)})
+          AND partner_id IN ({placeholders(partner_ids)})
+          AND payment_id IN ({placeholders(payment_ids)})
+          AND status IN ({placeholders(statuses)})
+        ORDER BY time_create DESC, id DESC
+        LIMIT %s
+    """
+    return fetch_all(cur, sql, params)
+
+
+def select_realistic_orders(cur, source_db: str, merchant_ids: Sequence[int], partner_ids: Sequence[int],
+                            payment_ids: Sequence[int]):
+    ds_rows = []
+    ds_rows.extend(select_order_subset(
+        cur, source_db, "orders_ds", merchant_ids, partner_ids, payment_ids, [4, 3], REALISTIC_DS_SUCCESS_LIMIT
+    ))
+    ds_rows.extend(select_order_subset(
+        cur, source_db, "orders_ds", merchant_ids, partner_ids, payment_ids, [-1], REALISTIC_DS_FAIL_LIMIT
+    ))
+    df_rows = []
+    df_rows.extend(select_order_subset(
+        cur, source_db, "orders_df", merchant_ids, partner_ids, payment_ids, [4, 3], REALISTIC_DF_SUCCESS_LIMIT
+    ))
+    df_rows.extend(select_order_subset(
+        cur, source_db, "orders_df", merchant_ids, partner_ids, payment_ids, [-1, -2], REALISTIC_DF_FAIL_LIMIT
+    ))
+    return dedupe_rows(ds_rows), dedupe_rows(df_rows)
+
+
+def dedupe_rows(rows: Sequence[Dict[str, object]]):
+    seen = set()
+    result = []
+    for row in rows:
+        code = row.get("code")
+        if code in seen:
+            continue
+        seen.add(code)
+        result.append(row)
+    return result
+
+
+def normalize_realistic_admins(admins: Sequence[Dict[str, object]], hashed_password: str):
+    rows = []
+    for row in admins:
+        item = dict(row)
+        item["hash_login"] = hashed_password
+        item["ggkey"] = DEMO_TOTP_SECRET
+        item["status"] = 1
+        rows.append(item)
+    return rows
+
+
+def normalize_realistic_merchants(merchants: Sequence[Dict[str, object]], hashed_password: str, whitelist_ips: str):
+    selected_ids = {int(row["id"]) for row in merchants}
+    rows = []
+    for row in merchants:
+        item = dict(row)
+        item["hash_login"] = hashed_password
+        item["gg_key"] = DEMO_TOTP_SECRET
+        item["status"] = 1
+        item["status_df"] = 1
+        item["target_payment"] = None
+        item["ip"] = whitelist_ips
+        item["ip_df"] = whitelist_ips
+        item["balance"] = decimal.Decimal("0.0000")
+        item["balance_frozen"] = decimal.Decimal("0.0000")
+        if item.get("pid") and int(item["pid"]) not in selected_ids:
+            item["pid"] = None
+        rows.append(item)
+    return rows
+
+
+def normalize_realistic_partners(partners: Sequence[Dict[str, object]], hashed_password: str):
+    selected_ids = {int(row["id"]) for row in partners}
+    rows = []
+    for row in partners:
+        item = dict(row)
+        item["hash_login"] = hashed_password
+        item["hash_trade"] = hashed_password
+        item["status"] = 1
+        item["certified"] = 1
+        item["balance"] = decimal.Decimal("0.0000")
+        item["balance_frozen"] = decimal.Decimal("0.0000")
+        item["balance_deposit"] = decimal.Decimal("0.0000")
+        item["banned"] = 0
+        item["failed_login_attempts"] = 0
+        item["last_failed_login"] = None
+        if item.get("pid") and int(item["pid"]) not in selected_ids:
+            item["pid"] = None
+        rows.append(item)
+    return rows
+
+
+def normalize_realistic_payments(payments: Sequence[Dict[str, object]]):
+    rows = []
+    for row in payments:
+        item = dict(row)
+        # 历史 payment 只用于订单闭环；不放入在线卡池，不自动派单。
+        item["status"] = 0
+        item["manual_status"] = 1
+        item["certified"] = 1
+        item["sys_balance"] = decimal.Decimal("0.0000")
+        rows.append(item)
+    return rows
+
+
+def ensure_time(value, fallback):
+    return value or fallback
+
+
+def normalize_realistic_ds_orders(rows: Sequence[Dict[str, object]], merchants_by_id: Dict[int, Dict[str, object]]):
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = None
+        item["amount"] = to_decimal(item.get("amount")).quantize(decimal.Decimal("0.01"))
+        merchant = merchants_by_id[int(item["merchant_id"])]
+        rate = to_decimal(merchant.get("rate_df"), "0.0150")
+        if to_decimal(item.get("poundage")) <= 0:
+            item["poundage"] = (item["amount"] * rate).quantize(decimal.Decimal("0.0001"))
+        else:
+            item["poundage"] = to_decimal(item.get("poundage")).quantize(decimal.Decimal("0.0001"))
+        item["realpay"] = (item["amount"] - item["poundage"]).quantize(decimal.Decimal("0.0001"))
+        item["merchant_rate"] = to_decimal(item.get("merchant_rate"), str(rate)).quantize(decimal.Decimal("0.0001"))
+        item["earn_partner_self"] = to_decimal(item.get("earn_partner_self"), "0.0000").quantize(decimal.Decimal("0.0001"))
+        item["earn_partner"] = to_decimal(item.get("earn_partner"), str(item["earn_partner_self"])).quantize(decimal.Decimal("0.0001"))
+        item["earn_merchant"] = to_decimal(item.get("earn_merchant"), "0.0000").quantize(decimal.Decimal("0.0001"))
+        item["earn_system"] = max(
+            decimal.Decimal("0.0000"),
+            (item["poundage"] - item["earn_merchant"] - item["earn_partner"]).quantize(decimal.Decimal("0.0001")),
+        )
+        created = item.get("time_create") or current_demo_date()
+        item["time_accept"] = ensure_time(item.get("time_accept"), created + dt.timedelta(seconds=1))
+        if int(item["status"]) in (3, 4):
+            item["time_success"] = ensure_time(item.get("time_success"), item["time_accept"] + dt.timedelta(seconds=20))
+            if not item.get("utr"):
+                item["utr"] = "UTR" + str(item["code"])[-12:]
+        else:
+            item["time_success"] = None
+        result.append(item)
+    return result
+
+
+def normalize_realistic_df_orders(rows: Sequence[Dict[str, object]], merchants_by_id: Dict[int, Dict[str, object]]):
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["id"] = None
+        item["amount"] = to_decimal(item.get("amount")).quantize(decimal.Decimal("0.01"))
+        merchant = merchants_by_id[int(item["merchant_id"])]
+        rate = to_decimal(merchant.get("rate_df"), "0.0150")
+        fee = to_decimal(merchant.get("fee_df"), "0.0000")
+        if to_decimal(item.get("poundage")) <= 0:
+            item["poundage"] = (item["amount"] * rate + fee).quantize(decimal.Decimal("0.0001"))
+        else:
+            item["poundage"] = to_decimal(item.get("poundage")).quantize(decimal.Decimal("0.0001"))
+        item["realpay"] = (item["amount"] + item["poundage"]).quantize(decimal.Decimal("0.0001"))
+        item["merchant_rate"] = to_decimal(item.get("merchant_rate"), str(rate)).quantize(decimal.Decimal("0.0001"))
+        item["earn_partner_self"] = to_decimal(item.get("earn_partner_self"), "0.0000").quantize(decimal.Decimal("0.0001"))
+        item["earn_merchant"] = to_decimal(item.get("earn_merchant"), "0.0000").quantize(decimal.Decimal("0.0001"))
+        item["earn_system"] = max(
+            decimal.Decimal("0.0000"),
+            (item["poundage"] - item["earn_merchant"] - item["earn_partner_self"]).quantize(decimal.Decimal("0.0001")),
+        )
+        item["payout_type"] = item.get("payout_type") if item.get("payout_type") is not None else 1
+        created = item.get("time_create") or current_demo_date()
+        item["time_accept"] = ensure_time(item.get("time_accept"), created + dt.timedelta(seconds=1))
+        if int(item["status"]) in (3, 4):
+            item["time_success"] = ensure_time(item.get("time_success"), item["time_accept"] + dt.timedelta(seconds=20))
+            if not item.get("utr"):
+                item["utr"] = "DFUTR" + str(item["code"])[-12:]
+        result.append(item)
+    return result
+
+
+def add_balance_event(events: List[Dict[str, object]], code: str, user_type: int, user_id: int, amount: decimal.Decimal,
+                      record_type: int, merchant_code: object, time_create: object, remark: str):
+    events.append(
+        {
+            "code": code,
+            "user_type": user_type,
+            "user_id": user_id,
+            "amount": decimal.Decimal(str(amount)).quantize(decimal.Decimal("0.0001")),
+            "record_type": record_type,
+            "merchant_code": merchant_code,
+            "time_create": time_create,
+            "remark": remark,
+        }
+    )
+
+
+def build_business_events(ds_rows: Sequence[Dict[str, object]], df_rows: Sequence[Dict[str, object]]):
+    events = []
+    payment_delta = {}
+    for row in ds_rows:
+        status = int(row["status"])
+        code = row["code"]
+        if status in (-1, 3, 4):
+            add_balance_event(events, code, 0, int(row["partner_id"]), -to_decimal(row["amount"]), 0,
+                              row.get("merchant_code"), row.get("time_accept"), "ds accept")
+        if status == -1:
+            add_balance_event(events, code, 0, int(row["partner_id"]), to_decimal(row["amount"]), 0,
+                              row.get("merchant_code"), row.get("time_updated") or row.get("time_accept"), "ds timeout refund")
+        if status in (3, 4):
+            add_balance_event(events, code, 1, int(row["merchant_id"]), to_decimal(row["realpay"]), 0,
+                              row.get("merchant_code"), row.get("time_success"), "ds success settle")
+            if to_decimal(row.get("earn_partner_self")) > 0:
+                add_balance_event(events, code, 0, int(row["partner_id"]), to_decimal(row["earn_partner_self"]), 3,
+                                  row.get("merchant_code"), row.get("time_success"), "ds commission")
+            payment_delta[int(row["payment_id"])] = payment_delta.get(int(row["payment_id"]), decimal.Decimal("0.0000")) + to_decimal(row["amount"])
+    for row in df_rows:
+        status = int(row["status"])
+        code = row["code"]
+        add_balance_event(events, code, 1, int(row["merchant_id"]), -to_decimal(row["realpay"]), 1,
+                          row.get("merchant_code"), row.get("time_create"), "df create debit")
+        if status in (3, 4):
+            add_balance_event(events, code, 0, int(row["partner_id"]), to_decimal(row["amount"]), 1,
+                              row.get("merchant_code"), row.get("time_success"), "df success principal")
+            if to_decimal(row.get("earn_partner_self")) > 0:
+                add_balance_event(events, code, 0, int(row["partner_id"]), to_decimal(row["earn_partner_self"]), 3,
+                                  row.get("merchant_code"), row.get("time_success"), "df commission")
+            payment_delta[int(row["payment_id"])] = payment_delta.get(int(row["payment_id"]), decimal.Decimal("0.0000")) - to_decimal(row["amount"])
+        elif status in (-1, -2):
+            add_balance_event(events, code, 1, int(row["merchant_id"]), to_decimal(row["realpay"]), 1,
+                              row.get("merchant_code"), row.get("time_updated") or row.get("time_create"), "df fail refund")
+    return events, payment_delta
+
+
+def compute_opening_balances_from_events(entity_ids: Sequence[int], events: Sequence[Dict[str, object]], user_type: int,
+                                         base_amount: decimal.Decimal):
+    balances = {}
+    for entity_id in entity_ids:
+        running = decimal.Decimal("0.0000")
+        lowest = decimal.Decimal("0.0000")
+        for event in sorted(events, key=lambda item: item["time_create"] or dt.datetime.min):
+            if event["user_type"] == user_type and int(event["user_id"]) == int(entity_id):
+                running += event["amount"]
+                lowest = min(lowest, running)
+        opening = base_amount
+        if lowest < 0:
+            opening = max(opening, (-lowest + decimal.Decimal("10000.0000")).quantize(decimal.Decimal("0.0001")))
+        balances[int(entity_id)] = opening
+    return balances
+
+
+def insert_balance_events(cur, merchant_rows, partner_rows, events):
+    merchant_balances = compute_opening_balances_from_events(
+        [int(row["id"]) for row in merchant_rows], events, 1, decimal.Decimal("100000.0000")
+    )
+    partner_balances = compute_opening_balances_from_events(
+        [int(row["id"]) for row in partner_rows], events, 0, decimal.Decimal("500000.0000")
+    )
+    running = {("merchant", key): value for key, value in merchant_balances.items()}
+    running.update({("partner", key): value for key, value in partner_balances.items()})
+    first_time = min((event["time_create"] for event in events if event.get("time_create")), default=current_demo_date())
+    opening_time = first_time - dt.timedelta(seconds=1)
+    for merchant_id, opening in merchant_balances.items():
+        cur.execute(
+            """
+            INSERT INTO balance_record
+                (code, user_type, user_id, change_before, amount, change_after, record_type, admin_id, remark, merchant_code, time_create)
+            VALUES (%s, 1, %s, 0, %s, %s, 0, 1, %s, NULL, %s)
+            """,
+            (f"DEMOOPENM{merchant_id}", merchant_id, opening, opening, "demo opening merchant balance", opening_time),
+        )
+    for partner_id, opening in partner_balances.items():
+        cur.execute(
+            """
+            INSERT INTO balance_record
+                (code, user_type, user_id, change_before, amount, change_after, record_type, admin_id, remark, merchant_code, time_create)
+            VALUES (%s, 0, %s, 0, %s, %s, 0, 1, %s, NULL, %s)
+            """,
+            (f"DEMOOPENP{partner_id}", partner_id, opening, opening, "demo opening partner balance", opening_time),
+        )
+    for event in sorted(events, key=lambda item: item["time_create"] or dt.datetime.min):
+        table_key = "partner" if event["user_type"] == 0 else "merchant"
+        key = (table_key, int(event["user_id"]))
+        before = running[key]
+        after = (before + event["amount"]).quantize(decimal.Decimal("0.0001"))
+        running[key] = after
+        cur.execute(
+            """
+            INSERT INTO balance_record
+                (code, user_type, user_id, change_before, amount, change_after, record_type, admin_id, remark, merchant_code, time_create)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+            """,
+            (
+                event["code"],
+                event["user_type"],
+                event["user_id"],
+                before,
+                event["amount"],
+                after,
+                event["record_type"],
+                event["remark"],
+                event["merchant_code"],
+                event["time_create"],
+            ),
+        )
+    for merchant_id, opening in merchant_balances.items():
+        cur.execute("UPDATE merchant SET balance=%s, balance_frozen=0 WHERE id=%s", (running[("merchant", merchant_id)], merchant_id))
+    for partner_id, opening in partner_balances.items():
+        cur.execute(
+            "UPDATE partner SET balance=%s, balance_frozen=0, balance_deposit=0 WHERE id=%s",
+            (running[("partner", partner_id)], partner_id),
+        )
+
+
+def insert_tree_rows(cur, table: str, rows: Sequence[Dict[str, object]]):
+    tree_table = f"{table}_tree"
+    id_key = "id"
+    selected_ids = {int(row[id_key]) for row in rows}
+    cur.execute(f"DELETE FROM {tree_table}")
+    for row in rows:
+        row_id = int(row[id_key])
+        cur.execute(f"INSERT INTO {tree_table} (parent, child, distance) VALUES (%s, %s, 0)", (row_id, row_id))
+        if row.get("pid") and int(row["pid"]) in selected_ids:
+            cur.execute(f"INSERT INTO {tree_table} (parent, child, distance) VALUES (%s, %s, 1)", (int(row["pid"]), row_id))
+
+
+def apply_realistic_demo_data(cur, source_db: str, hashed_password: str, whitelist_ips: str):
+    admins = select_realistic_admins(cur, source_db)
+    roles = select_realistic_roles(cur, source_db, [int(row["role"]) for row in admins])
+    merchant_whitelist_ips = merge_csv_values(DEMO_WHITELIST_IPS)
+    merchants = normalize_realistic_merchants(select_realistic_merchants(cur, source_db), hashed_password, merchant_whitelist_ips)
+    partners = normalize_realistic_partners(select_realistic_partners(cur, source_db), hashed_password)
+    if len(merchants) < 4 or len(partners) < 4:
+        raise RuntimeError("realistic source rows are not enough")
+    payments = normalize_realistic_payments(select_realistic_payments(cur, source_db, [int(row["id"]) for row in partners]))
+    if not payments:
+        raise RuntimeError("realistic payment rows are not enough")
+    merchant_ids = [int(row["id"]) for row in merchants]
+    partner_ids = [int(row["id"]) for row in partners]
+    merchant_channels = select_realistic_merchant_channels(cur, source_db, merchant_ids)
+    payment_ids = [int(row["id"]) for row in payments]
+    ds_rows, df_rows = select_realistic_orders(cur, source_db, merchant_ids, partner_ids, payment_ids)
+    if len(ds_rows) < 100 or len(df_rows) < 50:
+        raise RuntimeError("realistic order rows are not enough")
+    merchants_by_id = {int(row["id"]): row for row in merchants}
+    ds_rows = normalize_realistic_ds_orders(ds_rows, merchants_by_id)
+    df_rows = normalize_realistic_df_orders(df_rows, merchants_by_id)
+    events, payment_delta = build_business_events(ds_rows, df_rows)
+
+    reset_tables(cur)
+    cur.execute("DELETE FROM admin")
+    cur.execute("DELETE FROM roles")
+    cur.execute("DELETE FROM merchant_channel")
+    cur.execute("DELETE FROM merchant_tree")
+    cur.execute("DELETE FROM merchant")
+    cur.execute("DELETE FROM partner_invitation_code")
+    cur.execute("DELETE FROM partner_tree")
+    cur.execute("DELETE FROM partner")
+
+    for row in roles:
+        execute_insert(cur, "roles", row)
+    for row in normalize_realistic_admins(admins, hashed_password):
+        execute_insert(cur, "admin", row)
+    for row in merchants:
+        execute_insert(cur, "merchant", row)
+    for row in merchant_channels:
+        execute_insert(cur, "merchant_channel", row)
+    insert_tree_rows(cur, "merchant", merchants)
+    for row in partners:
+        execute_insert(cur, "partner", row)
+    insert_tree_rows(cur, "partner", partners)
+    for row in payments:
+        row["sys_balance"] = payment_delta.get(int(row["id"]), decimal.Decimal("0.0000")).quantize(decimal.Decimal("0.0001"))
+        execute_insert(cur, "payment", row)
+    for row in ds_rows:
+        execute_insert(cur, "orders_ds", row)
+    for row in df_rows:
+        execute_insert(cur, "orders_df", row)
+    insert_balance_events(cur, merchants, partners, events)
+    insert_summary_rows(cur)
+    update_sys_info(cur, whitelist_ips)
+    return validate(cur)
+
+
 def reset_tables(cur):
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     for table in RESET_TABLES:
@@ -628,49 +1197,60 @@ def insert_summary_rows(cur):
         )
 
 
-def update_sys_info(cur):
+def update_sys_info(cur, whitelist_ips: str = None):
     row = fetch_one(cur, "SELECT sys_ip_w FROM sys_info WHERE id=1")
     if not row:
         return
-    ips = [item.strip() for item in str(row.get("sys_ip_w") or "").split(",") if item.strip()]
-    if DEMO_IP not in ips:
-        ips.append(DEMO_IP)
-    cur.execute("UPDATE sys_info SET sys_ip_w=%s WHERE id=1", [",".join(ips)])
+    ips = merge_csv_values(row.get("sys_ip_w"), whitelist_ips or DEMO_IP)
+    cur.execute("UPDATE sys_info SET sys_ip_w=%s WHERE id=1", [ips])
 
 
 def validate(cur):
     checks = {
         "admin_count": "SELECT COUNT(*) AS value FROM admin",
-        "demo_role_count": "SELECT COUNT(*) AS value FROM roles WHERE id IN (1,9001,9002,9003,9004)",
+        "role_count": "SELECT COUNT(*) AS value FROM roles",
         "merchant_count": "SELECT COUNT(*) AS value FROM merchant",
+        "merchant_channel_count": "SELECT COUNT(*) AS value FROM merchant_channel",
         "partner_count": "SELECT COUNT(*) AS value FROM partner",
         "payment_count": "SELECT COUNT(*) AS value FROM payment",
+        "payment_active_count": "SELECT COUNT(*) AS value FROM payment WHERE status=1 OR manual_status=0",
         "payment_d_count": "SELECT COUNT(*) AS value FROM payment_d",
         "orders_ds_count": "SELECT COUNT(*) AS value FROM orders_ds",
         "orders_df_count": "SELECT COUNT(*) AS value FROM orders_df",
         "balance_record_count": "SELECT COUNT(*) AS value FROM balance_record",
         "merchant_with_target_payment": "SELECT COUNT(*) AS value FROM merchant WHERE target_payment IS NOT NULL AND target_payment != ''",
         "merchant_negative_balance": "SELECT COUNT(*) AS value FROM merchant WHERE balance < 0 OR balance_frozen < 0",
+        "partner_negative_balance": "SELECT COUNT(*) AS value FROM partner WHERE balance < 0 OR balance_frozen < 0 OR balance_deposit < 0",
         "sys_info_demo_ip_count": "SELECT COUNT(*) AS value FROM sys_info WHERE id=1 AND sys_ip_w LIKE '%%103.135.100.192%%'",
         "merchant_demo_ip_count": "SELECT COUNT(*) AS value FROM merchant WHERE ip LIKE '%%103.135.100.192%%' AND ip_df LIKE '%%103.135.100.192%%'",
+        "ds_demo_marker_count": "SELECT COUNT(*) AS value FROM orders_ds WHERE code LIKE 'DSDEMO%%' OR upi='demo@upi' OR realname='Demo Player'",
+        "df_demo_marker_count": "SELECT COUNT(*) AS value FROM orders_df WHERE code LIKE 'DFDEMO%%' OR payment_bank='Demo Bank' OR payment_name LIKE 'Demo Receiver%%'",
+        "ds_missing_payment_count": "SELECT COUNT(*) AS value FROM orders_ds o LEFT JOIN payment p ON p.id=o.payment_id WHERE o.status IN (-1,3,4) AND (o.payment_id IS NULL OR p.id IS NULL)",
+        "df_missing_payment_count": "SELECT COUNT(*) AS value FROM orders_df o LEFT JOIN payment p ON p.id=o.payment_id WHERE o.status IN (-1,-2,3,4) AND (o.payment_id IS NULL OR p.id IS NULL)",
+        "merchant_balance_record_last_mismatch": "SELECT COUNT(*) AS value FROM merchant m LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=1 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=m.id WHERE m.balance <> x.change_after OR x.change_after IS NULL",
+        "partner_balance_record_last_mismatch": "SELECT COUNT(*) AS value FROM partner p LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=0 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=p.id WHERE p.balance <> x.change_after OR x.change_after IS NULL",
     }
     return {name: fetch_one(cur, sql)["value"] for name, sql in checks.items()}
 
 
 def assert_expected_result(result: Dict[str, object]):
     expected = {
-        "admin_count": 5,
-        "demo_role_count": 5,
-        "merchant_count": 8,
-        "partner_count": 4,
-        "payment_count": 0,
+        "admin_count": 6,
+        "merchant_count": REALISTIC_MERCHANT_LIMIT,
+        "partner_count": REALISTIC_PARTNER_LIMIT,
         "payment_d_count": 0,
-        "orders_ds_count": 320,
-        "orders_df_count": 120,
         "merchant_with_target_payment": 0,
         "merchant_negative_balance": 0,
+        "partner_negative_balance": 0,
         "sys_info_demo_ip_count": 1,
-        "merchant_demo_ip_count": 8,
+        "merchant_demo_ip_count": REALISTIC_MERCHANT_LIMIT,
+        "payment_active_count": 0,
+        "ds_demo_marker_count": 0,
+        "df_demo_marker_count": 0,
+        "ds_missing_payment_count": 0,
+        "df_missing_payment_count": 0,
+        "merchant_balance_record_last_mismatch": 0,
+        "partner_balance_record_last_mismatch": 0,
     }
     errors = []
     for key, value in expected.items():
@@ -678,11 +1258,21 @@ def assert_expected_result(result: Dict[str, object]):
             errors.append(f"{key} expected {value}, got {result.get(key)}")
     if result.get("balance_record_count", 0) <= 0:
         errors.append("balance_record_count expected > 0")
+    if result.get("role_count", 0) < 4:
+        errors.append("role_count expected >= 4")
+    if result.get("merchant_channel_count", 0) <= 0:
+        errors.append("merchant_channel_count expected > 0")
+    if result.get("payment_count", 0) <= 0:
+        errors.append("payment_count expected > 0")
+    if result.get("orders_ds_count", 0) < 100:
+        errors.append("orders_ds_count expected >= 100")
+    if result.get("orders_df_count", 0) < 50:
+        errors.append("orders_df_count expected >= 50")
     if errors:
         raise RuntimeError("; ".join(errors))
 
 
-def apply_demo_data(cur):
+def apply_demo_data(cur, source_db: str = None):
     cur.execute("SELECT GET_LOCK('demo_data_refresh', 30) AS locked")
     locked = cur.fetchone()["locked"]
     if locked != 1:
@@ -692,20 +1282,13 @@ def apply_demo_data(cur):
             cur.execute("SET SESSION sql_log_bin=0")
         except Exception:
             pass
-        seeds = select_merchant_seeds(cur)
-        seed_ids = [int(row["id"]) for row in seeds]
-        ds_seeds = select_order_seeds(cur, "orders_ds", seed_ids, 320)
-        df_seeds = select_order_seeds(cur, "orders_df", seed_ids, 120)
+        source_db = source_db or fetch_one(cur, "SELECT DATABASE() AS db")["db"]
         hashed_password = password_hash()
-        reset_tables(cur)
-        prepare_roles(cur)
-        prepare_admins(cur, hashed_password)
-        merchants = prepare_merchants(cur, hashed_password, seeds)
-        partners = prepare_partners(cur, hashed_password)
-        ds_rows, df_rows = insert_demo_orders(cur, ds_seeds, df_seeds, merchants, partners)
-        insert_balance_records(cur, merchants, ds_rows, df_rows)
-        insert_summary_rows(cur)
-        update_sys_info(cur)
+        whitelist_ips = collect_whitelist_ips(cur)
+        if source_db != fetch_one(cur, "SELECT DATABASE() AS db")["db"]:
+            result = apply_realistic_demo_data(cur, source_db, hashed_password, whitelist_ips)
+        else:
+            raise RuntimeError("realistic demo data requires --source-database pointing at the restored old-data database")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS demo_data_refresh_audit (
@@ -719,7 +1302,6 @@ def apply_demo_data(cur):
             )
             """
         )
-        result = validate(cur)
         assert_expected_result(result)
         cur.execute(
             """
@@ -732,7 +1314,7 @@ def apply_demo_data(cur):
                 result["merchant_count"],
                 result["orders_ds_count"],
                 result["orders_df_count"],
-                "demo data refresh",
+                "realistic demo data refresh",
             ),
         )
         return result
@@ -766,7 +1348,7 @@ def main():
                 return
             if not args.i_understand_this_rewrites_test_data:
                 raise RuntimeError("missing --i-understand-this-rewrites-test-data")
-            after = apply_demo_data(cur)
+            after = apply_demo_data(cur, args.source_database)
             conn.commit()
             print("after=" + repr(after))
     except Exception:

@@ -520,3 +520,47 @@ JazzCashBusiness snapshot 缺失或已经离线时，如果 Redis 里仍残留 `
 PYTHONPATH=admin python3.12 -m unittest admin.tests.test_jazzcash_runtime_reader -v
 python3.12 -m py_compile admin/application/order/order.py admin/application/jazzcash_runtime/*.py
 ```
+
+## 2026-04-26 超管有路由权限但金额/利润字段被屏蔽
+
+### 现象
+
+- 超管账号 `18088880000` 能进入订单接口，但代收/代付订单里的结算金额、手续费、商代盈利、码商盈利、平台利润等字段显示为 `******`。
+- 订单页同时请求统计接口时，前端可能把统计接口 403 或字段屏蔽表现成“权限不够”。
+
+### 根因
+
+- `/order/getorderds` 路由权限本身正常，权限 ID `62` 已在超管角色 `1` 中。
+- 字段查看控制是反向权限：代码按权限名判断 `禁止查看...`，命中后才把字段替换成 `******`。
+- 造演示权限数据时给超管塞了全量 active permissions，导致 `136-150` 这些 `禁止查看...` 负权限也被授给超管。
+
+### 处理
+
+只更新超管角色 `roles.id=1` 的 `permissions` 字符串，移除当前已命中的负权限：
+
+```text
+136,137,138,139,140,141,142,143,144,145,146,147,148,149,150
+```
+
+不删除 `permissions` 表记录，不影响其他管理员角色。后续给超管配置“全量权限”时，需要排除 `name like '禁止查看%'` 的权限项。
+
+### 验收
+
+```bash
+K="kubectl --kubeconfig=/etc/kubernetes/admin.conf -n pk"
+
+$K exec -i mysql-0 -- sh -lc 'mysql --default-character-set=utf8mb4 -uroot -p"$MYSQL_ROOT_PASSWORD" pakistan' <<'SQL'
+set names utf8mb4;
+select p.id,p.name
+from permissions p join roles r on r.id=1
+where p.status=1 and find_in_set(p.id,r.permissions)>0 and p.name like '%禁止查看%'
+order by p.id;
+SQL
+```
+
+期望无返回行。
+
+再使用超管 cookie 请求：
+
+- `/order/getorderds` 返回 `200`，响应体里 `******` 数量为 `0`。
+- `/count/getcount` 和 `/count/getcountonew` 返回 `200`，统计字段不再被星号屏蔽。
