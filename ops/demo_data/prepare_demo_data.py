@@ -6,12 +6,14 @@ import fnmatch
 import hashlib
 import random
 import re
+import secrets
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 
 DEMO_IP = "103.135.100.192"
 DEMO_PASSWORD = "123456"
 DEMO_TOTP_SECRET = "JBSWY3DPEHPK3PXP"
+DEMO_TOTP_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
 
 DEMO_ADMIN_IDS = [1, 9001, 9002, 9003, 9004]
 DEMO_MERCHANT_IDS = [9101, 9102, 9103, 9104, 9105, 9106, 9107, 9108]
@@ -35,6 +37,14 @@ DEMO_WHITELIST_IPS = [
 ]
 
 IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def generate_demo_totp_secret(length: int = 16) -> str:
+    return "".join(secrets.choice(DEMO_TOTP_ALPHABET) for _ in range(length))
+
+
+def generate_demo_api_key() -> str:
+    return secrets.token_hex(16)
 
 RESET_TABLES = [
     "orders_ds",
@@ -351,12 +361,12 @@ def prepare_merchants(cur, hashed_password: str, seeds: Sequence[Dict[str, objec
                 "name": f"Demo Merchant {index:02d}",
                 "cellphone": f"18888010{index:02d}",
                 "hash_login": hashed_password,
-                "gg_key": DEMO_TOTP_SECRET,
+                "gg_key": generate_demo_totp_secret(),
                 "balance": decimal.Decimal("0.0000"),
                 "balance_frozen": decimal.Decimal("0.0000"),
                 "fee_df": fee_df,
                 "rate_df": rate_df if rate_df > 0 else decimal.Decimal("0.0200"),
-                "mc_key": hashlib.md5(f"demo-merchant-{index}".encode()).hexdigest(),
+                "mc_key": generate_demo_api_key(),
                 "return_url": 1,
                 "status": 1,
                 "status_df": 1,
@@ -630,7 +640,8 @@ def normalize_realistic_merchants(merchants: Sequence[Dict[str, object]], hashed
     for row in merchants:
         item = dict(row)
         item["hash_login"] = hashed_password
-        item["gg_key"] = DEMO_TOTP_SECRET
+        item["gg_key"] = generate_demo_totp_secret()
+        item["mc_key"] = generate_demo_api_key()
         item["status"] = 1
         item["status_df"] = 1
         item["target_payment"] = None
@@ -1229,6 +1240,10 @@ def validate(cur):
         "df_missing_payment_count": "SELECT COUNT(*) AS value FROM orders_df o LEFT JOIN payment p ON p.id=o.payment_id WHERE o.status IN (-1,-2,3,4) AND (o.payment_id IS NULL OR p.id IS NULL)",
         "merchant_balance_record_last_mismatch": "SELECT COUNT(*) AS value FROM merchant m LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=1 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=m.id WHERE m.balance <> x.change_after OR x.change_after IS NULL",
         "partner_balance_record_last_mismatch": "SELECT COUNT(*) AS value FROM partner p LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=0 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=p.id WHERE p.balance <> x.change_after OR x.change_after IS NULL",
+        "merchant_invalid_demo_mc_key": "SELECT COUNT(*) AS value FROM merchant WHERE mc_key IS NULL OR CHAR_LENGTH(mc_key) != 32 OR mc_key REGEXP '[^0-9a-f]'",
+        "merchant_invalid_demo_gg_key": "SELECT COUNT(*) AS value FROM merchant WHERE gg_key IS NULL OR CHAR_LENGTH(gg_key) != 16 OR gg_key REGEXP '[^A-Z2-7]'",
+        "merchant_duplicate_demo_mc_key": "SELECT COUNT(*) - COUNT(DISTINCT mc_key) AS value FROM merchant",
+        "merchant_duplicate_demo_gg_key": "SELECT COUNT(*) - COUNT(DISTINCT gg_key) AS value FROM merchant",
     }
     return {name: fetch_one(cur, sql)["value"] for name, sql in checks.items()}
 
@@ -1251,6 +1266,10 @@ def assert_expected_result(result: Dict[str, object]):
         "df_missing_payment_count": 0,
         "merchant_balance_record_last_mismatch": 0,
         "partner_balance_record_last_mismatch": 0,
+        "merchant_invalid_demo_mc_key": 0,
+        "merchant_invalid_demo_gg_key": 0,
+        "merchant_duplicate_demo_mc_key": 0,
+        "merchant_duplicate_demo_gg_key": 0,
     }
     errors = []
     for key, value in expected.items():

@@ -185,3 +185,28 @@ partner_balance_record_last_mismatch > 0
   - 代付创建：商户扣款
   - 代付成功：码商入本金和佣金、payment 系统余额减少
   - 代付失败：商户退款
+
+## 11. 后台看到旧商户密钥或多个商户共用同一密钥
+
+现象：
+
+- 后台商户管理打开商户编辑时能看到旧库带来的 `mc_key` / `gg_key`
+- 多个演示商户显示同一 Google 密钥或固定商户密钥
+
+原因：
+
+- 商户管理接口会返回 `merchant.mc_key` 和 `merchant.gg_key`。
+- 如果演示数据脚本保留旧库字段，或使用固定演示密钥，后台展示就会泄露旧商户数据或显得不真实。
+
+处理：
+
+- 演示脚本必须为每个商户重新生成随机 `mc_key` 和随机 `gg_key`。
+- 当前测试库若已存在旧演示商户，直接批量更新 `merchant.mc_key` / `merchant.gg_key`，不要修改登录密码和订单数据。
+- 验收必须确认以下结果都为 0：
+
+```sql
+SELECT COUNT(*) FROM merchant WHERE mc_key IS NULL OR CHAR_LENGTH(mc_key) != 32 OR mc_key REGEXP '[^0-9a-f]';
+SELECT COUNT(*) FROM merchant WHERE gg_key IS NULL OR CHAR_LENGTH(gg_key) != 16 OR gg_key REGEXP '[^A-Z2-7]';
+SELECT COUNT(*) - COUNT(DISTINCT mc_key) FROM merchant;
+SELECT COUNT(*) - COUNT(DISTINCT gg_key) FROM merchant;
+```

@@ -115,9 +115,14 @@ SELECT 'ds_missing_payment', COUNT(*) FROM orders_ds o LEFT JOIN payment p ON p.
 SELECT 'df_missing_payment', COUNT(*) FROM orders_df o LEFT JOIN payment p ON p.id=o.payment_id WHERE o.status IN (-1,-2,3,4) AND (o.payment_id IS NULL OR p.id IS NULL);
 SELECT 'merchant_balance_record_last_mismatch', COUNT(*) FROM merchant m LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=1 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=m.id WHERE m.balance <> x.change_after OR x.change_after IS NULL;
 SELECT 'partner_balance_record_last_mismatch', COUNT(*) FROM partner p LEFT JOIN (SELECT br.user_id, br.change_after FROM balance_record br JOIN (SELECT user_id, MAX(id) id FROM balance_record WHERE user_type=0 GROUP BY user_id) t ON t.id=br.id) x ON x.user_id=p.id WHERE p.balance <> x.change_after OR x.change_after IS NULL;
+SELECT 'merchant_invalid_demo_mc_key', COUNT(*) FROM merchant WHERE mc_key IS NULL OR CHAR_LENGTH(mc_key) != 32 OR mc_key REGEXP '[^0-9a-f]';
+SELECT 'merchant_invalid_demo_gg_key', COUNT(*) FROM merchant WHERE gg_key IS NULL OR CHAR_LENGTH(gg_key) != 16 OR gg_key REGEXP '[^A-Z2-7]';
+SELECT 'merchant_duplicate_demo_mc_key', COUNT(*) - COUNT(DISTINCT mc_key) FROM merchant;
+SELECT 'merchant_duplicate_demo_gg_key', COUNT(*) - COUNT(DISTINCT gg_key) FROM merchant;
 SQL
 ```
 
 `payment_active_count` 应为 0：脚本只保留历史收款资料用于订单闭环，不把收款资料放入在线卡池。
 `api_blacklisted` 应为 0。API 侧当前按 `api_ip_b` 黑名单判断访问，不使用白名单字段。
 `ds_demo_marker`、`df_demo_marker`、`ds_missing_payment`、`df_missing_payment`、两项 `*_balance_record_last_mismatch` 都应为 0。
+四项 `merchant_*_demo_*key` 都应为 0：所有演示商户必须使用脚本随机生成的演示密钥，不能保留旧库真实密钥，也不能多个商户共用同一商户密钥或 Google 密钥。

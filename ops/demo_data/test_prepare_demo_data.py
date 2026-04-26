@@ -14,7 +14,10 @@ from prepare_demo_data import (
     compute_opening_balances,
     demo_order_created_at,
     ds_timestamps,
+    generate_demo_api_key,
+    generate_demo_totp_secret,
     merge_csv_values,
+    normalize_realistic_merchants,
     normalize_amount,
     quote_identifier,
 )
@@ -62,6 +65,43 @@ class DemoDataHelperTests(unittest.TestCase):
 
         self.assertEqual(sql, "INSERT INTO merchant (`id`, `ip`, `name`) VALUES (%s, %s, %s)")
         self.assertEqual(values, [1, DEMO_IP, "Demo"])
+
+    def test_generate_demo_merchant_secrets_have_safe_shapes(self):
+        self.assertRegex(generate_demo_api_key(), r"^[0-9a-f]{32}$")
+        self.assertRegex(generate_demo_totp_secret(), r"^[A-Z2-7]{16}$")
+
+    def test_realistic_merchants_do_not_keep_source_keys(self):
+        rows = normalize_realistic_merchants(
+            [
+                {
+                    "id": 195,
+                    "cellphone": "111112233",
+                    "name": "PAKGAMES",
+                    "hash_login": "old_hash",
+                    "gg_key": "SOURCEGOOGLEKEY1",
+                    "mc_key": "source_merchant_key",
+                    "status": 0,
+                    "status_df": 0,
+                    "target_payment": "1,2",
+                    "ip": "1.1.1.1",
+                    "ip_df": "2.2.2.2",
+                    "balance": decimal.Decimal("1.0000"),
+                    "balance_frozen": decimal.Decimal("2.0000"),
+                    "pid": None,
+                }
+            ],
+            "demo_hash",
+            DEMO_IP,
+        )
+
+        self.assertEqual(rows[0]["hash_login"], "demo_hash")
+        self.assertNotEqual(rows[0]["gg_key"], "SOURCEGOOGLEKEY1")
+        self.assertNotEqual(rows[0]["mc_key"], "source_merchant_key")
+        self.assertRegex(rows[0]["gg_key"], r"^[A-Z2-7]{16}$")
+        self.assertRegex(rows[0]["mc_key"], r"^[0-9a-f]{32}$")
+        self.assertIsNone(rows[0]["target_payment"])
+        self.assertEqual(rows[0]["ip"], DEMO_IP)
+        self.assertEqual(rows[0]["ip_df"], DEMO_IP)
 
     def test_opening_balances_keep_demo_ledger_non_negative(self):
         merchants = [{"id": 9101}, {"id": 9102}]
