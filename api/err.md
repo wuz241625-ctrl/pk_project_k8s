@@ -1476,3 +1476,42 @@ python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 - OTP 后上传指纹可进入 `fingerprintUploaded`
 - `/login/verify_fingerprint` 支持 `bankname=jazzcash`
 - 指纹验证成功后 session 为 `activeSuccessful`
+
+## 2026-04-26 `ospay_api_host` 与回调缓存混用旧域名
+
+### 现象
+
+当前服务器入口是 `api.awekay.com`，但 PROD 配置里的 `ospay_api_host` 仍是旧的 `http://ospay.vip/api`。Redis `notice_domain_api_list` 为空时，代收/代付三方回调地址会回退到旧域名，导致当前测试环境和旧环境混用。
+
+### 根因
+
+1. `ospay_api_host` 是代码兜底配置，未随当前服务器域名更新。
+2. 多个三方通道优先读 Redis `notice_domain_api_list`，为空时才回退到 `ospay_api_host` 或历史硬编码域名。
+3. Redis 属于易失缓存，重建后如果 API 启动不主动写入当前服务器域名，就容易再次落回旧域名。
+
+### 处理
+
+1. PROD `ospay_api_host` 改为 `http://api.awekay.com/api`。
+2. API 启动初始化时，若 Redis `notice_domain_api_list` 为空，写入 `ospay_api_host`。
+3. 若 Redis 已有 `notice_domain_api_list`，不覆盖，保留后台维护多回调域名的能力。
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3.12 -m py_compile api/main.py api/config.example.py
+```
+
+线上检查：
+
+```bash
+kubectl exec -n pk "$REDIS_POD" -- redis-cli GET notice_domain_api_list
+kubectl exec -n pk deploy/api-deploy -- python - <<'PY'
+import sys
+sys.path.insert(0, '/app/api')
+from config import get_config
+print(get_config()['ospay_api_host'])
+PY
+```
+
+期望均为 `http://api.awekay.com/api`。

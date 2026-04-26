@@ -638,3 +638,36 @@ python3.12 -m py_compile \
 - `verify_otp_http()` 不能调用 JazzCash 上游，也不能调用 `_verify_account()`
 - OTP 后上传指纹时 Redis session 从 `fingerprintUploadRequired` 进入 `fingerprintUploaded`
 - `verify_fingerprint_http()` 成功后 Redis session 为 `activeSuccessful`
+
+## 2026-04-26 API 回调域名缓存
+
+本轮目标：
+
+- PROD `ospay_api_host` 固定为当前服务器入口：`http://api.awekay.com/api`
+- API 启动时若 Redis `notice_domain_api_list` 为空，自动写入 `ospay_api_host`
+- 若后台已经维护了 `notice_domain_api_list`，启动初始化不覆盖已有值
+
+本地验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3.12 -m py_compile api/main.py api/config.example.py
+```
+
+线上验收命令：
+
+```bash
+REDIS_POD=$(kubectl get pods -n pk -l app=redis -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -n pk "$REDIS_POD" -- redis-cli GET notice_domain_api_list
+kubectl exec -n pk deploy/api-deploy -- python - <<'PY'
+import sys
+sys.path.insert(0, '/app/api')
+from config import get_config
+print(get_config()['ospay_api_host'])
+PY
+```
+
+期望结果：
+
+- Redis `notice_domain_api_list` 为 `http://api.awekay.com/api`
+- 容器内 `get_config()['ospay_api_host']` 为 `http://api.awekay.com/api`
