@@ -7,13 +7,12 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, mock_open, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy.exc import IntegrityError
 
-from application.app.login.banks import easypaisa as easypaisa_module
 from application.app.login.banks.easypaisa import EasyPaisa, ErrorCode, LoginStatus, STATUS_TRANSITIONS
 from application.easypaisa_runtime import keyspace
 from application.lakshmi_api.controllers import http_login_controller
@@ -212,19 +211,16 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
                     )
                 self.assertEqual(ctx.exception.code, "INVALID_TRANSITION")
 
-    def test_save_fingerprint_uses_mounted_module_fingerprint_dir(self):
-        asyncio.run(self._run_save_fingerprint_mount_dir_case())
+    def test_save_fingerprint_uses_root_fingerprint_mount_dir(self):
+        asyncio.run(self._run_save_fingerprint_root_mount_dir_case())
 
-    async def _run_save_fingerprint_mount_dir_case(self):
+    async def _run_save_fingerprint_root_mount_dir_case(self):
         session = self._session(LoginStatus.FINGERPRINT_UPLOAD_REQUIRED)
         self.easypaisa._save_payment = AsyncMock(return_value=True)
-        fingerprint_path = None
-        root_dir = Path("/fingerprint")
-        root_existed = root_dir.exists()
-        expected_dir = Path(easypaisa_module.__file__).resolve().parent / "fingerprint"
-        expected_dir_existed = expected_dir.exists()
-
-        try:
+        opened = mock_open()
+        with patch("application.app.login.banks.easypaisa.os.makedirs") as makedirs, patch(
+            "builtins.open", opened
+        ):
             result = await self.easypaisa._save_fingerprint(
                 session,
                 b"zip-data",
@@ -232,25 +228,13 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
                 533290,
                 "03445021275",
             )
-            self.assertTrue(result)
-            fingerprint_path = self.easypaisa._save_payment.await_args.kwargs["fingerprint_path"]
-            saved = Path(fingerprint_path).resolve()
-            saved.relative_to(expected_dir.resolve())
-            self.assertEqual(saved.name, "easypaisa_533290_03445021275.zip")
-            self.assertEqual(saved.read_bytes(), b"zip-data")
-        finally:
-            if fingerprint_path:
-                Path(fingerprint_path).unlink(missing_ok=True)
-            if not expected_dir_existed and expected_dir.exists():
-                try:
-                    expected_dir.rmdir()
-                except OSError:
-                    pass
-            if not root_existed and root_dir.exists():
-                try:
-                    root_dir.rmdir()
-                except OSError:
-                    pass
+
+        self.assertTrue(result)
+        fingerprint_path = self.easypaisa._save_payment.await_args.kwargs["fingerprint_path"]
+        self.assertEqual(fingerprint_path, "/fingerprint/easypaisa_533290_03445021275.zip")
+        makedirs.assert_called_once_with("/fingerprint/", exist_ok=True)
+        opened.assert_called_once_with(fingerprint_path, "wb")
+        opened().write.assert_called_once_with(b"zip-data")
 
     def test_verify_otp_replay_success_sets_fingerprint_uploaded(self):
         asyncio.run(self._run_verify_otp_replay_case(True, LoginStatus.FINGERPRINT_UPLOADED))

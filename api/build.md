@@ -691,7 +691,7 @@ PY
 
 背景：
 
-- EasyPaisa/JazzCash 指纹 zip 保存到 `/app/api/application/app/login/banks/fingerprint`
+- EasyPaisa/JazzCash 指纹 zip 统一保存到 `/fingerprint`
 - 当前测试集群没有 RWX StorageClass，只有手工 RWO PV
 - 为避免两个 API Pod 跨节点读不到同一份本地文件，API 固定调度到 `pk-1`
 
@@ -714,7 +714,7 @@ spec:
       - name: api
         volumeMounts:
         - name: fingerprint-storage
-          mountPath: /app/api/application/app/login/banks/fingerprint
+          mountPath: /fingerprint
       volumes:
       - name: fingerprint-storage
         persistentVolumeClaim:
@@ -727,14 +727,14 @@ spec:
 kubectl get pv api-fingerprint-pv
 kubectl get pvc api-fingerprint-pvc -n pk
 kubectl get pods -n pk -l app=api -o wide
-kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/application/app/login/banks/fingerprint'
+kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep " /fingerprint "'
 ```
 
 指纹保存路径回归测试：
 
 ```bash
-python3 -m unittest api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
-python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
+python3 -m unittest api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_save_fingerprint_uses_root_fingerprint_mount_dir -v
+python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_save_fingerprint_uses_root_fingerprint_mount_dir -v
 ```
 
 期望：

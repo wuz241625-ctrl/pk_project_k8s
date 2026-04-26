@@ -1539,9 +1539,9 @@ App 已调用 `/api/v1/login/upload_fingerprint`，Nginx access log 也能看到
 
 ### 根因
 
-1. EasyPaisa/JazzCash 的 `_save_fingerprint()` 期望把 zip 写到模块目录下的 `fingerprint` 子目录。
-2. 旧代码把 `FINGERPRINT_PATH` 写成 `'/fingerprint/'` 绝对路径；`os.path.join(os.path.dirname(__file__), '/fingerprint/')` 会忽略前面的模块目录，实际写入容器根目录 `/fingerprint/`。
-3. API Deployment 的 PVC 挂载点是 `/app/api/application/app/login/banks/fingerprint`，不是 `/fingerprint/`；因此上传成功后文件没有进入持久化目录，Pod 重建后根目录临时文件消失。
+1. EasyPaisa/JazzCash 的 `_save_fingerprint()` 统一以 `/fingerprint/` 作为指纹 zip 保存目录。
+2. API Deployment 曾经把 PVC 挂载到 `/app/api/application/app/login/banks/fingerprint`，而代码实际写入 `/fingerprint/`；因此上传成功后文件没有进入持久化目录，Pod 重建后根目录临时文件消失。
+3. `/fingerprint` 是业务约定的唯一指纹目录，Deployment 必须把 PVC 直接挂到该目录，避免模块目录和根目录两套路径并存。
 4. 当前集群没有 RWX StorageClass，两个 API 副本跨节点时即使使用节点本地目录，也会出现 A Pod 上传、B Pod 验证找不到文件。
 
 ### 处理
@@ -1555,9 +1555,9 @@ App 已调用 `/api/v1/login/upload_fingerprint`，Nginx access log 也能看到
 3. API 容器挂载：
 
 ```text
-/app/api/application/app/login/banks/fingerprint -> api-fingerprint-pvc
+/fingerprint -> api-fingerprint-pvc
 ```
-4. 修正 EasyPaisa/JazzCash 的 `FINGERPRINT_PATH` 为相对目录 `fingerprint`，确保 `_save_fingerprint()` 写入 PVC 挂载点。
+4. 保持 EasyPaisa/JazzCash 的 `FINGERPRINT_PATH=/fingerprint/`，确保代码保存目录和 PVC 挂载目录完全一致。
 
 ### 验证
 
@@ -1565,15 +1565,15 @@ App 已调用 `/api/v1/login/upload_fingerprint`，Nginx access log 也能看到
 kubectl get pv api-fingerprint-pv
 kubectl get pvc api-fingerprint-pvc -n pk
 kubectl get pods -n pk -l app=api -o wide
-kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/application/app/login/banks/fingerprint'
+kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep " /fingerprint "'
 ```
 
 回归测试：
 
 ```bash
 cd /Users/tear/pk_project_k8s
-python3 -m unittest api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
-python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
+python3 -m unittest api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_save_fingerprint_uses_root_fingerprint_mount_dir -v
+python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_save_fingerprint_uses_root_fingerprint_mount_dir -v
 ```
 
 补充验证：
