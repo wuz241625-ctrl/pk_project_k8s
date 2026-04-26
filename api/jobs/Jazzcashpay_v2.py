@@ -482,6 +482,91 @@ class BankLogin:
             finally:
                 self.db_connection.commit()
 
+    def _read_payment_runtime_flags(self, payment_id):
+        if not self.db_connection or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            if not self.db_connection:
+                return None
+
+        with self.db_connection.cursor() as cur:
+            try:
+                cur.execute(
+                    """
+                    SELECT id, phone, status, certified, channel
+                    FROM payment
+                    WHERE id = %s
+                    """,
+                    (payment_id,),
+                )
+                return cur.fetchone()
+            except Exception as e:
+                self.logger.error(f"查询 JazzCashBusiness runtime 状态失败 payment_id={payment_id}: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return None
+            finally:
+                self.db_connection.commit()
+
+    def payment_runtime_policy(self, payment_id, login_data=None):
+        """返回采集 worker 写 runtime 前必须遵守的 DB 策略。"""
+        payment = self._read_payment_runtime_flags(payment_id)
+        if not payment:
+            return "offline"
+
+        try:
+            status = int(payment.get("status") or 0)
+            certified = int(payment.get("certified") or 0)
+        except Exception:
+            self.logger.error(f"JazzCashBusiness payment 状态字段异常 payment_id={payment_id}: {payment}")
+            return "offline"
+
+        if status != 1:
+            return "business_paused"
+        if certified != 1:
+            return "order_paused"
+        return "dispatch_on"
+
+    @staticmethod
+    def _df_order_enabled_for_policy(policy):
+        """JCB 代付必须保留采集能力，用于官方返回异常时的账单对账。"""
+        return policy == "dispatch_on"
+
+    def _remove_collection_job(self, payment_id):
+        self.redis.hdel(self.hash_key, payment_id)
+        self.redis.zrem(self.set_key, payment_id)
+
+    def _sync_collection_job_from_policy(self, login_data, schedule_score=None):
+        payment_id = login_data.get("real_payment_id") or login_data.get("id")
+        snapshot = self.runtime_service.read_snapshot(payment_id)
+        if snapshot is not None and not self.runtime_service.is_collection_online(payment_id):
+            self._remove_collection_job(payment_id)
+            self.logger.warning(f"{payment_id}, runtime 已禁止采集，清理 {self.hash_key}/{self.set_key} 残留 job")
+            return False
+
+        policy = self.payment_runtime_policy(payment_id, login_data)
+        channels = login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel')
+        if policy == "offline":
+            self.runtime_service.force_offline(
+                payment_id,
+                phone=login_data.get('phone'),
+                source="Jazzcashpay_v2",
+                reason="payment_disabled",
+                channels=channels,
+            )
+            self._remove_collection_job(payment_id)
+            self.logger.error(f"{payment_id}, {self.list_key} DB已下线，拒绝采集")
+            return False
+
+        self.runtime_service.sync_collection_job_state(
+            login_data,
+            source="Jazzcashpay_v2",
+            schedule_score=int(time.time()) if schedule_score is None else schedule_score,
+            collect_enabled=True,
+            ds_order_enabled=policy == "dispatch_on",
+            df_order_enabled=self._df_order_enabled_for_policy(policy),
+        )
+        return True
+
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
         """获取日志统计信息"""
@@ -634,6 +719,18 @@ class BankLogin:
             account_accno = login_data.get('account_accno') or login_data.get('account') or phone
             account_iban = login_data.get('account_iban') or login_data.get('iban') or login_data.get('IBAN')
             if _on == 1:
+                policy = self.payment_runtime_policy(payment_id, login_data)
+                if policy == "offline":
+                    self.runtime_service.force_offline(
+                        payment_id,
+                        phone=phone,
+                        source="Jazzcashpay_v2",
+                        reason="payment_disabled",
+                        channels=channels,
+                    )
+                    self._remove_collection_job(payment_id)
+                    self.logger.error(f"{payment_id}, {self.list_key} DB已下线，拒绝重新上线采集")
+                    return False
                 self.runtime_service.mark_active_successful(
                     payment_id,
                     phone=phone,
@@ -642,13 +739,13 @@ class BankLogin:
                     source="Jazzcashpay_v2.on_off",
                     online_ttl=660,
                     collect_enabled=True,
-                    ds_order_enabled=True,
-                    df_order_enabled=True,
+                    ds_order_enabled=policy == "dispatch_on",
+                    df_order_enabled=self._df_order_enabled_for_policy(policy),
                     channels=channels,
                 )
                 # self.sendMsg('push_payment_information', True, 'Login success')  # 登录成功通知
                 # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), True, 'Login success')  # 登录成功通知
-                self.logger.info(f"{payment_id}, {self.list_key} 上线接单： {payment_id}")
+                self.logger.info(f"{payment_id}, {self.list_key} 上线采集 policy={policy}： {payment_id}")
                 # self.read_cache('on_off(1)')
                 return True
             # 防止代收派单的时候，协议爬取同时操作，导致payment id无法下线
@@ -679,8 +776,7 @@ class BankLogin:
     def update_key(self, login_data):
         try:
             # 更新集合和hash里的值
-            self.redis.hset(self.hash_key, login_data['id'], simplejson.dumps(login_data))
-            self.redis.zadd(self.set_key, {login_data['id']: int(time.time())})
+            self._sync_collection_job_from_policy(login_data, schedule_score=int(time.time()))
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -1657,8 +1753,8 @@ class BankLogin:
                 #     self.logger.error(f"{self.list_key} 180分钟之后通知监控下线，登出:" + simplejson.dumps(login_data))
                 #     self.login_off()
                 #     return 'logout'
-                # 下线接单
-                self.on_off(login_data, 0)
+                self.redis.delete(_key2)
+                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按 runtime 策略继续采集:" + simplejson.dumps(login_data))
 
             # 通知监控一键下线
             _key3 = 'login_off_realtime_{}_{}'.format(self.name, login_data['id'])
@@ -2163,6 +2259,8 @@ class BankLogin:
                 res = None
                 self.logger.info(f"process_single_member_async ： {login_data}")
                 if login_data['status'] == 'grabstatement':
+                    if not self._sync_collection_job_from_policy(login_data):
+                        return False
                     res = await self.get_grabstatement(login_data)
                     self.logger.info(f"{login_data['id']}, get_grabstatement() res {type(res)}： {res}")
                 # 检查并处理与当前 member 相关的异常代付
@@ -2287,12 +2385,29 @@ class BankLogin:
                         self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
                         data['status'] = "grabstatement"
                         data['id'] = data['real_payment_id']
-                        self.redis.hset(self.hash_key, data['real_payment_id'], simplejson.dumps(data))
-                        self.redis.zadd(self.set_key, {data['real_payment_id']: 0})
+                        policy = self.payment_runtime_policy(data['id'], data)
+                        channels = data.get('channels') or data.get('qr_channel') or data.get('channel')
+                        if policy == "offline":
+                            self.runtime_service.force_offline(
+                                data['id'],
+                                phone=data.get('phone'),
+                                source="Jazzcashpay_v2",
+                                reason="payment_disabled",
+                                channels=channels,
+                            )
+                            self.redis.delete(_id)
+                            self.logger.error(f"{data['id']}, {self.list_key} DB已下线，删除 pre_login 并拒绝推进采集")
+                            self.del_lock(_id, _lock)
+                            continue
+                        self.runtime_service.sync_collection_job_state(
+                            data,
+                            source="Jazzcashpay_v2",
+                            schedule_score=0,
+                            collect_enabled=True,
+                            ds_order_enabled=policy == "dispatch_on",
+                            df_order_enabled=self._df_order_enabled_for_policy(policy),
+                        )
                         self.logger.info(f"已将 {data['id']} {data['real_payment_id']}推入 hash_key: {self.hash_key} 和 zset: {self.set_key}")
-                        # 添加判断在线的key
-                        _key1 = 'login_on_{}_{}'.format(self.name, data['real_payment_id'])
-                        self.redis.setex(_key1, 11 * 60, 1)
                         # 删除pre_login*
                         self.redis.delete(_id)
                         self.logger.info(f"已删除当前用户账单 {_id}，{data['real_payment_id']}已经进入处理中")

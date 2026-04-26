@@ -804,3 +804,33 @@ python3.12 -m py_compile \
 - snapshot 缺失时，JazzCashBusiness 默认不能因为 `payment_online_ds/payment_online_df` 残留而继续接单。
 - `jazzcash_runtime:index:dispatch_ds` 是 JazzCashBusiness 超时回队的唯一准入索引。
 - legacy `kick_off_*` 只影响非 runtime 银行；JazzCashBusiness 必须以 runtime kickoff key 为准。
+
+## 2026-04-26 JazzCashBusiness 采集端唯一真相源验收
+
+本轮收口 `api/jobs/Jazzcashpay_v2.py`：
+
+- `hash_jazzcash` / `set_jazzcash` 只作为采集 job 投影，不再作为主真相源。
+- `pre_login_jazzcash_*` 的 `activeSuccessful` 推进必须调用 `SyncJazzCashRuntimeService.sync_collection_job_state()`。
+- worker 采集前必须确认 `jazzcash_runtime:snapshot:{payment_id}` 仍为 `online=true` 且 `collect_enabled=true`。
+- JazzCashBusiness 代付必须依赖采集能力；`collect_enabled=false` 时 DS/DF 必须同时关闭，避免上游代付异常时无法采集账单对账。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.jazzcash_runtime.test_sync_collection_worker \
+  api.tests.test_jazzcash_business_flow_v2 -v
+
+python3.12 -m py_compile \
+  api/application/jazzcash_runtime/sync_runtime_service.py \
+  api/jobs/Jazzcashpay_v2.py
+```
+
+验收重点：
+
+- runtime 禁采时，旧 `hash_jazzcash` / `set_jazzcash` 残留不会触发上游账单接口。
+- `payment.status/certified` 不满足接单时仍保留采集，但关闭代收/代付派单。
+- 旧 `login_off_jazzcash_*` 只作为清理标记，不再覆盖 runtime 主状态。

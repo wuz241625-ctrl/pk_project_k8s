@@ -1674,3 +1674,59 @@ python3.12 -m py_compile \
   api/application/pay/pay.py \
   api/jobs/time_out.py
 ```
+
+## 2026-04-26 JazzCashBusiness 采集端旧队列绕过 runtime
+
+### 现象
+
+- `jazzcash_runtime:snapshot:{payment_id}` 已经离线或 `collect_enabled=false`。
+- 但旧 `hash_jazzcash` / `set_jazzcash` 里仍有 `grabstatement` job。
+- 采集 worker 可能继续调用上游账单接口。
+
+### 根因
+
+旧采集端把 `hash_jazzcash` / `set_jazzcash` 当成主状态。JazzCashBusiness 接入 runtime 后，如果 worker 不先读取 `jazzcash_runtime`，旧队列残留就可能绕过 admin/api 的 runtime 判断。
+
+### 处理
+
+- `SyncJazzCashRuntimeService` 新增 `sync_collection_job_state()`，统一维护 runtime snapshot/index 与 `hash_jazzcash` / `set_jazzcash` 投影。
+- `Jazzcashpay_v2.py` 的 `update_key()`、`pre_login` 推进、worker 采集前检查全部改走 runtime。
+- `collect_enabled=false` 时强制关闭 DS/DF，并清理 `hash_jazzcash` / `set_jazzcash`。
+- JCB 业务约束保持不变：代付必须能采集账单，方便上游代付结果异常时对账。
+
+### 排错口径
+
+先查 runtime：
+
+```bash
+redis-cli GET jazzcash_runtime:snapshot:{payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:collect_enabled {payment_id}
+redis-cli ZSCORE jazzcash_runtime:schedule:collection {payment_id}
+```
+
+再查旧 job 投影：
+
+```bash
+redis-cli HGET hash_jazzcash {payment_id}
+redis-cli ZSCORE set_jazzcash {payment_id}
+```
+
+判断规则：
+
+- runtime `online=false` 或 `collect_enabled=false` 时，旧 job 残留应被 worker 清理。
+- `payment.status/certified` 不满足接单时，允许采集继续跑，但 `ds_order_enabled=false` 且 `df_order_enabled=false`。
+- 旧 `login_off_jazzcash_*` 不再是主真相源，不能仅凭该 key 判断 JCB 必须下线。
+
+### 本轮验证
+
+```bash
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.jazzcash_runtime.test_sync_collection_worker \
+  api.tests.test_jazzcash_business_flow_v2 -v
+
+python3.12 -m py_compile \
+  api/application/jazzcash_runtime/sync_runtime_service.py \
+  api/jobs/Jazzcashpay_v2.py
+```

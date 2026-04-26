@@ -177,6 +177,85 @@ class SyncJazzCashRuntimeService:
         self.redis.rpush(keyspace.LEGACY_PAYMENT_ACTIVE_DF, payment_id)
         return True
 
+    def is_collection_online(self, payment_id) -> bool:
+        snapshot = self.read_snapshot(payment_id)
+        if snapshot is None:
+            return False
+        collect_enabled = bool(snapshot.get("collect_enabled")) if "collect_enabled" in snapshot else True
+        return bool(snapshot.get("online") and collect_enabled)
+
+    def sync_collection_job_state(
+        self,
+        login_data: Dict[str, Any],
+        *,
+        source: str,
+        schedule_score: Optional[int] = None,
+        online_ttl: int = 660,
+        dispatch_ds: bool = True,
+        collect_enabled: Optional[bool] = None,
+        ds_order_enabled: Optional[bool] = None,
+        df_order_enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        payment_id = login_data.get("real_payment_id") or login_data.get("id")
+        if payment_id in [None, ""]:
+            raise ValueError("sync_collection_job_state requires payment id")
+
+        score = self._now() if schedule_score is None else int(schedule_score)
+        existing_job = self._decode(self.redis.hget(keyspace.JOB_HASH, payment_id)) or {}
+        resolved_collect_enabled = True if collect_enabled is None else bool(collect_enabled)
+        resolved_ds_order_enabled = bool(dispatch_ds) if ds_order_enabled is None else bool(ds_order_enabled)
+        resolved_df_order_enabled = True if df_order_enabled is None else bool(df_order_enabled)
+        if not resolved_collect_enabled:
+            resolved_ds_order_enabled = False
+            resolved_df_order_enabled = False
+
+        snapshot = self.mark_active_successful(
+            payment_id,
+            phone=login_data.get("phone") or existing_job.get("phone"),
+            selected_accno=(
+                login_data.get("account_accno")
+                or login_data.get("account")
+                or existing_job.get("account_accno")
+                or existing_job.get("account")
+                or login_data.get("phone")
+                or existing_job.get("phone")
+            ),
+            selected_iban=(
+                login_data.get("account_iban")
+                or login_data.get("iban")
+                or login_data.get("IBAN")
+                or existing_job.get("account_iban")
+                or existing_job.get("iban")
+                or existing_job.get("IBAN")
+            ),
+            source=source,
+            online_ttl=online_ttl,
+            collect_enabled=resolved_collect_enabled,
+            ds_order_enabled=resolved_ds_order_enabled,
+            df_order_enabled=resolved_df_order_enabled,
+            channels=(
+                login_data.get("channels")
+                or login_data.get("qr_channel")
+                or login_data.get("channel")
+                or existing_job.get("channels")
+                or existing_job.get("qr_channel")
+                or existing_job.get("channel")
+            ),
+        )
+        if not resolved_collect_enabled:
+            self.redis.hdel(keyspace.JOB_HASH, payment_id)
+            self.redis.zrem(keyspace.JOB_SET, payment_id)
+            return snapshot
+
+        merged_job = dict(existing_job)
+        merged_job.update(login_data)
+        merged_job["id"] = payment_id
+        if login_data.get("real_payment_id") or existing_job.get("real_payment_id"):
+            merged_job["real_payment_id"] = login_data.get("real_payment_id") or existing_job.get("real_payment_id")
+        self.redis.hset(keyspace.JOB_HASH, payment_id, json.dumps(merged_job, ensure_ascii=True))
+        self.redis.zadd(keyspace.JOB_SET, {payment_id: score})
+        return snapshot
+
     def set_kickoff(self, payment_id, *, phone=None, ttl: int, source: str, reason: str):
         current = self.read_snapshot(payment_id) or {}
         snapshot = self.write_snapshot(
