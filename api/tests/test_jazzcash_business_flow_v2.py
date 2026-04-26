@@ -129,6 +129,35 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
     def test_jazzcash_has_no_upstream_verify_fingerprint_action(self):
         self.assertNotIn("verify_fingerprint", self.jazzcash.API_ENDPOINTS)
 
+    def test_pre_login_writes_runtime_snapshot_with_qr_channel(self):
+        asyncio.run(self._run_pre_login_qr_channel_case())
+
+    async def _run_pre_login_qr_channel_case(self):
+        self.jazzcash._check_login_failed_attempts = AsyncMock(return_value=False)
+        self.jazzcash._verify_payment_password_bcrypt = AsyncMock(return_value=None)
+        self.jazzcash._check_payment = AsyncMock(return_value=None)
+        self.jazzcash._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.jazzcash._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.jazzcash._select_proxy_ip = AsyncMock(return_value="")
+
+        result = await self.jazzcash.pre_login_http(
+            {
+                "bankname": "jazzcash",
+                "phone": "03409297123",
+                "password": "123456",
+                "pin": "1095",
+                "name": "Afzaal Shah",
+                "step": "complete_login",
+                "channel": "1003",
+            }
+        )
+
+        snapshot = json.loads(await self.redis.get("jazzcash_runtime:snapshot:03409297123"))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["data"]["id"], "03409297123")
+        self.assertEqual(snapshot["channels"], "1003")
+        self.assertEqual(snapshot["session_phase"], LoginStatus.PRE_LOGIN)
+
     def test_build_verify_fingerprint_request_uses_login_step2(self):
         captured = {}
 

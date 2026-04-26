@@ -892,6 +892,7 @@ class JazzCash:
             android_id = self.generate_android_id()
             safety_net_id = self.generate_safety_net_id()
             app_gen_id = self.generate_app_gen_id()  # 重要：一次生成，后续复用
+            qr_channel = data.get('channel', '1003')
             
             # 生成动态设备信息
             device_model = self.generate_device_model()
@@ -910,7 +911,7 @@ class JazzCash:
                 'try_count': 0,                             # 重试次数（标准字段）
                 'socks_ip': proxy_ip or '',                 # 代理IP（标准字段名）
                 'to': self.name,                            # 目标key
-                'qr_channel': data.get('channel', '1003'),  # 渠道 - JazzCash 默认只支持 1003
+                'qr_channel': qr_channel,                   # 渠道 - JazzCash 默认只支持 1003
                 'pinCode': pin,                             # PIN码
                 'id_num': '',                               # 身份证号
 

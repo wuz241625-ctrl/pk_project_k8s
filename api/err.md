@@ -1730,3 +1730,39 @@ python3.12 -m py_compile \
   api/application/jazzcash_runtime/sync_runtime_service.py \
   api/jobs/Jazzcashpay_v2.py
 ```
+
+## 2026-04-26 JazzCashBusiness pre_login 写 runtime 快照时 `qr_channel` 未定义
+
+### 现象
+
+- 码商用 `03409297123` 做 JazzCashBusiness 上号，第一次交易密码验证成功。
+- API 日志随后报错：
+
+```text
+NameError: name 'qr_channel' is not defined
+```
+
+- 第一次请求已经写入 `pre_login_jazzcash_03409297123`，但接口异常返回；后续重试被残留 `preLogin` 会话挡住，提示已经开始登录流程。
+- 中间有一次请求把交易密码和 PIN 传反，导致一次 `Payment password verification failed`。
+
+### 根因
+
+`pre_login_http()` 的 `session_data` 中直接使用 `data.get('channel', '1003')`，但写 `jazzcash_runtime:snapshot:*` 时引用了未定义变量 `qr_channel`。异常发生在 Redis 会话写入之后、接口成功返回之前，因此会留下半截 `preLogin` 状态。
+
+### 处理
+
+- 在生成 `session_data` 前统一解析：
+
+```python
+qr_channel = data.get('channel', '1003')
+```
+
+- `session_data['qr_channel']` 和 runtime snapshot `channels` 都使用同一个 `qr_channel`。
+- 加回归测试覆盖 `pre_login_http()` 写入 runtime snapshot 的通道字段。
+
+### 本轮验证
+
+```bash
+python3 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
+python3 -m py_compile api/application/app/login/banks/jazzcash.py
+```
