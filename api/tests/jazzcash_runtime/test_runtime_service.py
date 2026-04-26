@@ -196,6 +196,34 @@ class JazzCashRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.redis.get("login_on_jazzcash_7001"))
         self.assertIsNone(await self.redis.get("login_on_jazzcash_03495863120"))
 
+    async def test_clear_snapshot_removes_all_runtime_indexes(self):
+        from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
+        from application.jazzcash_runtime import keyspace
+
+        service = JazzCashRuntimeService(self.redis, now_provider=lambda: self.now)
+        await service.mark_active_successful(
+            7002,
+            phone="03495863121",
+            selected_accno="03495863121",
+            selected_iban="PK12JAZZ000000003495863121",
+            source="login_flow",
+            dispatch_ds=True,
+            df_order_enabled=True,
+            channels=["1003"],
+        )
+
+        await service.clear_snapshot(7002)
+
+        self.assertIsNone(await self.redis.get(keyspace.snapshot_key(7002)))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_ONLINE, 7002))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_COLLECT_ENABLED, 7002))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_DS_ORDER_ENABLED, 7002))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_DF_ORDER_ENABLED, 7002))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_DISPATCH_DS, 7002))
+        self.assertFalse(await self.redis.sismember(keyspace.INDEX_DISPATCH_DF, 7002))
+        self.assertIsNone(await self.redis.zscore(keyspace.INDEX_UPDATED_AT, 7002))
+        self.assertIsNone(await self.redis.zscore(keyspace.SCHEDULE_COLLECTION, 7002))
+
 
 if __name__ == "__main__":
     unittest.main()

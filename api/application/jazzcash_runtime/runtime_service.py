@@ -40,6 +40,9 @@ class JazzCashRuntimeService:
     async def read_snapshot(self, payment_id):
         return self._decode(await self.redis.get(keyspace.snapshot_key(payment_id)))
 
+    async def read_session(self, payment_id):
+        return self._decode(await self.redis.get(keyspace.session_key(payment_id)))
+
     async def write_snapshot(self, payment_id, patch: Dict[str, Any], source: str):
         snapshot = await self.read_snapshot(payment_id) or {
             "schema_version": keyspace.SCHEMA_VERSION,
@@ -62,6 +65,17 @@ class JazzCashRuntimeService:
 
     async def clear_session(self, payment_id):
         await self.redis.delete(keyspace.session_key(payment_id))
+
+    async def clear_snapshot(self, payment_id):
+        await self.redis.delete(keyspace.snapshot_key(payment_id))
+        await self.redis.srem(keyspace.INDEX_ONLINE, payment_id)
+        await self.redis.srem(keyspace.INDEX_COLLECT_ENABLED, payment_id)
+        await self.redis.srem(keyspace.INDEX_DS_ORDER_ENABLED, payment_id)
+        await self.redis.srem(keyspace.INDEX_DF_ORDER_ENABLED, payment_id)
+        await self.redis.srem(keyspace.INDEX_DISPATCH_DS, payment_id)
+        await self.redis.srem(keyspace.INDEX_DISPATCH_DF, payment_id)
+        await self.redis.zrem(keyspace.INDEX_UPDATED_AT, payment_id)
+        await self.redis.zrem(keyspace.SCHEDULE_COLLECTION, payment_id)
 
     async def _sync_indexes(self, payment_id, snapshot: Dict[str, Any]):
         if not self.enabled:

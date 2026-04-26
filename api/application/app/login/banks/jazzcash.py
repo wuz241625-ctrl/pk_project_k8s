@@ -20,6 +20,7 @@ import uuid
 import os
 from datetime import datetime
 from config import get_config
+from application.jazzcash_runtime import keyspace
 from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 
 conf = get_config()
@@ -350,6 +351,20 @@ class JazzCash:
         redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
         return redis_key
 
+    @staticmethod
+    def _normalize_payment_id(payment_id):
+        if payment_id in [None, '']:
+            return None
+        return str(payment_id)
+
+    @staticmethod
+    def _login_lock_payment_key(payment_id):
+        return keyspace.lock_payment_key(payment_id)
+
+    @staticmethod
+    def _login_lock_phone_key(phone):
+        return keyspace.lock_phone_key(phone)
+
     def _log_key(self, funcName):
         return f'{self.name} {self._get_pre_login_key()} {funcName}'
 
@@ -596,19 +611,277 @@ class JazzCash:
             return False
 
     # ================== 会话管理方法 ==================
+    async def _read_prelogin_entry(self, redis_key):
+        """读取 pre_login Redis 记录，兼容真实会话和 payment_id alias。"""
+        try:
+            if not redis_key:
+                return None
+            session_json = await self.redis.get(redis_key)
+            if not session_json:
+                return None
+            return json.loads(session_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            self.logger.warning(f'{self._log_key("读取pre_login记录")} JSON解析失败: key={redis_key}, exc={exc}')
+            return None
+
+    @staticmethod
+    def _is_payment_id_alias_entry(entry):
+        return bool(
+            isinstance(entry, dict)
+            and entry.get('kind') == 'payment_id_alias'
+            and entry.get('target_payment_id') not in [None, '']
+        )
+
+    def _build_payment_id_alias_entry(self, *, target_payment_id, bankname, phone=None):
+        return {
+            'kind': 'payment_id_alias',
+            'target_payment_id': self._normalize_payment_id(target_payment_id),
+            'bankname': bankname,
+            'phone': phone,
+            'updated_at': int(time.time()),
+        }
+
+    @staticmethod
+    def _looks_like_phone_payment_id(payment_id):
+        text = str(payment_id or '')
+        return len(text) == 11 and text.startswith('03') and text.isdigit()
+
+    @staticmethod
+    def _extract_payment_id_from_redis_key(redis_key):
+        if not redis_key:
+            return None
+        return str(redis_key).rsplit('_', 1)[-1]
+
+    async def _resolve_legacy_temp_payment_context(self, bankname, requested_payment_id, requested_redis_key, session_data):
+        """兼容旧版本已晋升真实 payment.id 但仍残留手机号 runtime 的会话。"""
+        if not self._looks_like_phone_payment_id(requested_payment_id):
+            return None
+        if not isinstance(session_data, dict):
+            return None
+
+        phone = session_data.get('phone') or requested_payment_id
+        partner_id = session_data.get('partner_id')
+        existing_payment = await self._check_payment(bankname, phone, partner_id)
+        target_payment_id = self._normalize_payment_id((existing_payment or {}).get('id'))
+        if not target_payment_id or target_payment_id == requested_payment_id:
+            return None
+        existing_owner_id = (existing_payment or {}).get('user_id')
+        if partner_id and existing_owner_id and str(existing_owner_id) != str(partner_id):
+            return None
+
+        target_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=target_payment_id)
+        target_entry = await self._read_prelogin_entry(target_redis_key)
+        if self._is_payment_id_alias_entry(target_entry):
+            target_payment_id = self._normalize_payment_id(target_entry.get('target_payment_id'))
+            target_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=target_payment_id)
+            target_entry = await self._read_prelogin_entry(target_redis_key)
+
+        target_session = target_entry or await self.runtime_service.read_session(target_payment_id)
+        if not target_session:
+            return None
+        target_partner_id = target_session.get('partner_id')
+        if partner_id and target_partner_id and str(target_partner_id) != str(partner_id):
+            return None
+
+        expire_time = self._session_ttl_for_status(target_session.get('status'))
+        alias_entry = self._build_payment_id_alias_entry(
+            target_payment_id=target_payment_id,
+            bankname=bankname,
+            phone=phone,
+        )
+        await self.redis.setex(requested_redis_key, expire_time, json.dumps(alias_entry))
+        await self.runtime_service.clear_session(requested_payment_id)
+        await self.runtime_service.clear_snapshot(requested_payment_id)
+
+        self.logger.warning(
+            f'{self._log_key("解析旧临时payment_id")} 已迁移临时payment_id: '
+            f'{requested_payment_id} -> {target_payment_id}'
+        )
+        return {
+            'requested_payment_id': requested_payment_id,
+            'resolved_payment_id': target_payment_id,
+            'requested_redis_key': requested_redis_key,
+            'redis_key': target_redis_key,
+            'session_data': target_session,
+            'is_aliased': True,
+        }
+
+    async def _resolve_session_context(self, bankname, payment_id):
+        """把请求携带的 payment_id 解析到当前真实 JCB 会话。"""
+        requested_payment_id = self._normalize_payment_id(payment_id)
+        requested_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=requested_payment_id)
+        resolved_payment_id = requested_payment_id
+        resolved_redis_key = requested_redis_key
+        visited = set()
+
+        while resolved_payment_id and resolved_payment_id not in visited:
+            visited.add(resolved_payment_id)
+            resolved_redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
+            entry = await self._read_prelogin_entry(resolved_redis_key)
+            if self._is_payment_id_alias_entry(entry):
+                resolved_payment_id = self._normalize_payment_id(entry.get('target_payment_id'))
+                continue
+            if entry:
+                migrated_ctx = await self._resolve_legacy_temp_payment_context(
+                    bankname,
+                    requested_payment_id,
+                    requested_redis_key,
+                    entry,
+                )
+                if migrated_ctx:
+                    return migrated_ctx
+                return {
+                    'requested_payment_id': requested_payment_id,
+                    'resolved_payment_id': resolved_payment_id,
+                    'requested_redis_key': requested_redis_key,
+                    'redis_key': resolved_redis_key,
+                    'session_data': entry,
+                    'is_aliased': requested_payment_id != resolved_payment_id,
+                }
+            session_data = await self.runtime_service.read_session(resolved_payment_id)
+            if session_data:
+                migrated_ctx = await self._resolve_legacy_temp_payment_context(
+                    bankname,
+                    requested_payment_id,
+                    requested_redis_key,
+                    session_data,
+                )
+                if migrated_ctx:
+                    return migrated_ctx
+                return {
+                    'requested_payment_id': requested_payment_id,
+                    'resolved_payment_id': resolved_payment_id,
+                    'requested_redis_key': requested_redis_key,
+                    'redis_key': resolved_redis_key,
+                    'session_data': session_data,
+                    'is_aliased': requested_payment_id != resolved_payment_id,
+                }
+            break
+
+        return {
+            'requested_payment_id': requested_payment_id,
+            'resolved_payment_id': resolved_payment_id or requested_payment_id,
+            'requested_redis_key': requested_redis_key,
+            'redis_key': resolved_redis_key,
+            'session_data': None,
+            'is_aliased': requested_payment_id != (resolved_payment_id or requested_payment_id),
+        }
+
     async def _get_session_data(self, redis_key):
         """获取会话数据"""
         funcName = '获取会话数据'
         try:
             if not redis_key:
                 return None
-            session_json = await self.redis.get(redis_key)
-            if session_json:
-                return json.loads(session_json)
+            entry = await self._read_prelogin_entry(redis_key)
+            if entry:
+                if self._is_payment_id_alias_entry(entry):
+                    target_payment_id = self._normalize_payment_id(entry.get('target_payment_id'))
+                    if target_payment_id:
+                        target_redis_key = self.PRELOGIN_KEY.format(
+                            bankname=entry.get('bankname') or self.name,
+                            payment_id=target_payment_id,
+                        )
+                        target_entry = await self._read_prelogin_entry(target_redis_key)
+                        if target_entry and not self._is_payment_id_alias_entry(target_entry):
+                            return target_entry
+                        return await self.runtime_service.read_session(target_payment_id)
+                return entry
+            payment_id = self._extract_payment_id_from_redis_key(redis_key)
+            if payment_id is not None:
+                return await self.runtime_service.read_session(payment_id)
             return None
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
             return None
+
+    def _session_ttl_for_status(self, status):
+        if status == LoginStatus.ACTIVE_SUCCESSFUL:
+            return SESSIONSCOPE
+        return self.expire_time_login_pending
+
+    def _runtime_snapshot_patch_from_session(self, session_data):
+        status = session_data.get('status')
+        return {
+            'phone': session_data.get('phone'),
+            'session_phase': status,
+            'session_expires_at': session_data.get('se_until'),
+            'online': False,
+            'collect_enabled': False,
+            'ds_order_enabled': False,
+            'df_order_enabled': False,
+            'dispatch_ds': False,
+            'dispatch_df': False,
+            'channels': keyspace.normalize_channels(
+                session_data.get('channels') or session_data.get('qr_channel') or session_data.get('channel')
+            ),
+            'cd_until': session_data.get('cd_until', 0),
+            'cooldown_until': session_data.get('cd_until', 0),
+            'last_error': session_data.get('last_error'),
+            'last_transition': status,
+        }
+
+    async def _sync_runtime_state(self, redis_key, session_data, expire_time):
+        payment_id = session_data.get('id') or self._extract_payment_id_from_redis_key(redis_key)
+        if payment_id in [None, '']:
+            return
+        await self.runtime_service.write_session(payment_id, session_data, ttl=expire_time)
+        if session_data.get('status') != LoginStatus.ACTIVE_SUCCESSFUL:
+            await self.runtime_service.write_snapshot(
+                payment_id,
+                self._runtime_snapshot_patch_from_session(session_data),
+                source='jazzcash_login_flow',
+            )
+
+    async def _persist_session_data(self, redis_key, session_data):
+        expire_time = self._session_ttl_for_status(session_data.get('status'))
+        session_data['se_until'] = int(time.time() + expire_time)
+        await self.redis.setex(redis_key, expire_time, json.dumps(session_data))
+
+        previous_payment_id = self._normalize_payment_id(session_data.get('previous_payment_id'))
+        current_payment_id = self._normalize_payment_id(session_data.get('id'))
+        if previous_payment_id and current_payment_id and previous_payment_id != current_payment_id:
+            alias_key = self.PRELOGIN_KEY.format(
+                bankname=session_data.get('bankname') or self.name,
+                payment_id=previous_payment_id,
+            )
+            alias_entry = self._build_payment_id_alias_entry(
+                target_payment_id=current_payment_id,
+                bankname=session_data.get('bankname') or self.name,
+                phone=session_data.get('phone'),
+            )
+            await self.redis.setex(alias_key, expire_time, json.dumps(alias_entry))
+
+        await self._sync_runtime_state(redis_key, session_data, expire_time)
+        return session_data['se_until']
+
+    async def _clear_stale_active_session_if_offline(self, redis_key, session_data):
+        """runtime 已明确离线时，清理残留 activeSuccessful 会话。"""
+        payment_id = self._extract_payment_id_from_redis_key(redis_key)
+        if payment_id is None:
+            return False
+        runtime_snapshot = await self.runtime_service.read_snapshot(payment_id)
+        if not runtime_snapshot:
+            return False
+        is_offline_snapshot = (
+            runtime_snapshot.get('session_phase') == 'offline'
+            or (
+                not runtime_snapshot.get('online')
+                and not runtime_snapshot.get('dispatch_df')
+                and not runtime_snapshot.get('dispatch_ds')
+            )
+        )
+        if not is_offline_snapshot:
+            return False
+        resolved_phone = session_data.get('phone') or runtime_snapshot.get('phone')
+        await self.runtime_service.clear_session(payment_id)
+        await self.redis.delete(redis_key)
+        await self.redis.delete(self._login_lock_payment_key(payment_id))
+        await self.redis.delete(keyspace.legacy_login_on_payment_key(payment_id))
+        if resolved_phone:
+            await self.redis.delete(self._login_lock_phone_key(resolved_phone))
+            await self.redis.delete(keyspace.legacy_login_on_phone_key(resolved_phone))
+        return True
 
     async def _update_session_status(self, redis_key, session_data, status_new, additional_data=None) -> int:
         """更新会话状态"""
@@ -640,18 +913,13 @@ class JazzCash:
                 session_data['se_until'] = se_until
                 session_data['status_history'].append(status_new)
                 
-                await self.redis.setex(redis_key, expire_time, json.dumps(session_data))
-                if session_data.get('id'):
-                    await self.runtime_service.write_session(session_data['id'], session_data, ttl=expire_time)
+                se_until = await self._persist_session_data(redis_key, session_data)
                 self.logger.info(f'{self._log_key(funcName)} {redis_key} -> {status_new} (过期时间: {expire_desc})')
             else:
                 se_until = session_data.get('se_until', 0)
                 session_data['status_history'].append(status_new)
                 
-                await self.redis.set(redis_key, json.dumps(session_data))
-                if session_data.get('id'):
-                    session_ttl = max(int(se_until - time.time()), SESSIONSCOPE) if se_until else SESSIONSCOPE
-                    await self.runtime_service.write_session(session_data['id'], session_data, ttl=session_ttl)
+                se_until = await self._persist_session_data(redis_key, session_data)
                 self.logger.info(f'{self._log_key(funcName)} {redis_key} -> {status_new})')
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
@@ -809,10 +1077,10 @@ class JazzCash:
 
             # 立即检查协议进程锁 - 在任何复杂处理前进行早期检查
             # 检查 payment_id 登录状态
-            if payment_id and await self.redis.get(self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=bankname, payment_id=payment_id)):
+            if payment_id and await self.redis.get(self._login_lock_payment_key(payment_id)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
             # 检查 phone 登录状态
-            if phone and await self.redis.get(self.LOGIN_LOCK_PHONE_KEY.format(bankname=bankname, phone=phone)):
+            if phone and await self.redis.get(self._login_lock_phone_key(phone)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
             
             # 如果提供了payment_id，验证phone是否匹配
@@ -874,13 +1142,26 @@ class JazzCash:
             if existing_session:
                 current_status = existing_session.get('status')
                 self.logger.warning(f'{self._log_key(funcName)} 发现已存在会话: {redis_key} - 状态: {current_status}')
-                if current_status == LoginStatus.LOGIN_SUCCESSFUL:
-                    self.logger.error(f'{self._log_key(funcName)} 账户已登录成功，拒绝重复登录')
-                    raise NewApiError(ErrorCode.Logined2, f'Account already logged in successfully, duplicate login denied')
-                elif current_status == LoginStatus.PRE_LOGIN:
+                if current_status in (LoginStatus.LOGIN_SUCCESSFUL, LoginStatus.ACTIVE_SUCCESSFUL):
+                    if current_status == LoginStatus.ACTIVE_SUCCESSFUL and await self._clear_stale_active_session_if_offline(redis_key, existing_session):
+                        self.logger.warning(
+                            f'{self._log_key(funcName)} runtime snapshot 已离线，已清理残留成功会话并允许重新登录: {redis_key}'
+                        )
+                        existing_session = None
+                    else:
+                        self.logger.error(f'{self._log_key(funcName)} 账户已登录成功，拒绝重复登录')
+                        raise NewApiError(ErrorCode.Logined2, f'Account already logged in successfully, duplicate login denied')
+
+                if existing_session and current_status == LoginStatus.PRE_LOGIN:
                     self.logger.error(f'{self._log_key(funcName)} 已经开始走登录流程，拒绝重复登录')
                     raise NewApiError(ErrorCode.Logined3, f'Account already started login process, duplicate login denied')
-                elif current_status in [LoginStatus.SEND_OTP, LoginStatus.VERIFY_OTP]:
+                elif existing_session and current_status in [
+                    LoginStatus.SEND_OTP,
+                    LoginStatus.VERIFY_OTP,
+                    LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+                    LoginStatus.FINGERPRINT_UPLOADED,
+                    LoginStatus.FINGERPRINT_VERIFIED,
+                ]:
                     self.logger.error(f'{self._log_key(funcName)} 登录流程进行中，拒绝重复登录')
                     raise NewApiError(ErrorCode.Logined4, f' status: {current_status}')
             
@@ -1238,12 +1519,14 @@ class JazzCash:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+            redis_key = session_ctx.get('redis_key') or self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
             
             # [LOCK] 获取基于payment_id的接口锁
             try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
                 payment_lock_value = lock_result.get('lock_value')
@@ -1277,9 +1560,9 @@ class JazzCash:
             session_phone = session_data.get('phone')
             session_payment_id = session_data.get('id')
             session_bankname = session_data.get('bankname')
-            if session_payment_id and await self.redis.get(self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)):
+            if session_payment_id and await self.redis.get(self._login_lock_payment_key(session_payment_id)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            if session_phone and await self.redis.get(self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)):
+            if session_phone and await self.redis.get(self._login_lock_phone_key(session_phone)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
 
             self.logger.info(f'{self._log_key(funcName)} 成功获取会话数据！')
@@ -1450,7 +1733,7 @@ class JazzCash:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
+            payment_id = self._normalize_payment_id(data['payment_id'])
             otp = data.get('otp', '').strip()
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
 
@@ -1494,9 +1777,9 @@ class JazzCash:
             session_phone = session_data.get('phone')
             session_payment_id = session_data.get('id')
             session_bankname = session_data.get('bankname')
-            if session_payment_id and await self.redis.get(self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)):
+            if session_payment_id and await self.redis.get(self._login_lock_payment_key(session_payment_id)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            if session_phone and await self.redis.get(self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)):
+            if session_phone and await self.redis.get(self._login_lock_phone_key(session_phone)):
                 raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
             
             self.logger.info(f'{self._log_key(funcName)} 成功获取会话数据！')
@@ -1530,12 +1813,21 @@ class JazzCash:
             if not real_payment_id:
                 raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
 
-            old_payment_id = payment_id
-            is_new_user = session_data.get('is_new_user', False)
-            if is_new_user:
-                self.logger.info(f'{self._log_key(funcName)} 新用户，更新 redis_key: {redis_key} → pre_login_{bankname}_{real_payment_id}')
-                await self.redis.delete(redis_key)
-                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
+            old_payment_id = self._normalize_payment_id(session_payment_id or payment_id)
+            real_payment_id_text = self._normalize_payment_id(real_payment_id)
+            old_redis_key = redis_key
+            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id_text)
+            if old_redis_key != redis_key:
+                self.logger.info(f'{self._log_key(funcName)} 更新 redis_key: {old_redis_key} → {redis_key}')
+                await self.redis.delete(old_redis_key)
+                if old_payment_id not in [None, '', real_payment_id_text]:
+                    await self.runtime_service.clear_session(old_payment_id)
+                    await self.runtime_service.clear_snapshot(old_payment_id)
+
+            login_lock_payment_key = self._login_lock_payment_key(real_payment_id)
+            await self.redis.setex(login_lock_payment_key, self.lock_time_login_duplicate_avoid, 1)
+            login_lock_phone_key = self._login_lock_phone_key(session_phone)
+            await self.redis.setex(login_lock_phone_key, self.lock_time_login_duplicate_avoid, 1)
 
             self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态. {session_data.get("status")} → {LoginStatus.VERIFY_OTP}')
             await self._update_session_status(
@@ -1623,14 +1915,16 @@ class JazzCash:
                 raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
 
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+            redis_key = session_ctx.get('redis_key') or self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
 
-            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
             payment_lock_id = lock_result.get('lock_id')
             payment_lock_value = lock_result.get('lock_value')
 
-            session_data = await self._get_session_data(redis_key)
+            session_data = session_ctx.get('session_data') or await self._get_session_data(redis_key)
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_otp_http first')
 
@@ -1735,16 +2029,10 @@ class JazzCash:
             account_accno = session_phone
             account_entire_json = json.dumps(secondlogin_account_data, ensure_ascii=False)
 
-            login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(
-                bankname=session_bankname,
-                payment_id=session_payment_id,
-            )
+            login_on_payment_key = self._login_lock_payment_key(session_payment_id)
             await self.redis.setex(login_on_payment_key, self.lock_time_login_duplicate_avoid, 1)
 
-            login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(
-                bankname=session_bankname,
-                phone=session_phone,
-            )
+            login_on_phone_key = self._login_lock_phone_key(session_phone)
             await self.redis.setex(login_on_phone_key, self.lock_time_login_duplicate_avoid, 1)
 
             await self._update_session_status(redis_key, session_data, LoginStatus.ACTIVE_SUCCESSFUL)
@@ -1859,12 +2147,14 @@ class JazzCash:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+            redis_key = session_ctx.get('redis_key') or self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
             
             # [LOCK] 获取基于payment_id的接口锁
             try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
                 payment_lock_value = lock_result.get('lock_value')
@@ -1873,12 +2163,12 @@ class JazzCash:
                 raise lock_error
             
             # ========== 3. 检查账号状态 ==========
-            if not await self._check_pamynet_status(payment_id):
+            if not await self._check_pamynet_status(resolved_payment_id):
                 raise NewApiError(ErrorCode.ActiveAccount, f'This account is already activated. Please do not activate it again.')
             
             # ========== 4. 获取会话数据 ==========
             self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
-            session_data = await self._get_session_data(redis_key)
+            session_data = session_ctx.get('session_data') or await self._get_session_data(redis_key)
             
             # 若 redis->pre_login 不存在，则重新走【用户登录】流程
             if not session_data:
@@ -1946,11 +2236,11 @@ class JazzCash:
                 # ========== 8. 建立登录进程锁 - 防止N分钟内重复登录 ==========
                 
                 # 1. Payment ID锁 - 防止用户用payment_id重复登录
-                login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)
+                login_on_payment_key = self._login_lock_payment_key(session_payment_id)
                 await self.redis.setex(login_on_payment_key, self.lock_time_login_duplicate_avoid, 1)
             
                 # 2. 手机号锁 - 防止用户用手机号重复登录
-                login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)
+                login_on_phone_key = self._login_lock_phone_key(session_phone)
                 await self.redis.setex(login_on_phone_key, self.lock_time_login_duplicate_avoid, 1)
                 
                 self.logger.info(f'{self._log_key(funcName)} Payment锁: {login_on_payment_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
@@ -2032,9 +2322,9 @@ class JazzCash:
             # ========== 处理需要重新登录 ==========
             if api_result_verify_acct.IsNeedRelogin:
                 self.logger.error(f'{self._log_key(funcName)} 需要重新登录，清理登录锁和会话')
-                login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)
+                login_on_payment_key = self._login_lock_payment_key(session_payment_id)
                 await self.redis.delete(login_on_payment_key)
-                login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)
+                login_on_phone_key = self._login_lock_phone_key(session_phone)
                 await self.redis.delete(login_on_phone_key)
                 await self.redis.delete(redis_key)
             
@@ -2242,8 +2532,10 @@ class JazzCash:
             
             # 获取参数
             bankname = data['bankname']
-            payment_id = data['payment_id']
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            payment_id = self._normalize_payment_id(data['payment_id'])
+            session_ctx = await self._resolve_session_context(bankname, payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+            redis_key = session_ctx.get('redis_key') or self.PRELOGIN_KEY.format(bankname=bankname, payment_id=resolved_payment_id)
             
             # ⚠️ 测试模式：跳过文件检查，直接使用固定指纹文件
             if USE_TEST_FINGERPRINT:
@@ -2263,7 +2555,7 @@ class JazzCash:
             
             # [LOCK] 获取基于payment_id的接口锁
             try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
                 # 保存锁信息用于finally块释放
                 payment_lock_id = lock_result.get('lock_id')
                 payment_lock_value = lock_result.get('lock_value')
@@ -2273,7 +2565,7 @@ class JazzCash:
             
             # ========== 获取会话数据 ==========
             self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
-            session_data = await self._get_session_data(redis_key)
+            session_data = session_ctx.get('session_data') or await self._get_session_data(redis_key)
             
             if not session_data:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
@@ -2593,11 +2885,38 @@ class JazzCash:
             bankname = data['bankname']
             payment_ids = data['payment_ids']
             paymentIDArray = [x.strip() for x in payment_ids.split(",") if x.strip()]
+
+            next_action_map = {
+                LoginStatus.PRE_LOGIN: 'get_otp',
+                LoginStatus.SEND_OTP: 'verify_otp',
+                LoginStatus.VERIFY_OTP: 'upload_fingerprint',
+                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: 'upload_fingerprint',
+                LoginStatus.FINGERPRINT_UPLOADED: 'verify_fingerprint',
+                LoginStatus.FINGERPRINT_VERIFIED: 'verify_fingerprint',
+                LoginStatus.LOGIN_SUCCESSFUL: 'verify_fingerprint',
+                LoginStatus.ACTIVE_SUCCESSFUL: 'ready',
+                'offline': 'get_otp',
+            }
             
             objs = []
             for payment_id in paymentIDArray:
-                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-                session_data = await self._get_session_data(redis_key)
+                session_ctx = await self._resolve_session_context(bankname, payment_id)
+                resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
+                runtime_snapshot = await self.runtime_service.read_snapshot(resolved_payment_id)
+                if runtime_snapshot:
+                    status = runtime_snapshot.get('session_phase', '')
+                    obj = {
+                        "payment_id": payment_id,
+                        "resolved_payment_id": resolved_payment_id if str(resolved_payment_id) != str(payment_id) else None,
+                        "status": status,
+                        "error": runtime_snapshot.get('last_error'),
+                        "cd_until": runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0)),
+                        "next_action": next_action_map.get(status, 'unknown'),
+                    }
+                    objs.append(obj)
+                    continue
+
+                session_data = session_ctx.get('session_data')
                 if not session_data:
                     continue
                 
@@ -2609,6 +2928,10 @@ class JazzCash:
                 
                 obj = {
                     "payment_id": payment_id,
+                    "resolved_payment_id": resolved_payment_id if str(resolved_payment_id) != str(payment_id) else None,
+                    "status": session_data.get('status', ''),
+                    "error": session_data.get('last_error'),
+                    "next_action": next_action_map.get(session_data.get('status'), 'unknown'),
                     "phone": session_data.get('phone', ''),
                     "pin": session_data.get('pinCode', ''),
                     "cd_until": session_data.get('cd_until', 0),

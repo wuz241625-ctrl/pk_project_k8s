@@ -1766,3 +1766,95 @@ qr_channel = data.get('channel', '1003')
 python3 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 python3 -m py_compile api/application/app/login/banks/jazzcash.py
 ```
+
+## 2026-04-26 JazzCashBusiness 上号到派单整链路 payment_id/runtime 审计
+
+### 现象
+
+- 修复 `pre_login` 的 `qr_channel` 后继续复查全链路，发现 JCB 不是单点报错，而是临时 `payment_id`、真实 `payment.id`、pre_login Redis、runtime session/snapshot 之间没有完全收口。
+- 新用户上号时 `pre_login` 会先用手机号作为临时 `payment_id`，`verify_otp` 保存 DB 后才得到真实 `payment.id`。
+- 如果 App 或状态轮询仍携带旧临时 id，后续 `payment_status`、`upload_fingerprint`、`verify_fingerprint` 可能找不到真实会话。
+- `pre_login` 只拦截了 `preLogin/sendOtp/verifyOtp/loginSuccessful` 等旧状态，漏掉 `fingerprintUploadRequired/fingerprintUploaded/fingerprintVerified/activeSuccessful`，重试时可能覆盖正在走的指纹流程。
+
+### 根因
+
+JCB 后端已经接入 `jazzcash_runtime`，但上号状态机仍有部分 EasyPaisa 已有的“真实会话解析”能力缺失：
+
+- 缺少 `payment_id` alias：临时 id 晋升到真实 id 后，没有让旧 id 稳定解析到真实会话。
+- `payment_status_http()` 只返回旧字段，没有 `status/next_action/error/resolved_payment_id`，App 状态机不能可靠判断下一步。
+- pending session 没有完整同步到 runtime session/snapshot，导致 API、App 轮询、采集/派单查看到的状态可能不一致。
+- 清理旧 snapshot 时只删主 key，未同步清理 runtime index，存在残留索引风险。
+
+### 处理
+
+- 新增 JCB 会话解析 helpers：`_resolve_session_context()`、pre_login alias、runtime session fallback。
+- `verify_otp_http()` 保存真实 `payment.id` 后：
+  - 删除临时 runtime session/snapshot。
+  - 写入 `pre_login_jazzcash_{临时id}` alias 指向真实 id。
+  - 后续 `payment_status/upload_fingerprint/verify_fingerprint/active_account` 都解析到真实会话。
+- 对旧版本已产生的临时 id 残留增加兼容迁移：如果手机号临时 id 的 runtime session 仍在，但数据库和真实 `pre_login_jazzcash_{payment.id}` 已存在，则自动写 alias 并清理临时 runtime session/snapshot。
+- `payment_status_http()` 改为优先读 `jazzcash_runtime:snapshot:{payment_id}`，返回：
+  - `status`
+  - `next_action`
+  - `error`
+  - `cd_until`
+  - `resolved_payment_id`
+- `pre_login_http()` 补齐所有指纹阶段和 `activeSuccessful` 的重复登录拦截；如果 runtime 已明确离线，则清理残留成功会话后允许重新上号。
+- 登录锁统一写 `jazzcash_runtime:lock:*`，legacy `login_on_jazzcash_*` 继续由 runtime legacy bridge 作为投影维护。
+- `JazzCashRuntimeService.clear_snapshot()` 同步清理所有 runtime index 与采集 schedule。
+
+### 排错口径
+
+上号链路先查真实会话解析：
+
+```bash
+redis-cli GET pre_login_jazzcash_{临时或真实payment_id}
+redis-cli GET jazzcash_runtime:session:{真实payment_id}
+redis-cli GET jazzcash_runtime:snapshot:{真实payment_id}
+```
+
+如果 `pre_login_jazzcash_{临时id}` 是：
+
+```json
+{"kind":"payment_id_alias","target_payment_id":"533280"}
+```
+
+则后续 `payment_status/upload_fingerprint/verify_fingerprint` 都应解析到 `533280`，不应再按手机号临时 id 找会话。
+
+派单/采集继续只看 runtime 主状态：
+
+```bash
+redis-cli SISMEMBER jazzcash_runtime:index:dispatch_ds {payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:dispatch_df {payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:collect_enabled {payment_id}
+```
+
+legacy `payment_online_*`、`payment_active_*`、`hash_jazzcash`、`set_jazzcash` 只作为 runtime 投影，不作为 JCB 的唯一判断依据。
+
+### 本轮验证
+
+```bash
+python3 -m unittest \
+  api.tests.test_jazzcash_business_flow_v2 \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.jazzcash_runtime.test_sync_collection_worker -v
+
+PYTHONPATH=api python3 -m unittest \
+  api.tests.test_websocket_monitor_ep_dispatch \
+  api.tests.test_order_push_easypaisa_runtime_guard -v
+
+python3 -m py_compile \
+  api/application/app/login/banks/jazzcash.py \
+  api/application/jazzcash_runtime/runtime_service.py \
+  api/application/jazzcash_runtime/reader.py \
+  api/application/jazzcash_runtime/sync_runtime_service.py
+
+git diff --check
+
+cd /Users/tear/pk_project/ashrafi_merchant_flutter
+export PATH=/Users/tear/sdk/flutter/bin:$PATH
+flutter test --no-test-assets \
+  test/exchange_api_response_parsing_test.dart \
+  test/onboarding_controller_test.dart
+```
