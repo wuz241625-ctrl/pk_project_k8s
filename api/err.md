@@ -1530,3 +1530,49 @@ PY
 ```
 
 期望 `ospay_api_host` 为 `http://api.awekay.com/api`，`pay_url` 为 `http://api.awekay.com/api/order/`，`websocket_api_allow_host` 为 `['api.awekay.com']`。
+
+## 2026-04-26 上传指纹后重部署文件丢失
+
+### 现象
+
+App 已调用 `/api/v1/login/upload_fingerprint`，Nginx access log 也能看到上传请求返回 200；但部署后服务器上查不到 `fingerprint/*.zip`，`payment.fingerprint_path` 也为空。
+
+### 根因
+
+1. EasyPaisa/JazzCash 的 `_save_fingerprint()` 把 zip 写到容器本地目录 `/app/api/application/app/login/banks/fingerprint`。
+2. API Deployment 没有给该目录挂 PVC/hostPath，Pod 重建后本地文件随旧容器删除。
+3. 当前集群没有 RWX StorageClass，两个 API 副本跨节点时即使使用节点本地目录，也会出现 A Pod 上传、B Pod 验证找不到文件。
+
+### 处理
+
+1. 新增 `ops/k8s/api-fingerprint-persistence.yaml`：
+   - `api-fingerprint-pv`
+   - `api-fingerprint-pvc`
+   - 本地路径 `/data/pk/api/fingerprint`
+   - 节点亲和固定到 `pk-1`
+2. API Deployment 固定调度到 `pk-1`。
+3. API 容器挂载：
+
+```text
+/app/api/application/app/login/banks/fingerprint -> api-fingerprint-pvc
+```
+
+### 验证
+
+```bash
+kubectl get pv api-fingerprint-pv
+kubectl get pvc api-fingerprint-pvc -n pk
+kubectl get pods -n pk -l app=api -o wide
+kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/application/app/login/banks/fingerprint'
+```
+
+补充验证：
+
+1. 在一个 API Pod 写入测试文件。
+2. 在另一个 API Pod 读取同一文件。
+3. 滚动重启 API Deployment。
+4. 新 Pod 仍能读到该文件。
+
+### 后续建议
+
+当前方案适合测试环境。若需要跨节点高可用，应替换为 NFS/云文件存储等 RWX PVC，再取消 API 固定 `pk-1` 的调度约束。

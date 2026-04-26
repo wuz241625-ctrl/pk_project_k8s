@@ -686,3 +686,52 @@ PY
 - 容器内 `get_config()['ospay_api_host']` 为 `http://api.awekay.com/api`
 - 容器内 `get_config()['pay_url']` 为 `http://api.awekay.com/api/order/`
 - 容器内 `get_config()['websocket_api_allow_host']` 为 `['api.awekay.com']`
+
+## 2026-04-26 API 指纹持久化挂载
+
+背景：
+
+- EasyPaisa/JazzCash 指纹 zip 保存到 `/app/api/application/app/login/banks/fingerprint`
+- 当前测试集群没有 RWX StorageClass，只有手工 RWO PV
+- 为避免两个 API Pod 跨节点读不到同一份本地文件，API 固定调度到 `pk-1`
+
+持久化清单：
+
+```bash
+cd /Users/tear/pk_project_k8s
+kubectl apply -f ops/k8s/api-fingerprint-persistence.yaml
+```
+
+线上 Deployment 需要包含：
+
+```yaml
+spec:
+  template:
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: pk-1
+      containers:
+      - name: api
+        volumeMounts:
+        - name: fingerprint-storage
+          mountPath: /app/api/application/app/login/banks/fingerprint
+      volumes:
+      - name: fingerprint-storage
+        persistentVolumeClaim:
+          claimName: api-fingerprint-pvc
+```
+
+验收命令：
+
+```bash
+kubectl get pv api-fingerprint-pv
+kubectl get pvc api-fingerprint-pvc -n pk
+kubectl get pods -n pk -l app=api -o wide
+kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/application/app/login/banks/fingerprint'
+```
+
+期望：
+
+- `api-fingerprint-pvc` 为 `Bound`
+- API Pod 均调度在 `pk-1`
+- 指纹目录挂载点存在，发布重建 Pod 后测试文件仍保留
