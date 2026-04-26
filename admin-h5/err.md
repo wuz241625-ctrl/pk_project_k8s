@@ -1,5 +1,28 @@
 # Admin H5 排错文档
 
+## JCB 代付 `500` 待核查在后台如何展示
+
+现象：
+
+- JazzCashBusiness 代付上游 `transferToAcc` / `transferToCard` 返回 `code=500`
+- 按 v1.6 文档这不是最终失败，需要人工或账单核查
+
+展示口径：
+
+- `orders_df.status=2` 在代付列表显示为“待确认”
+- `orders_df.sys_remark` 在代付列表“备注”列显示待核查原因
+- 自动代付详情里的操作日志状态为 `pending_reconciliation`
+
+排查：
+
+```bash
+curl 'http://admin.awekay.com/prod-api/order/getorderds' \
+  -H 'Content-Type: application/json;charset=UTF-8' \
+  --data-raw '{"serchData":{"status":2},"size":10,"page":1}'
+```
+
+期望返回数据中 `status=2`，并且 `sys_remark` 包含“待核查”。
+
 ## Admin 白名单看到 Pod 内网 IP
 
 现象：

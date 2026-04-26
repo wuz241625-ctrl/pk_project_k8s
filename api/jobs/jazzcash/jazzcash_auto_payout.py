@@ -5473,12 +5473,13 @@ class JazzCashAutoPayout:
                         elif result.get('pending_check'):
                             current_retry_count = order_data.get('retry_count', 0)
                             new_retry_count = current_retry_count + 1
+                            pending_remark = result.get('message', 'JazzCash转账结果待核查')
                             sql = """
                                 UPDATE orders_df 
-                                SET status = 2, retry_count = %s
+                                SET status = 2, retry_count = %s, sys_remark = %s
                                 WHERE code = %s AND status IN (0, 1)
                             """
-                            cur.execute(sql, (new_retry_count, order_code))
+                            cur.execute(sql, (new_retry_count, pending_remark, order_code))
                             affected_rows = cur.rowcount
                             connection.commit()
                             if affected_rows > 0:

@@ -640,6 +640,7 @@ python3.12 -m py_compile \
 ```json
 {
   "account_id": "03xxxxxxxxx",
+  "otpcode": "123456",
   "should_verify_otpcode": false,
   "should_verify_fingerprint": true
 }
@@ -648,8 +649,9 @@ python3.12 -m py_compile \
 - `verify_otp_http()` 返回 `data.next_phase`，不能返回 `next_step=active_account`
 - `verify_otp_http()` 不能调用 JazzCash 上游，也不能调用 `_verify_account()`
 - OTP 后上传指纹时 Redis session 从 `fingerprintUploadRequired` 进入 `fingerprintUploaded`
+- OTP 提交后 Redis session 必须保留 `otpcode`，供后续 `loginStep2` 透传；但 `should_verify_otpcode=false` 仍表示上游不在该步骤校验 OTP
 - `verify_fingerprint_http()` 成功后 Redis session 为 `activeSuccessful`
-- 代付 `transferToAcc/transferToCard` 返回 `code=500` 时不能直接按失败或驳回处理，必须进入 `pending_reconciliation`/待核查，订单置 `status=2` 但不设置 `payment_id` 失败冷却
+- 代付 `transferToAcc/transferToCard` 返回 `code=500` 时不能直接按失败或驳回处理，必须进入 `pending_reconciliation`/待核查，订单置 `status=2`，`sys_remark` 写入待核查原因，但不设置 `payment_id` 失败冷却
 
 ## 2026-04-26 API 回调域名缓存
 

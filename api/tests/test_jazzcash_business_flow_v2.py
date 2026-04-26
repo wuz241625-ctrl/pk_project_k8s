@@ -361,9 +361,10 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         self.jazzcash._encode_indus_request = MagicMock(side_effect=fake_encode)
 
-        request_data = self.jazzcash._build_verify_fingerprint_request(
-            self._session(LoginStatus.FINGERPRINT_UPLOADED)
-        )
+        session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
+        session["otpcode"] = "123456"
+
+        request_data = self.jazzcash._build_verify_fingerprint_request(session)
 
         self.assertEqual(request_data, "data=encoded")
         self.assertEqual(captured["action"], "loginStep2")
@@ -371,6 +372,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
             captured["payload"],
             {
                 "account_id": "03001234567",
+                "otpcode": "123456",
                 "should_verify_otpcode": False,
                 "should_verify_fingerprint": True,
             },
@@ -397,6 +399,8 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         stored = json.loads(await self.redis.get(redis_key))
         self.assertEqual(stored["status"], "fingerprintUploadRequired")
+        self.assertEqual(stored["otpcode"], "123456")
+        self.assertEqual(stored["bank_specific_data"]["otpcode"], "123456")
         self.assertTrue(stored["bank_specific_data"]["otp_verified"])
         self.assertTrue(stored["otp_submitted"])
         self.assertEqual(result["status"], "success")

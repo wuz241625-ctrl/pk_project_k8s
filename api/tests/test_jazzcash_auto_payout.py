@@ -185,3 +185,6 @@ class JazzCashAutoPayoutV16Tests(unittest.TestCase):
             if "SET status = 2" in sql and "retry_count" in sql
         ]
         self.assertEqual(len(status_updates), 1)
+        sql, params = status_updates[0]
+        self.assertIn("sys_remark", sql)
+        self.assertIn("待核查", params[1])

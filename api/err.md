@@ -19,16 +19,19 @@
 ```json
 {
   "account_id": "03xxxxxxxxx",
+  "otpcode": "123456",
   "should_verify_otpcode": false,
   "should_verify_fingerprint": true
 }
 ```
 
+- [jazzcash.py](/Users/tear/pk_project_k8s/api/application/app/login/banks/jazzcash.py) 的 `verify_otp_http()` 保存用户提交的 `otpcode`
 - [jazzcash.py](/Users/tear/pk_project_k8s/api/application/app/login/banks/jazzcash.py) 的 `_build_verify_fingerprint_request()` 使用上面 payload 调 `action=loginStep2`
 - [jazzcash_auto_payout.py](/Users/tear/pk_project_k8s/api/jobs/jazzcash/jazzcash_auto_payout.py) 对代付 `code=500` 返回：
   - `pending_check=True`
   - 交易日志状态 `pending_reconciliation`
   - 外层订单置 `status=2` 待核查
+  - `orders_df.sys_remark` 写入“待核查”原因，admin 代付列表备注列可见
   - 不调用 `set_payment_id_failed()`，不写失败冷却
 
 验证：

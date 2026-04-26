@@ -1843,11 +1843,13 @@ class JazzCash:
                     'selected_upi': session_phone,
                     'upi_list': [session_phone],
                     'cd_until': cd_until,
+                    'otpcode': otp,
                     'otp_submitted': True,
                     'bank_specific_data': {
                         **(session_data.get('bank_specific_data') or {}),
                         'otp_sent': True,
                         'otp_verified': True,
+                        'otpcode': otp,
                     },
                 }
             )
@@ -3705,6 +3707,12 @@ class JazzCash:
         
         # 获取基础参数
         phone = session_data.get('phone')
+        otpcode = (
+            session_data.get('otpcode')
+            or (session_data.get('bank_specific_data') or {}).get('otpcode')
+            or session_data.get('otp')
+            or ''
+        )
         
         self.logger.info(f'{self._log_key(funcName)} 参数 phone: {phone}')
         
@@ -3713,6 +3721,8 @@ class JazzCash:
             "should_verify_otpcode": False,
             "should_verify_fingerprint": True,
         }
+        if otpcode:
+            request_msg["otpcode"] = otpcode
         
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
         
