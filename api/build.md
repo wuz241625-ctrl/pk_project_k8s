@@ -647,13 +647,19 @@ python3.12 -m py_compile \
 - PROD `pay_url` 固定为当前服务器收银台入口：`http://api.awekay.com/api/order/`
 - PROD `websocket_api_allow_host` 只保留当前 API 域名：`api.awekay.com`
 - API 启动时若 Redis `notice_domain_api_list` 为空，自动写入 `ospay_api_host`
+- JazzCash/EasyPaisa job 统一通过 `conf.get('ospay_api_host')` 读取 dict 配置，避免误回退到 localhost
 - 若后台已经维护了 `notice_domain_api_list`，启动初始化不覆盖已有值
 
 本地验证命令：
 
 ```bash
 cd /Users/tear/pk_project_k8s
-python3.12 -m py_compile api/main.py api/config.example.py
+python3.12 -m py_compile \
+  api/main.py \
+  api/config.example.py \
+  api/jobs/Jazzcashpay_v2.py \
+  api/jobs/jazzcash/jazzcash_monitor.py \
+  api/jobs/easypaisa/easypaisa_monitor.py
 ```
 
 线上验收命令：

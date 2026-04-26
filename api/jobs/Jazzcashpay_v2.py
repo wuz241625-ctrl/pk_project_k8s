@@ -384,7 +384,7 @@ logger, trace_id_filter, file_handler = setup_high_performance_logging(use_async
 conf = config.get_config()
 
 # 配置参数
-API_SERVER_DOMAIN = getattr(conf, 'ospay_api_host', 'http://localhost:9000')
+API_SERVER_DOMAIN = conf.get('ospay_api_host', 'http://localhost:9000')
 API_URL = conf['jazzcash_api_url']
 USER_ID = conf['jazzcash_user_id']
 SECRET_KEY = conf['jazzcash_secret_key']

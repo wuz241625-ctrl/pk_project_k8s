@@ -389,7 +389,7 @@ logger, trace_id_filter, file_handler = setup_high_performance_logging(use_async
 conf = config.get_config()
 
 # 配置参数
-API_SERVER_DOMAIN = getattr(conf, 'ospay_api_host', 'http://localhost:8080')
+API_SERVER_DOMAIN = conf.get('ospay_api_host', 'http://localhost:8080')
 
 class AutoPayoutMonitor:
     def __init__(self, name):

@@ -1488,21 +1488,28 @@ python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 1. `ospay_api_host` 和 `pay_url` 都是代码兜底配置，未随当前服务器域名更新。
 2. 多个三方通道优先读 Redis `notice_domain_api_list`，为空时才回退到 `ospay_api_host` 或历史硬编码域名。
 3. 平台收银台链接优先读 Redis `merchant_pay_links`，为空时才回退到 `pay_url`。
-4. Redis 属于易失缓存，重建后如果 API 启动不主动写入当前服务器域名，就容易再次落回旧域名。
+4. JazzCash/EasyPaisa job 中个别位置使用 `getattr(conf, 'ospay_api_host', ...)` 读取 dict，实际读不到配置，会误回退到 localhost。
+5. Redis 属于易失缓存，重建后如果 API 启动不主动写入当前服务器域名，就容易再次落回旧域名。
 
 ### 处理
 
 1. PROD `ospay_api_host` 改为 `http://api.awekay.com/api`。
 2. PROD `pay_url` 改为 `http://api.awekay.com/api/order/`。
 3. PROD `websocket_api_allow_host` 改为 `['api.awekay.com']`。
-4. API 启动初始化时，若 Redis `notice_domain_api_list` 为空，写入 `ospay_api_host`。
-5. 若 Redis 已有 `notice_domain_api_list`，不覆盖，保留后台维护多回调域名的能力。
+4. JazzCash/EasyPaisa job 改为 `conf.get('ospay_api_host', ...)`。
+5. API 启动初始化时，若 Redis `notice_domain_api_list` 为空，写入 `ospay_api_host`。
+6. 若 Redis 已有 `notice_domain_api_list`，不覆盖，保留后台维护多回调域名的能力。
 
 ### 验证
 
 ```bash
 cd /Users/tear/pk_project_k8s
-python3.12 -m py_compile api/main.py api/config.example.py
+python3.12 -m py_compile \
+  api/main.py \
+  api/config.example.py \
+  api/jobs/Jazzcashpay_v2.py \
+  api/jobs/jazzcash/jazzcash_monitor.py \
+  api/jobs/easypaisa/easypaisa_monitor.py
 ```
 
 线上检查：
