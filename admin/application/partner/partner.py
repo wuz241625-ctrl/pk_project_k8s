@@ -25,12 +25,21 @@ from application.system import operationLog
 from application.easypaisa_runtime import keyspace
 from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 from application.easypaisa_runtime.service import EasyPaisaAdminRuntimeService
+from application.jazzcash_runtime.reader import JazzCashAdminRuntimeReader
+from application.jazzcash_runtime.service import JazzCashAdminRuntimeService
 
 
 def is_easypaisa_payment(payment_row):
     return (
         str((payment_row or {}).get('bank_type_id') or '') == '97'
         or str((payment_row or {}).get('bank_type') or '') == '97'
+    )
+
+
+def is_jazzcash_payment(payment_row):
+    return (
+        str((payment_row or {}).get('bank_type_id') or '') == '98'
+        or str((payment_row or {}).get('bank_type') or '') == '98'
     )
 
 
@@ -49,6 +58,25 @@ async def apply_easypaisa_runtime_fields(payment_row, runtime_reader):
     payment_row['online_ds'] = 1 if await runtime_reader.is_payment_online_ds(
         payment_id,
         bank_type=97,
+    ) else 0
+    return payment_row
+
+
+async def apply_jazzcash_runtime_fields(payment_row, runtime_reader):
+    if not is_jazzcash_payment(payment_row):
+        return payment_row
+    payment_id = payment_row['id']
+    payment_row['online_status'] = 1 if await runtime_reader.is_payment_online_status(
+        payment_id,
+        bank_type=98,
+    ) else 0
+    payment_row['online_df'] = 1 if await runtime_reader.is_payment_online_df(
+        payment_id,
+        bank_type=98,
+    ) else 0
+    payment_row['online_ds'] = 1 if await runtime_reader.is_payment_online_ds(
+        payment_id,
+        bank_type=98,
     ) else 0
     return payment_row
 
@@ -631,8 +659,8 @@ class getPartnerRank(BaseHandler):
 
 # 获取
 class getPayment(BaseHandler):
-    async def _easypaisa_ids_for_table(self, table):
-        rows = await self.query(f"select id from {table} where bank_type=97 or bank_type_id=97")
+    async def _runtime_owned_ids_for_table(self, table):
+        rows = await self.query(f"select id from {table} where bank_type in (97,98) or bank_type_id in (97,98)")
         return {str(row["id"]) for row in rows or []}
 
     @staticmethod
@@ -644,14 +672,15 @@ class getPayment(BaseHandler):
             normalized.add(str(value))
         return normalized
 
-    async def _merged_online_ids(self, table, legacy_key, runtime_reader, runtime_kind):
+    async def _merged_online_ids(self, table, legacy_key, easypaisa_reader, jazzcash_reader, runtime_kind):
         legacy_ids = self._normalize_redis_members(await self.redis.smembers(legacy_key))
-        easypaisa_ids = await self._easypaisa_ids_for_table(table)
         if runtime_kind == "ds":
-            runtime_ids = await runtime_reader.dispatch_ds_members()
+            runtime_ids = await easypaisa_reader.dispatch_ds_members()
+            runtime_ids |= await jazzcash_reader.dispatch_ds_members()
         else:
-            runtime_ids = await runtime_reader.df_order_members()
-        return (legacy_ids - easypaisa_ids) | runtime_ids
+            runtime_ids = await easypaisa_reader.df_order_members()
+            runtime_ids |= await jazzcash_reader.df_order_members()
+        return (legacy_ids - await self._runtime_owned_ids_for_table(table)) | runtime_ids
 
     @tornado.web.authenticated
     async def post(self):
@@ -663,7 +692,8 @@ class getPayment(BaseHandler):
         total = 0
 
         table = 'payment_d' if data['is_del'] else 'payment'
-        runtime_reader = EasyPaisaAdminRuntimeReader(self.redis)
+        easypaisa_runtime_reader = EasyPaisaAdminRuntimeReader(self.redis)
+        jazzcash_runtime_reader = JazzCashAdminRuntimeReader(self.redis)
         keys = ['a.id', 'a.partner_id', 'b.status AS partner_status','b.type AS type', 'a.bank_type', 'a.upi', 'a.amount_top', 'a.sys_balance', 'a.balance', 'a.account', 'a.name',
                 'a.ifsc', 'a.account_type', 'a.gmail', 'a.gmail_pw', 'a.time_create', 'a.certified', 'a.status', 'a.manual_status', 'a.priority_collection', 'a.channel', 'a.net_id', 'a.net_trade_pw', 'a.net_pw', 'a.phone', 'a.bank_type_id']
         sql_part = ''
@@ -679,7 +709,13 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['collect']):
                 collect = condition['collect']
                 del condition['collect']
-                online_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
+                online_ids = await self._merged_online_ids(
+                    table,
+                    'payment_online_ds',
+                    easypaisa_runtime_reader,
+                    jazzcash_runtime_reader,
+                    "ds",
+                )
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -688,7 +724,13 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['pay']):
                 pay = condition['pay']
                 del condition['pay']
-                online_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
+                online_ids = await self._merged_online_ids(
+                    table,
+                    'payment_online_df',
+                    easypaisa_runtime_reader,
+                    jazzcash_runtime_reader,
+                    "df",
+                )
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -734,8 +776,20 @@ class getPayment(BaseHandler):
         if r:
             data_r = r
             total = t
-        online_ds_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
-        online_df_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
+        online_ds_ids = await self._merged_online_ids(
+            table,
+            'payment_online_ds',
+            easypaisa_runtime_reader,
+            jazzcash_runtime_reader,
+            "ds",
+        )
+        online_df_ids = await self._merged_online_ids(
+            table,
+            'payment_online_df',
+            easypaisa_runtime_reader,
+            jazzcash_runtime_reader,
+            "df",
+        )
         count_r = {
             'online_ds': len(online_ds_ids),
             'online_df': len(online_df_ids)
@@ -788,10 +842,17 @@ class getPayment(BaseHandler):
             i['online_df'] = 0
             # 采集状态
             i['online_status'] = 0
-            bank_type_id = 97 if is_easypaisa_payment(i) else int(i.get('bank_type_id') or i['bank_type'])
+            if is_easypaisa_payment(i):
+                bank_type_id = 97
+            elif is_jazzcash_payment(i):
+                bank_type_id = 98
+            else:
+                bank_type_id = int(i.get('bank_type_id') or i['bank_type'])
             if bank_type_id in login_on.keys():
                 if bank_type_id == 97:
-                    await apply_easypaisa_runtime_fields(i, runtime_reader)
+                    await apply_easypaisa_runtime_fields(i, easypaisa_runtime_reader)
+                elif bank_type_id == 98:
+                    await apply_jazzcash_runtime_fields(i, jazzcash_runtime_reader)
                 elif await self.redis.get('login_on_{bank}_{id}'.format(bank=login_on[bank_type_id], id=i['id'])):
                     i['online_status'] = 1
 
@@ -820,7 +881,7 @@ class getPayment(BaseHandler):
                 self.logger.info(f"[状态未变] ID: {i['id']} 不在 Redis 中，保持 online_mobile_status=0")
 
 
-            if bank_type_id != 97:
+            if bank_type_id not in (97, 98):
                 i['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', i['id']) else 0
                 i['online_df'] = 1 if await self.redis.sismember('payment_online_df', i['id']) else 0
             # 获取当前的 monitor_status 值并将其赋值给 i['monitor_status']
@@ -910,10 +971,11 @@ class updatePaymentMonitorStatus(BaseHandler):
         # 任一银行字段命中 EP 都必须走 runtime 写面
         payment_info = await self.get_result_by_condition(
             'payment',
-            ['bank_type', 'bank_type_id', 'status', 'certified', 'manual_status'],
+            ['bank_type', 'bank_type_id', 'status', 'certified', 'manual_status', 'phone', 'channel'],
             {'id': payment_id},
         )
         is_ep_payment = is_easypaisa_payment(payment_info)
+        is_jc_payment = is_jazzcash_payment(payment_info)
 
         if monitor_status == 1:
             # Set the Redis key with a 300 seconds expiration
@@ -932,6 +994,21 @@ class updatePaymentMonitorStatus(BaseHandler):
                     channels=[c.strip() for c in channel if c.strip()],
                     source="admin_monitor_on",
                 )
+            elif is_jc_payment:
+                runtime_service = JazzCashAdminRuntimeService(self.redis)
+                enabled = (
+                    int((payment_info or {}).get('status') or 0) == 1
+                    and int((payment_info or {}).get('certified') or 0) == 1
+                    and int((payment_info or {}).get('manual_status') or 0) != 1
+                )
+                await runtime_service.resume_order_dispatch(
+                    payment_id,
+                    ds_enabled=enabled,
+                    df_enabled=enabled,
+                    phone=(payment_info or {}).get('phone'),
+                    channels=[c.strip() for c in channel if c.strip()],
+                    source="admin_monitor_on",
+                )
 
         elif monitor_status == 0:
             # Delete the key
@@ -940,6 +1017,14 @@ class updatePaymentMonitorStatus(BaseHandler):
                 # EP: route through runtime service for correct index management
                 runtime_service = EasyPaisaAdminRuntimeService(self.redis)
                 await runtime_service.set_manual_off(payment_id, reason="admin_manual")
+            elif is_jc_payment:
+                runtime_service = JazzCashAdminRuntimeService(self.redis)
+                await runtime_service.pause_order_dispatch(
+                    payment_id,
+                    phone=(payment_info or {}).get('phone'),
+                    channels=[c.strip() for c in channel if c.strip()],
+                    source="admin_monitor_off",
+                )
             else:
                 # Non-EP: preserve original legacy writes
                 # Remove the Redis key
@@ -5032,6 +5117,9 @@ class resettingPayment(BaseHandler):
             self.logger.info(f"Removed payment_id from channel {channel}: {data['id']}")
         if is_easypaisa_payment(payment):
             runtime_service = EasyPaisaAdminRuntimeService(self.redis)
+            await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
+        elif is_jazzcash_payment(payment):
+            runtime_service = JazzCashAdminRuntimeService(self.redis)
             await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
         result = dict(code=20000, msg='重置成功')
         return await self.json_response(result)

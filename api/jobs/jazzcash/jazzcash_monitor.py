@@ -28,6 +28,7 @@ parent2_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, parent2_dir)
 
 import config
+from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
 
 # JazzCash自动代付监控系统
 
@@ -411,6 +412,7 @@ class AutoPayoutMonitor:
 
         # 连接redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
+        self.runtime_service = SyncJazzCashRuntimeService(self.redis)
 
     def _init_jazzcash_config(self):
         """初始化 JazzCash 自动代付监控特定配置"""
@@ -547,7 +549,7 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT id, phone, account, name, bank_type, partner_id, status, certified,
+                        SELECT id, phone, account, name, bank_type, partner_id, status, certified, channel,
                                account_accno
                         FROM payment 
                         WHERE status = 1 
@@ -593,7 +595,7 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, partner_id, status, certified,
+                        SELECT phone, account, name, bank_type, partner_id, status, certified, channel,
                                account_accno
                         FROM payment 
                         WHERE id = %s
@@ -1356,9 +1358,8 @@ class AutoPayoutMonitor:
         """更新Redis缓存"""
         try:
             account_id = status_info['account_id']
-            online_set = self.REDIS_KEYS['jazzcash_online_df']
-            active_list = self.REDIS_KEYS['jazzcash_active_df']
             balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
+            payment_info = self.get_phone_by_payment_id_cached(account_id) or {}
             
             # 先判断是否正常
             if status_info['is_online'] and status_info['status'] == 'online':
@@ -1380,21 +1381,19 @@ class AutoPayoutMonitor:
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
                 
-                # 上线处理：先检查是否已在线，避免重复添加
-                is_already_online = self.redis.sismember(online_set, account_id)
-                if not is_already_online:
-                    self.redis.sadd(online_set, account_id)
-                    self.logger.debug(f"账号 {account_id} 已添加到在线集合")
-                
-                # 活跃列表处理：先删除旧的（如果存在），再添加到头部
-                # 这样确保没有重复且最新活跃的在前面
-                self.redis.lrem(active_list, 0, account_id)  # 删除所有相同的（通常0或1个）
-                self.redis.lpush(active_list, account_id)     # 添加到头部
-                self.redis.ltrim(active_list, 0, 99)         # 保持列表长度
-                self.logger.debug(f"账号 {account_id} 已更新到活跃列表头部")
-                
-                # 删除踢下线标记（如果存在）
-                self.redis.delete(f'kick_off_{account_id}')
+                self.runtime_service.mark_active_successful(
+                    account_id,
+                    phone=payment_info.get('phone'),
+                    selected_accno=payment_info.get('account_accno') or payment_info.get('account') or payment_info.get('phone'),
+                    selected_iban=payment_info.get('account_iban') or payment_info.get('iban'),
+                    source="jazzcash_monitor.update_redis_cache",
+                    online_ttl=660,
+                    collect_enabled=True,
+                    ds_order_enabled=True,
+                    df_order_enabled=True,
+                    channels=payment_info.get('channel'),
+                )
+                self.logger.debug(f"账号 {account_id} 已通过runtime更新在线状态")
                 
             else:
                 # API错误：只更新状态缓存（不包含余额），下线处理
@@ -1407,11 +1406,16 @@ class AutoPayoutMonitor:
                     # 注意：不包含balance字段，保持原有余额不变
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
+                self.runtime_service.force_offline(
+                    account_id,
+                    phone=payment_info.get('phone'),
+                    source="jazzcash_monitor.update_redis_cache",
+                    reason=status_info.get('status') or "monitor_offline",
+                    channels=payment_info.get('channel'),
+                )
                 
                 # 下线处理：保留余额数据在有序集合中，不删除（以便Admin后台查看最后余额）
                 # self.redis.zrem(balance_sorted_set, account_id)  # 已注释：不删除余额
-                self.redis.srem(online_set, account_id)
-                self.redis.lrem(active_list, 0, account_id)
                 
                 # 根据错误类型记录日志和特殊处理
                 if status_info.get('force_offline'):
@@ -1690,7 +1694,11 @@ class AutoPayoutMonitor:
             zset_deleted = self.redis.zrem(self.set_key, account_id)
             
             # 2. 删除在线状态相关
-            self.redis.srem('payment_online_df', account_id)
+            self.runtime_service.force_offline(
+                account_id,
+                source="jazzcash_monitor.remove_account_completely",
+                reason=reason,
+            )
             
             # 3. 删除JazzCash特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
@@ -1700,9 +1708,6 @@ class AutoPayoutMonitor:
             
             # 4. 删除登录状态键
             self.redis.delete(f'login_on_{self.name}_{account_id}')
-            
-            # 5. 删除踢下线标记（如果有）
-            self.redis.delete(f'kick_off_{account_id}')
             
             # 🔥 6. 更新数据库payment表状态为下线
             try:
@@ -1762,27 +1767,50 @@ class AutoPayoutMonitor:
     def on_off(self, login_data, _on=1):
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
+            payment_id = login_data['id']
+            phone = login_data.get('phone') or login_data.get('account')
+            channels = login_data.get('qr_channel') or login_data.get('channel')
+            account_accno = login_data.get('account_accno') or login_data.get('account') or phone
+            account_iban = login_data.get('account_iban') or login_data.get('iban') or login_data.get('IBAN')
             if _on == 1:
-                self.redis.delete('kick_off_{}'.format(login_data['id']))
-                # 放入接单集合
-                self.redis.sadd('payment_online_ds', login_data['id'])   # JazzCash只做代付，不做代收
-                self.redis.sadd('payment_online_df', login_data['id'])   # 代付必须的在线状态
+                self.runtime_service.mark_active_successful(
+                    payment_id,
+                    phone=phone,
+                    selected_accno=account_accno,
+                    selected_iban=account_iban,
+                    source="jazzcash_monitor.on_off",
+                    online_ttl=660,
+                    collect_enabled=True,
+                    ds_order_enabled=True,
+                    df_order_enabled=True,
+                    channels=channels,
+                )
                 # self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])  # 代收通道队列，不需要
                 # self.redis.lpush('payment_active_{}'.format(login_data['qr_channel']), login_data['id'])  # 代收通道队列，不需要
                 # self.sendMsg('push_payment_information', True, 'Login success')  # 登录成功通知
                 # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), True, 'Login success')  # 登录成功通知
-                self.logger.info(f"{login_data['id']}, {self.name} 上线接单： {login_data['id']}")
+                self.logger.info(f"{payment_id}, {self.name} 上线接单： {payment_id}")
                 # self.read_cache('on_off(1)')
                 return True
             # 防止代收派单的时候，协议爬取同时操作，导致payment id无法下线
-            self.redis.setex('kick_off_{}'.format(login_data['id']), 60 * 20, 1)
-            # 解除接单集合
-            self.redis.srem('payment_online_ds', login_data['id'])  # JazzCash不做代收，无需清理
-            self.redis.srem('payment_online_df', login_data['id'])  # 代付下线必须清理
+            self.runtime_service.set_kickoff(
+                payment_id,
+                phone=phone,
+                ttl=60 * 20,
+                source="jazzcash_monitor.on_off",
+                reason="monitor_offline",
+            )
+            self.runtime_service.force_offline(
+                payment_id,
+                phone=phone,
+                source="jazzcash_monitor.on_off",
+                reason="monitor_offline",
+                channels=channels,
+            )
             # self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])  # 代收通道队列，无需清理
             # self.sendMsg('push_payment_information', False, 'Login failed and quit')  # 退出登录进行通知
             # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), False, 'Login failed and quit')  # 退出登录进行通知
-            self.logger.error(f"{login_data['id']}, {self.name} 下线接单： {login_data['id']}")
+            self.logger.error(f"{payment_id}, {self.name} 下线接单： {payment_id}")
             # self.read_cache('on_off()')
         except Exception as e:
             tb_str = traceback.format_exc()

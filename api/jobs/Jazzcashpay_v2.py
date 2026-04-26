@@ -45,6 +45,7 @@ sys.path.insert(0, parent_dir)
 from response_logger import ResponseLogger
 import config
 from application.lakshmi_api.enums.payment_login_progress import PaymentLoginProgress
+from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
 
 #jazzcash爬取账单，需要发送短信
 
@@ -422,6 +423,7 @@ class BankLogin:
 
         # 连接redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
+        self.runtime_service = SyncJazzCashRuntimeService(self.redis)
         # 新增: 初始化数据库连接
         self.db_connection = self.check_db_connection()
     
@@ -626,27 +628,47 @@ class BankLogin:
     def on_off(self, login_data, _on=1):
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
+            payment_id = login_data['id']
+            phone = login_data.get('phone')
+            channels = login_data.get('qr_channel') or login_data.get('channel')
+            account_accno = login_data.get('account_accno') or login_data.get('account') or phone
+            account_iban = login_data.get('account_iban') or login_data.get('iban') or login_data.get('IBAN')
             if _on == 1:
-                self.redis.delete('kick_off_{}'.format(login_data['id']))
-                # 放入接单集合
-                self.redis.sadd('payment_online_ds', login_data['id'])
-                self.redis.sadd('payment_online_df', login_data['id'])   # 如果app不能双登，要注释
-                self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])
-                self.redis.lpush('payment_active_{}'.format(login_data['qr_channel']), login_data['id'])
+                self.runtime_service.mark_active_successful(
+                    payment_id,
+                    phone=phone,
+                    selected_accno=account_accno,
+                    selected_iban=account_iban,
+                    source="Jazzcashpay_v2.on_off",
+                    online_ttl=660,
+                    collect_enabled=True,
+                    ds_order_enabled=True,
+                    df_order_enabled=True,
+                    channels=channels,
+                )
                 # self.sendMsg('push_payment_information', True, 'Login success')  # 登录成功通知
                 # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), True, 'Login success')  # 登录成功通知
-                self.logger.info(f"{login_data['id']}, {self.list_key} 上线接单： {login_data['id']}")
+                self.logger.info(f"{payment_id}, {self.list_key} 上线接单： {payment_id}")
                 # self.read_cache('on_off(1)')
                 return True
             # 防止代收派单的时候，协议爬取同时操作，导致payment id无法下线
-            self.redis.setex('kick_off_{}'.format(login_data['id']), 60 * 20, 1)
-            # 解除接单集合
-            self.redis.srem('payment_online_ds', login_data['id'])
-            self.redis.srem('payment_online_df', login_data['id'])
-            self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])
+            self.runtime_service.set_kickoff(
+                payment_id,
+                phone=phone,
+                ttl=60 * 20,
+                source="Jazzcashpay_v2.on_off",
+                reason="job_offline",
+            )
+            self.runtime_service.force_offline(
+                payment_id,
+                phone=phone,
+                source="Jazzcashpay_v2.on_off",
+                reason="job_offline",
+                channels=channels,
+            )
             # self.sendMsg('push_payment_information', False, 'Login failed and quit')  # 退出登录进行通知
             # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), False, 'Login failed and quit')  # 退出登录进行通知
-            self.logger.error(f"{login_data['id']}, {self.list_key} 下线接单： {login_data['id']}")
+            self.logger.error(f"{payment_id}, {self.list_key} 下线接单： {payment_id}")
             # self.read_cache('on_off()')
         except Exception as e:
             tb_str = traceback.format_exc()

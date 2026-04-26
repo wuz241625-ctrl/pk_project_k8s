@@ -168,3 +168,29 @@ ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no r
 - 远端这两个文件 `sha256` 要与本地一致
 - `admin` 进程数 `15`
 - `http://127.0.0.1:6000/` 返回 `404`
+## 2026-04-26 JazzCashBusiness admin 唯一真相源收口
+
+admin 对 JazzCashBusiness `bank_type/bank_type_id=98` 统一读写 `jazzcash_runtime`：
+
+- 列表在线态：`jazzcash_runtime:snapshot:{payment_id}.online`
+- 代收态：`ds_order_enabled/dispatch_ds`
+- 代付态：`df_order_enabled/dispatch_df`
+- 手动监控开关：通过 `JazzCashAdminRuntimeService` 更新 snapshot/index
+- 重置下线：清 runtime session/index、legacy 队列、`hash_jazzcash`、`set_jazzcash`
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=admin python3.12 -m unittest admin.tests.test_jazzcash_runtime_reader -v
+
+python3.12 -m py_compile \
+  admin/application/jazzcash_runtime/*.py \
+  admin/application/partner/partner.py
+```
+
+验收重点：
+
+- `payment_online_ds/payment_online_df` 残留时，JazzCashBusiness admin 列表不能误显示在线。
+- 收款资料筛选 `collect/pay` 合并 runtime index，排除 JazzCashBusiness legacy 脏成员。
+- `resettingPayment` 对 JazzCashBusiness 必须调用 `JazzCashAdminRuntimeService.force_reset()`。

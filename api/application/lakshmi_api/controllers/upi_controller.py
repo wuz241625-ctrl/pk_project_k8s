@@ -18,6 +18,7 @@ from application.lakshmi_api.services.pagination_service import PaginationServic
 from application.lakshmi_api.services.payment_services import BANK_SERVICES
 from application.lakshmi_api.services.payments.amazon_pay_service import AmazonService
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
+from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.utils import StringUtils
 from constants import RedisKeys
 from application.lakshmi_api.exceptions.api_error import NewApiError
@@ -41,6 +42,10 @@ CERTIFIED_STATUS = {'inactive': 0, 'active': 1}
 
 def _is_easypaisa_payment_type(bank_type_id=None, bank_type=None):
     return str(bank_type_id) == '97' or str(bank_type) == '97'
+
+
+def _is_jazzcash_payment_type(bank_type_id=None, bank_type=None):
+    return str(bank_type_id) == '98' or str(bank_type) == '98'
 
 
 class UpiHandler(BaseHandler):
@@ -157,29 +162,45 @@ class UpiHandler(BaseHandler):
         if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
             reader = EasyPaisaRuntimeReader(self.redis)
             return await reader.is_place_order_online(payment_id)
+        if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+            reader = JazzCashRuntimeReader(self.redis)
+            return await reader.is_place_order_online(payment_id)
         return await self.redis.sismember('payment_online_df', payment_id)
 
     async def _check_selling_order_status(self, payment_id, bank_type_id=None, bank_type=None):
         if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
             reader = EasyPaisaRuntimeReader(self.redis)
             return await reader.is_selling_order_online(payment_id)
+        if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+            reader = JazzCashRuntimeReader(self.redis)
+            return await reader.is_selling_order_online(payment_id)
         return await self.redis.sismember('payment_online_ds', payment_id)
 
     async def _collection_online_payment_ids(self):
-        reader = EasyPaisaRuntimeReader(self.redis)
+        easypaisa_reader = EasyPaisaRuntimeReader(self.redis)
+        jazzcash_reader = JazzCashRuntimeReader(self.redis)
         legacy_ids = set()
         for value in await self.redis.smembers('payment_online_ds'):
             if isinstance(value, bytes):
                 value = value.decode("utf-8")
             legacy_ids.add(str(value).strip())
-        runtime_ids = set(await reader.collection_online_payment_ids())
+        runtime_ids = set(await easypaisa_reader.collection_online_payment_ids())
+        jazzcash_runtime_ids = set(await jazzcash_reader.collection_online_payment_ids())
+        runtime_ids.update(jazzcash_runtime_ids)
         legacy_ids.difference_update(runtime_ids)
         payment_ids = set()
         if legacy_ids:
             with self.db_orm.sessionmaker() as session:
                 rows = session.query(Payment.id).filter(
                     Payment.id.in_(legacy_ids),
-                    not_(or_(Payment.bank_type_id == 97, Payment.bank_type == 97, Payment.bank_type == '97')),
+                    not_(or_(
+                        Payment.bank_type_id == 97,
+                        Payment.bank_type == 97,
+                        Payment.bank_type == '97',
+                        Payment.bank_type_id == 98,
+                        Payment.bank_type == 98,
+                        Payment.bank_type == '98',
+                    )),
                 ).all()
                 payment_ids.update(str(row[0]) for row in rows)
         payment_ids.update(runtime_ids)

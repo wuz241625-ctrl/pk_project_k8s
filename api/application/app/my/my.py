@@ -10,6 +10,8 @@ from aiomysql import DictCursor
 
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
 from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
+from application.jazzcash_runtime.reader import JazzCashRuntimeReader
+from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 from application.message import msg
 from application.phonepe import phmonitor
 
@@ -130,6 +132,10 @@ def _is_easypaisa_bank_type(bank_type):
     return str(bank_type) == '97'
 
 
+def _is_jazzcash_bank_type(bank_type):
+    return str(bank_type) == '98'
+
+
 def _is_easypaisa_payment(payment_row):
     return (
         _is_easypaisa_bank_type((payment_row or {}).get('bank_type_id'))
@@ -137,10 +143,22 @@ def _is_easypaisa_payment(payment_row):
     )
 
 
+def _is_jazzcash_payment(payment_row):
+    return (
+        _is_jazzcash_bank_type((payment_row or {}).get('bank_type_id'))
+        or _is_jazzcash_bank_type((payment_row or {}).get('bank_type'))
+    )
+
+
 async def _apply_payment_online_fields(self, payment_row, runtime_reader):
     if _is_easypaisa_payment(payment_row):
         payment_row['online_ds'] = 1 if await runtime_reader.is_selling_order_online(payment_row['id']) else 0
         payment_row['online_df'] = 1 if await runtime_reader.is_place_order_online(payment_row['id']) else 0
+        return
+    if _is_jazzcash_payment(payment_row):
+        jazzcash_reader = JazzCashRuntimeReader(self.redis)
+        payment_row['online_ds'] = 1 if await jazzcash_reader.is_selling_order_online(payment_row['id']) else 0
+        payment_row['online_df'] = 1 if await jazzcash_reader.is_place_order_online(payment_row['id']) else 0
         return
 
     payment_row['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', payment_row['id']) else 0
@@ -204,6 +222,30 @@ async def change_payment(self, data):
         if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
             return msg[10604]
         runtime_service = EasyPaisaRuntimeService(self.redis)
+        channels = [str(qr_channel)] if not isinstance(qr_channel, str) else qr_channel.split(',')
+        certified_enabled = str(payment.get('certified')) == '1'
+        manual_locked = str(payment.get('manual_status') or 0) == '1'
+        if str(data['status']) == '1':
+            await runtime_service.resume_order_dispatch(
+                payment_id,
+                ds_enabled=certified_enabled and not manual_locked,
+                df_enabled=certified_enabled,
+                phone=payment.get('phone'),
+                channels=channels,
+                source='app_change_payment_on',
+            )
+        else:
+            await runtime_service.pause_order_dispatch(
+                payment_id,
+                phone=payment.get('phone'),
+                channels=channels,
+                source='app_change_payment_off',
+            )
+        return msg[10603]
+    if _is_jazzcash_payment(payment):
+        if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
+            return msg[10604]
+        runtime_service = JazzCashRuntimeService(self.redis)
         channels = [str(qr_channel)] if not isinstance(qr_channel, str) else qr_channel.split(',')
         certified_enabled = str(payment.get('certified')) == '1'
         manual_locked = str(payment.get('manual_status') or 0) == '1'

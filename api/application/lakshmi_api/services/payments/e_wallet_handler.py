@@ -3,6 +3,8 @@ from datetime import datetime
 
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
 from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
+from application.jazzcash_runtime.reader import JazzCashRuntimeReader
+from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 from application.lakshmi_api.base import ApiError, ApiInfo
 from application.lakshmi_api.models import Payment
 
@@ -102,6 +104,7 @@ async def shared_send_otp(self, payment, bank_name, redis_key, is_prepare_login)
 
 class EWalletHandler:
     EASYPAISA_BANK_TYPE_ID = 97
+    JAZZCASH_BANK_TYPE_ID = 98
     LOGIN_METHOD = None
     LOGOUT_PREFIX = None
     OTP_LIMIT_PREFIX = None
@@ -120,7 +123,7 @@ class EWalletHandler:
             payment.certified = 1
             session.commit()
             await self.destroy_log_off_key(payment)
-            await self._sync_easypaisa_collection_dispatch(payment, enabled=True, source="app_selling_active")
+            await self._sync_runtime_collection_dispatch(payment, enabled=True, source="app_selling_active")
             if payment.certified == 1:
                 return True
             else:
@@ -131,9 +134,9 @@ class EWalletHandler:
             payment = session.query(Payment).filter(Payment.id == payment_id).first()
             payment.certified = 0
             session.commit()
-            if payment.status and not self._is_easypaisa_payment(payment):
+            if payment.status and not self._is_runtime_owned_payment(payment):
                 await self.push_log_off_key(payment)
-            await self._sync_easypaisa_collection_dispatch(payment, enabled=False, source="app_selling_inactive")
+            await self._sync_runtime_collection_dispatch(payment, enabled=False, source="app_selling_inactive")
             if payment.certified == 0:
                 return True
             else:
@@ -177,6 +180,9 @@ class EWalletHandler:
     def _use_easypaisa_runtime_reader(self):
         return self.__class__.ONLINE_PREFIX == "login_on_easypaisa"
 
+    def _use_jazzcash_runtime_reader(self):
+        return self.__class__.ONLINE_PREFIX == "login_on_jazzcash"
+
     @staticmethod
     def _is_easypaisa_payment(payment):
         return (
@@ -184,10 +190,24 @@ class EWalletHandler:
             or str(getattr(payment, "bank_type", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
         )
 
-    async def _sync_easypaisa_collection_dispatch(self, payment, *, enabled: bool, source: str):
-        if not self._is_easypaisa_payment(payment):
+    @staticmethod
+    def _is_jazzcash_payment(payment):
+        return (
+            str(getattr(payment, "bank_type_id", "")) == str(EWalletHandler.JAZZCASH_BANK_TYPE_ID)
+            or str(getattr(payment, "bank_type", "")) == str(EWalletHandler.JAZZCASH_BANK_TYPE_ID)
+        )
+
+    @classmethod
+    def _is_runtime_owned_payment(cls, payment):
+        return cls._is_easypaisa_payment(payment) or cls._is_jazzcash_payment(payment)
+
+    async def _sync_runtime_collection_dispatch(self, payment, *, enabled: bool, source: str):
+        if self._is_easypaisa_payment(payment):
+            runtime_service = EasyPaisaRuntimeService(self.redis)
+        elif self._is_jazzcash_payment(payment):
+            runtime_service = JazzCashRuntimeService(self.redis)
+        else:
             return
-        runtime_service = EasyPaisaRuntimeService(self.redis)
         if enabled:
             manual_status = int(getattr(payment, "manual_status", 0) or 0)
             status_enabled = int(getattr(payment, "status", 0) or 0) == 1
@@ -216,6 +236,13 @@ class EWalletHandler:
                 f"selling_order_status() payment_id: {payment_id}, source: runtime_reader, value: {value}"
             )
             return value
+        if self._use_jazzcash_runtime_reader():
+            reader = JazzCashRuntimeReader(self.redis)
+            value = await reader.is_selling_order_online(payment_id)
+            self.logger.info(
+                f"selling_order_status() payment_id: {payment_id}, source: jazzcash_runtime_reader, value: {value}"
+            )
+            return value
         key = f"{self.__class__.ONLINE_PREFIX}_{payment_id}"
         value = await self.redis.get(key)
         self.logger.info(f"selling_order_status() payment_id: {payment_id}, key: {key}, value: {value}")
@@ -227,6 +254,9 @@ class EWalletHandler:
     async def place_order_status(self, payment_id):
         if self._use_easypaisa_runtime_reader():
             reader = EasyPaisaRuntimeReader(self.redis)
+            return await reader.is_place_order_online(payment_id)
+        if self._use_jazzcash_runtime_reader():
+            reader = JazzCashRuntimeReader(self.redis)
             return await reader.is_place_order_online(payment_id)
         return await self.redis.sismember('payment_online_df', payment_id)
 

@@ -20,6 +20,7 @@ import uuid
 import os
 from datetime import datetime
 from config import get_config
+from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 
 conf = get_config()
 
@@ -163,6 +164,7 @@ class JazzCash:
 
         # 添加错误管理器
         self.error_manager = ErrorManager()
+        self.runtime_service = JazzCashRuntimeService(self.redis)
 
     # ================== 加密相关方法 ==================
     @staticmethod
@@ -639,12 +641,17 @@ class JazzCash:
                 session_data['status_history'].append(status_new)
                 
                 await self.redis.setex(redis_key, expire_time, json.dumps(session_data))
+                if session_data.get('id'):
+                    await self.runtime_service.write_session(session_data['id'], session_data, ttl=expire_time)
                 self.logger.info(f'{self._log_key(funcName)} {redis_key} -> {status_new} (过期时间: {expire_desc})')
             else:
                 se_until = session_data.get('se_until', 0)
                 session_data['status_history'].append(status_new)
                 
                 await self.redis.set(redis_key, json.dumps(session_data))
+                if session_data.get('id'):
+                    session_ttl = max(int(se_until - time.time()), SESSIONSCOPE) if se_until else SESSIONSCOPE
+                    await self.runtime_service.write_session(session_data['id'], session_data, ttl=session_ttl)
                 self.logger.info(f'{self._log_key(funcName)} {redis_key} -> {status_new})')
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
@@ -978,6 +985,23 @@ class JazzCash:
             
             # 存储到Redis
             await self.redis.setex(redis_key, expire_second, json.dumps(session_data))
+            await self.runtime_service.write_session(payment_id, session_data, ttl=expire_second)
+            await self.runtime_service.write_snapshot(
+                payment_id,
+                {
+                    "phone": phone,
+                    "online": False,
+                    "collect_enabled": False,
+                    "ds_order_enabled": False,
+                    "df_order_enabled": False,
+                    "dispatch_ds": False,
+                    "dispatch_df": False,
+                    "channels": qr_channel,
+                    "session_phase": LoginStatus.PRE_LOGIN,
+                    "last_transition": LoginStatus.PRE_LOGIN,
+                },
+                source="jazzcash_pre_login",
+            )
             self.logger.info(f'{self._log_key(funcName)} 会话数据已存储到Redis: {redis_key} - 过期时间: {expire_second}秒')
             
             # ========== [已移除] isLogined 云机状态检查 ==========
@@ -1732,15 +1756,19 @@ class JazzCash:
                 account_iban=account_iban,
             )
 
-            await self.redis.sadd('payment_online_ds', session_payment_id)
             qr_channel = session_data.get('qr_channel', '1003')
-            channels = qr_channel.split(',') if isinstance(qr_channel, str) else [qr_channel]
-            for channel in channels:
-                channel = str(channel).strip()
-                if not channel:
-                    continue
-                await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)
-                await self.redis.rpush(f'payment_active_{channel}', session_payment_id)
+            await self.runtime_service.mark_active_successful(
+                session_payment_id,
+                phone=session_phone,
+                selected_accno=account_accno,
+                selected_iban=account_iban,
+                source='jazzcash_verify_fingerprint',
+                online_ttl=self.lock_time_login_duplicate_avoid,
+                collect_enabled=True,
+                ds_order_enabled=True,
+                df_order_enabled=True,
+                channels=qr_channel,
+            )
 
             result = {
                 'status': 'success',
@@ -1937,20 +1965,20 @@ class JazzCash:
                 self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
                 await self._update_payment(session_payment_id, session_data, account_entire=account_entire_json, account_accno=account_accno, account_iban=account_iban)
                 
-                # ========== 11. 添加到Redis在线状态和队列 ==========
-                # 11.1 添加到在线状态集合
-                await self.redis.sadd('payment_online_ds', session_payment_id)
-                self.logger.info(f'{self._log_key(funcName)} 已添加到 payment_online_ds: {session_payment_id}')
-                
-                # 11.2 添加到渠道队列
+                # ========== 11. 写 JazzCash runtime 主状态，并由 legacy bridge 投影旧队列 ==========
                 qr_channel = session_data.get('qr_channel', '1003')
-                channels = qr_channel.split(',') if isinstance(qr_channel, str) else [qr_channel]
-                
-                for channel in channels:
-                    channel = channel.strip()  # 去除空格
-                    await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)  # 先删除（避免重复）
-                    await self.redis.rpush(f'payment_active_{channel}', session_payment_id)  # 添加到队尾
-                    self.logger.info(f'{self._log_key(funcName)} 已添加到 payment_active_{channel}: {session_payment_id}')
+                await self.runtime_service.mark_active_successful(
+                    session_payment_id,
+                    phone=session_phone,
+                    selected_accno=account_accno,
+                    selected_iban=account_iban,
+                    source='jazzcash_active_account',
+                    online_ttl=self.lock_time_login_duplicate_avoid,
+                    collect_enabled=True,
+                    ds_order_enabled=True,
+                    df_order_enabled=True,
+                    channels=qr_channel,
+                )
                 
                 # ========== 12. 返回成功 ==========
                 self.logger.info(f'{self._log_key(funcName)} 账号激活成功')

@@ -1576,3 +1576,57 @@ kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/applicatio
 ### 后续建议
 
 当前方案适合测试环境。若需要跨节点高可用，应替换为 NFS/云文件存储等 RWX PVC，再取消 API 固定 `pk-1` 的调度约束。
+## 2026-04-26 JazzCashBusiness legacy Redis 脏状态导致 API 派单误判
+
+### 现象
+
+JazzCashBusiness 激活和监控链路会直接写：
+
+- `payment_online_ds`
+- `payment_online_df`
+- `payment_active_df`
+- `payment_active_{channel}`
+- `login_on_jazzcash_*`
+
+如果这些 legacy key 残留，API 的代收、代付和 app 展示会把脏队列误判成真实在线。
+
+### 根因
+
+JazzCashBusiness 没有像 EasyPaisa 一样的 runtime snapshot/index，admin、API、jobs 分别读写不同 Redis key，缺少唯一真相源。
+
+### 处理
+
+- 新增 `application/jazzcash_runtime`：
+  - `runtime_service.py`
+  - `sync_runtime_service.py`
+  - `reader.py`
+  - `legacy_bridge.py`
+  - `keyspace.py`
+- 登录激活成功统一调用 `JazzCashRuntimeService.mark_active_successful()`。
+- `pay.py`、`upi_controller.py`、`e_wallet_handler.py`、`app/my.py` 对 `bank_type/bank_type_id=98` 改读 `JazzCashRuntimeReader`。
+- `order_push.py` 和 JazzCash jobs 对 JazzCash 代付在线、回队、上下线改走 `SyncJazzCashRuntimeService`。
+
+### 排错口径
+
+- snapshot 缺失时，`bank_type=98` 默认离线，不能回退信任 `payment_online_ds/payment_online_df`。
+- `payment_online_*` 只能作为兼容旧 job 的派生投影，不是主状态。
+- 如果发现 JazzCashBusiness 明明 admin 显示离线但仍接单，优先查：
+  - `jazzcash_runtime:snapshot:{payment_id}`
+  - `jazzcash_runtime:index:ds_order_enabled`
+  - `jazzcash_runtime:index:df_order_enabled`
+  - 再看 legacy 是否只是 bridge 派生残留。
+
+### 本轮验证
+
+```bash
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.test_order_push_easypaisa_runtime_guard -v
+
+python3.12 -m py_compile \
+  api/application/app/login/banks/jazzcash.py \
+  api/jobs/Jazzcashpay_v2.py \
+  api/jobs/jazzcash/jazzcash_monitor.py \
+  api/jobs/jazzcash/jazzcash_auto_payout.py
+```

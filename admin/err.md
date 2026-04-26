@@ -402,3 +402,50 @@ python3.12 -m unittest discover -s tests -v
 - EasyPaisa 在 `admin` 里的展示面已经与 runtime snapshot 对齐
 - 管理端重置下线不再留下 EasyPaisa runtime 脏会话
 - 自动代付监控页不再错误把 `payment_active_df` 当 set 统计
+## 2026-04-26 JazzCashBusiness admin 被 legacy Redis 脏数据误导
+
+### 现象
+
+JazzCashBusiness 旧链路会残留：
+
+- `payment_online_ds`
+- `payment_online_df`
+- `payment_active_df`
+- `payment_active_{channel}`
+- `login_on_jazzcash_*`
+
+admin 收款资料列表、在线筛选、手动监控开关和重置下线如果直接读写这些 key，就会和 API 派单状态不一致。
+
+### 根因
+
+admin 侧只有 EasyPaisa runtime reader/service，JazzCashBusiness 仍走 legacy Redis 判断，没有唯一真相源。
+
+### 处理
+
+- 新增 `admin/application/jazzcash_runtime`：
+  - `reader.py`
+  - `service.py`
+  - `keyspace.py`
+  - `flags.py`
+- `application/partner/partner.py` 新增：
+  - `is_jazzcash_payment()`
+  - `apply_jazzcash_runtime_fields()`
+- 收款资料列表和筛选对 JazzCashBusiness 改读 runtime snapshot/index。
+- 手动监控开关和重置下线改走 `JazzCashAdminRuntimeService`。
+
+### 排错口径
+
+- snapshot 缺失时，JazzCashBusiness 在 admin 读面默认离线，不能信任 legacy。
+- 需要看真实状态时先查：
+  - `jazzcash_runtime:snapshot:{payment_id}`
+  - `jazzcash_runtime:index:online`
+  - `jazzcash_runtime:index:ds_order_enabled`
+  - `jazzcash_runtime:index:df_order_enabled`
+- legacy `payment_online_*` 只能用于判断 bridge 投影是否同步，不能作为业务结论。
+
+### 本轮验证
+
+```bash
+PYTHONPATH=admin python3.12 -m unittest admin.tests.test_jazzcash_runtime_reader -v
+python3.12 -m py_compile admin/application/jazzcash_runtime/*.py admin/application/partner/partner.py
+```

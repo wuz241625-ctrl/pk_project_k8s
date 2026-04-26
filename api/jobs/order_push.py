@@ -6,6 +6,7 @@ import redis
 import pymysql
 
 from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
 from config import get_config
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -29,10 +30,19 @@ def _is_easypaisa_payment(payment):
     )
 
 
+def _is_jazzcash_payment(payment):
+    return (
+        str(payment.get('bank_type_id') or '') == '98'
+        or str(payment.get('bank_type') or '') == '98'
+    )
+
+
 def _df_order_online(rds, payment):
     payment_id = payment.get('id')
     if _is_easypaisa_payment(payment):
         return SyncEasyPaisaRuntimeService(rds).is_df_order_online(payment_id)
+    if _is_jazzcash_payment(payment):
+        return SyncJazzCashRuntimeService(rds).is_df_order_online(payment_id)
     return rds.sismember('payment_online_df', payment_id)
 
 
@@ -40,6 +50,8 @@ def _requeue_df_if_online(rds, payment):
     payment_id = payment.get('id')
     if _is_easypaisa_payment(payment):
         return SyncEasyPaisaRuntimeService(rds).requeue_df_if_online(payment_id)
+    if _is_jazzcash_payment(payment):
+        return SyncJazzCashRuntimeService(rds).requeue_df_if_online(payment_id)
     if not rds.sismember('payment_online_df', payment_id):
         rds.lrem('payment_active_df', 0, payment_id)
         return False

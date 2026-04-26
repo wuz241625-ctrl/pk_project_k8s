@@ -735,3 +735,39 @@ kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/applicatio
 - `api-fingerprint-pvc` 为 `Bound`
 - API Pod 均调度在 `pk-1`
 - 指纹目录挂载点存在，发布重建 Pod 后测试文件仍保留
+## 2026-04-26 JazzCashBusiness 唯一真相源收口
+
+本轮 JazzCashBusiness 运行态统一改为：
+
+- 主真相源：`jazzcash_runtime:snapshot:{payment_id}`
+- 索引：`jazzcash_runtime:index:online`、`jazzcash_runtime:index:ds_order_enabled`、`jazzcash_runtime:index:df_order_enabled`
+- 派生投影：`payment_online_ds`、`payment_online_df`、`payment_active_df`、`payment_active_{channel}`、`login_on_jazzcash_*`
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.test_order_push_easypaisa_runtime_guard -v
+
+python3.12 -m py_compile \
+  api/application/app/login/banks/jazzcash.py \
+  api/application/app/my/my.py \
+  api/application/lakshmi_api/controllers/upi_controller.py \
+  api/application/lakshmi_api/services/payments/e_wallet_handler.py \
+  api/application/pay/pay.py \
+  api/jobs/order_push.py \
+  api/jobs/Jazzcashpay_v2.py \
+  api/jobs/jazzcash/jazzcash_monitor.py \
+  api/jobs/jazzcash/jazzcash_auto_payout.py
+```
+
+验收重点：
+
+- JazzCashBusiness `bank_type/bank_type_id=98` 不能直接信任 legacy Redis 在线队列。
+- `sendOtp -> verifyOtp -> uploadFingerprint -> verifyFingerprint -> activeSuccessful` 的会话会写入 `jazzcash_runtime:session:{payment_id}`。
+- 激活成功必须通过 `JazzCashRuntimeService.mark_active_successful()` 写 snapshot/index，再由 legacy bridge 派生旧队列。
+- 代收判断读 `dispatch_ds/ds_order_enabled`，代付判断读 `dispatch_df/df_order_enabled`。
+- `order_push.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py` 只能把旧 `payment_active_df/payment_online_df` 当兼容投影消费，主状态必须以 runtime 为准。

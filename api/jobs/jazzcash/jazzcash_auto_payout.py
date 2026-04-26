@@ -33,6 +33,7 @@ sys.path.append(root_dir)
 
 from config import get_config
 from application.websocket import callback
+from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
 
 # ========== 日志系统 ==========
 # 程序名称（用于日志）
@@ -536,6 +537,7 @@ class JazzCashAutoPayout:
 
         # 连接Redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
+        self.runtime_service = SyncJazzCashRuntimeService(self.redis)
         
         # 会议决策：异常当成功处理（已内置到逻辑中）
         
@@ -923,9 +925,7 @@ class JazzCashAutoPayout:
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
             
             # 9. 重新接单（复制success_df逻辑）
-            if self.qr_id and self.redis.sismember('payment_online_df', self.qr_id):
-                self.redis.lrem('payment_active_df', 0, self.qr_id)
-                self.redis.rpush('payment_active_df', self.qr_id)
+            if self.qr_id and self.runtime_service.requeue_df_if_online(self.qr_id):
                 self.logger.info(f"代付账户{self.qr_id}重新进入活跃轮询队列")
             
             # 10. Redis通知
@@ -2078,42 +2078,33 @@ class JazzCashAutoPayout:
             api_result = await self._check_account_online_via_api(phone)
             
             if api_result is not None:
-                # API检查成功，根据结果同步Redis状态（使用payment_id作为键）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                
                 if api_result:
-                    # API显示在线
-                    if not redis_online:
-                        # 🔥 修改逻辑：API在线但Redis中不存在，认为账号不在线，跳过处理
-                        # Redis中不存在，添加到Redis（使用payment_id）
-                        # self.redis.sadd(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                        # self.logger.info(f"账号payment_id:{payment_id} phone:{phone} API检查在线，已添加到Redis")
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但Redis中不存在，认为不在线，跳过处理")
+                    if not self.runtime_service.is_df_order_online(payment_id):
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但runtime不允许代付，跳过处理")
                         return False  # 返回False表示账号不可用
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，Redis状态一致")
+                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，runtime状态一致")
                 else:
-                    # API显示离线
-                    if redis_online:
-                        # Redis中存在，从Redis移除（使用payment_id）
-                        self.redis.srem(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从Redis移除")
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，Redis状态一致")
+                    if self.runtime_service.is_df_order_online(payment_id):
+                        self.runtime_service.force_offline(
+                            payment_id,
+                            phone=phone,
+                            source="jazzcash_auto_payout.account_online_check",
+                            reason="api_reported_offline",
+                        )
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从runtime下线")
+                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线")
                 
                 return api_result
             else:
-                # API检查失败，降级使用Redis状态（使用payment_id）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用Redis状态: {redis_online}")
-                return bool(redis_online)
+                runtime_online = self.runtime_service.is_df_order_online(payment_id)
+                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用runtime状态: {runtime_online}")
+                return bool(runtime_online)
                 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}在线状态失败: {e}")
             # 异常时也降级使用Redis状态
             try:
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                return bool(redis_online)
+                return bool(self.runtime_service.is_df_order_online(payment_id))
             except:
                 return False
     
@@ -2314,12 +2305,7 @@ class JazzCashAutoPayout:
                 payment_id = str(account_info)
                 phone = 'UNKNOWN'
             
-            # 只有在线的账号才重新加入活跃列表（使用payment_id检查）
-            is_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-            if is_online:
-                # 先删除可能的重复项，再加入列表末尾
-                self.redis.lrem(self.REDIS_KEYS['jazzcash_active_df'], 0, payment_id)
-                self.redis.rpush(self.REDIS_KEYS['jazzcash_active_df'], payment_id)
+            if self.runtime_service.requeue_df_if_online(payment_id):
                 self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 重新加入活跃列表")
         except Exception as e:
             self.logger.error(f"账号重新加入活跃列表失败: {e}, account_info: {account_info}")

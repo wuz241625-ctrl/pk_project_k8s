@@ -28,6 +28,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
+from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.message import msg, msg_en
 from application.sign import SignatureAndVerification
 from application.pay.payout_channel_guard import is_jazzcash_payout_request
@@ -35,14 +36,23 @@ from application.pay.thirdPart import Razorpay_upi_origin
 from application.pay.thirdPart import lucky_payment, apay_payment, kingpay_payment, wepay_payment, pay777pay_payment, swiftpay_payment, quickpay_payment, snakepay_payment, hkpay_payment, skpay_payment, ospay_payment, tatapay_payment,vibrapay_payment,qqpay_payment,gamepayer_payment
 
 EASYPAISA_BANK_TYPE_ID = "97"
+JAZZCASH_BANK_TYPE_ID = "98"
 
 
 def _is_easypaisa_bank_type(bank_type) -> bool:
     return str(bank_type) == EASYPAISA_BANK_TYPE_ID
 
 
+def _is_jazzcash_bank_type(bank_type) -> bool:
+    return str(bank_type) == JAZZCASH_BANK_TYPE_ID
+
+
 def _is_easypaisa_payment_type(*, bank_type_id=None, bank_type=None) -> bool:
     return _is_easypaisa_bank_type(bank_type_id) or _is_easypaisa_bank_type(bank_type)
+
+
+def _is_jazzcash_payment_type(*, bank_type_id=None, bank_type=None) -> bool:
+    return _is_jazzcash_bank_type(bank_type_id) or _is_jazzcash_bank_type(bank_type)
 
 
 def _redis_text(value) -> str:
@@ -55,21 +65,26 @@ async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_
     if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
         runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
         return await runtime_reader.is_collection_order_online(payment_id)
+    if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+        jazzcash_reader = JazzCashRuntimeReader(self.redis)
+        return await jazzcash_reader.is_collection_order_online(payment_id)
     return await self.redis.sismember('payment_online_ds', payment_id)
 
 
 async def _collection_online_payment_ids(self, runtime_reader=None):
     runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
+    jazzcash_reader = JazzCashRuntimeReader(self.redis)
     raw_ids = await self.redis.smembers('payment_online_ds')
     legacy_ids = {_redis_text(value).strip() for value in raw_ids}
     runtime_ids = set(await runtime_reader.collection_online_payment_ids())
+    runtime_ids.update(await jazzcash_reader.collection_online_payment_ids())
     legacy_ids.difference_update(runtime_ids)
-    payment_ids = await _non_easypaisa_legacy_collection_ids(self, legacy_ids)
+    payment_ids = await _non_runtime_legacy_collection_ids(self, legacy_ids)
     payment_ids.update(runtime_ids)
     return sorted((payment_id for payment_id in payment_ids if payment_id.isdigit()), key=int)
 
 
-async def _non_easypaisa_legacy_collection_ids(self, payment_ids):
+async def _non_runtime_legacy_collection_ids(self, payment_ids):
     legacy_ids = sorted(
         {str(payment_id).strip() for payment_id in payment_ids if str(payment_id).strip().isdigit()},
         key=int,
@@ -83,6 +98,8 @@ async def _non_easypaisa_legacy_collection_ids(self, payment_ids):
         where id in ({ids})
           and COALESCE(bank_type_id, 0) != 97
           and COALESCE(bank_type, 0) != 97
+          and COALESCE(bank_type_id, 0) != 98
+          and COALESCE(bank_type, 0) != 98
         """.format(ids=ids_sql)
     )
     return {str(row["id"]) for row in rows or []}
