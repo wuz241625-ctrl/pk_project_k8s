@@ -22,10 +22,22 @@ public/files/android/<app-name>/<filename>.apk
 public/files/android/appInfo.json
 ```
 
-当前 Ashrafi App 仍沿用页面里的 `lakshmi` 配置键，实际文件指向：
+当前 Ashrafi App 使用 `ashrafi_merchant` 配置键，实际文件指向：
 
 ```text
 public/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk
+```
+
+下载页展示名与 Flutter Android 包保持一致：
+
+```text
+Ashrafi Merchant
+```
+
+下载页 favicon 与页面 logo 使用 Flutter Android launcher icon：
+
+```text
+/Users/tear/pk_project/ashrafi_merchant_flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
 ```
 
 ## 线上发布

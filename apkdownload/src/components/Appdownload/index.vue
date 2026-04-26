@@ -10,9 +10,11 @@ const props = defineProps({
 const baseUrl = window.location.origin;
 const appPath = ref("");
 const filename = ref("");
-const appName = "lakshmi";
+const appKey = "ashrafi_merchant";
+const legacyAppKey = "lakshmi";
 
 const information = ref({
+  name: "Ashrafi Merchant",
   developer: "",
   compatibility: "",
   language: "",
@@ -27,17 +29,20 @@ onMounted(async () => {
     `${baseUrl}/files/android/appInfo.json?v=${new Date().getTime()}`
   );
   const data = await res.json();
-  appPath.value = `${baseUrl}${data[appName].path}`;
-  filename.value = data[appName]?.filename || 'Ashrafi.apk';
+  const appInfo = data[appKey] || data[legacyAppKey] || {};
+  appPath.value = appInfo.path ? `${baseUrl}${appInfo.path}` : "";
+  filename.value = appInfo.filename || "AshrafiMerchant.apk";
   information.value = {
-    developer: data[appName]?.developer || null,
-    compatibility: data[appName]?.compatibility || null,
-    language: data[appName]?.language || null,
-    size: data[appName]?.size || null,
-    updateTime: data[appName]?.updateTime || null,
-    introduction: data[appName]?.introduction || "",
-    version: data[appName]?.version || "-",
+    name: appInfo.name || "Ashrafi Merchant",
+    developer: appInfo.developer || null,
+    compatibility: appInfo.compatibility || null,
+    language: appInfo.language || null,
+    size: appInfo.size || null,
+    updateTime: appInfo.updateTime || null,
+    introduction: appInfo.introduction || "",
+    version: appInfo.version || "-",
   };
+  document.title = information.value.name;
 });
 </script>
 
@@ -49,7 +54,7 @@ onMounted(async () => {
           <img :src="appLogo" />
         </div>
         <div class="down-btn flexc">
-          <div class="app-name">Ashrafi</div>
+          <div class="app-name">{{ information.name }}</div>
           <a
             class="download-btn"
             :href="appPath"

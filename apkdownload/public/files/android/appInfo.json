@@ -1,5 +1,6 @@
 {
-  "lakshmi": {
+  "ashrafi_merchant": {
+    "name": "Ashrafi Merchant",
     "version": "0.1.6",
     "filename": "ashrafi_v0.1.6_202604261714.apk",
     "path": "/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk",
@@ -7,7 +8,7 @@
     "updateTime": "Apr 26, 2026, 17:14",
     "compatibility": "Android 8+",
     "language": "EN",
-    "developer": "Ashrafi",
+    "developer": "Ashrafi Merchant",
     "introduction": "Ashrafi merchant app for wallet onboarding, fingerprint activation, and payment account management."
   }
 }
