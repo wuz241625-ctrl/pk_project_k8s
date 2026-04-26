@@ -644,6 +644,8 @@ python3.12 -m py_compile \
 本轮目标：
 
 - PROD `ospay_api_host` 固定为当前服务器入口：`http://api.awekay.com/api`
+- PROD `pay_url` 固定为当前服务器收银台入口：`http://api.awekay.com/api/order/`
+- PROD `websocket_api_allow_host` 只保留当前 API 域名：`api.awekay.com`
 - API 启动时若 Redis `notice_domain_api_list` 为空，自动写入 `ospay_api_host`
 - 若后台已经维护了 `notice_domain_api_list`，启动初始化不覆盖已有值
 
@@ -660,10 +662,15 @@ python3.12 -m py_compile api/main.py api/config.example.py
 REDIS_POD=$(kubectl get pods -n pk -l app=redis -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n pk "$REDIS_POD" -- redis-cli GET notice_domain_api_list
 kubectl exec -n pk deploy/api-deploy -- python - <<'PY'
-import sys
+import sys, json
 sys.path.insert(0, '/app/api')
 from config import get_config
-print(get_config()['ospay_api_host'])
+conf = get_config()
+print(json.dumps({
+    'ospay_api_host': conf['ospay_api_host'],
+    'pay_url': conf['pay_url'],
+    'websocket_api_allow_host': conf['websocket_api_allow_host'],
+}, ensure_ascii=False))
 PY
 ```
 
@@ -671,3 +678,5 @@ PY
 
 - Redis `notice_domain_api_list` 为 `http://api.awekay.com/api`
 - 容器内 `get_config()['ospay_api_host']` 为 `http://api.awekay.com/api`
+- 容器内 `get_config()['pay_url']` 为 `http://api.awekay.com/api/order/`
+- 容器内 `get_config()['websocket_api_allow_host']` 为 `['api.awekay.com']`

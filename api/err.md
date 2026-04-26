@@ -1481,19 +1481,22 @@ python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 
 ### 现象
 
-当前服务器入口是 `api.awekay.com`，但 PROD 配置里的 `ospay_api_host` 仍是旧的 `http://ospay.vip/api`。Redis `notice_domain_api_list` 为空时，代收/代付三方回调地址会回退到旧域名，导致当前测试环境和旧环境混用。
+当前服务器入口是 `api.awekay.com`，但 PROD 配置里的 `ospay_api_host`、`pay_url`、`websocket_api_allow_host` 仍残留旧域名。Redis `notice_domain_api_list` 为空时，代收/代付三方回调地址会回退到旧域名；`merchant_pay_links` 为空时，平台收银台链接会回退到旧 `pay_url`，导致当前测试环境和旧环境混用。
 
 ### 根因
 
-1. `ospay_api_host` 是代码兜底配置，未随当前服务器域名更新。
+1. `ospay_api_host` 和 `pay_url` 都是代码兜底配置，未随当前服务器域名更新。
 2. 多个三方通道优先读 Redis `notice_domain_api_list`，为空时才回退到 `ospay_api_host` 或历史硬编码域名。
-3. Redis 属于易失缓存，重建后如果 API 启动不主动写入当前服务器域名，就容易再次落回旧域名。
+3. 平台收银台链接优先读 Redis `merchant_pay_links`，为空时才回退到 `pay_url`。
+4. Redis 属于易失缓存，重建后如果 API 启动不主动写入当前服务器域名，就容易再次落回旧域名。
 
 ### 处理
 
 1. PROD `ospay_api_host` 改为 `http://api.awekay.com/api`。
-2. API 启动初始化时，若 Redis `notice_domain_api_list` 为空，写入 `ospay_api_host`。
-3. 若 Redis 已有 `notice_domain_api_list`，不覆盖，保留后台维护多回调域名的能力。
+2. PROD `pay_url` 改为 `http://api.awekay.com/api/order/`。
+3. PROD `websocket_api_allow_host` 改为 `['api.awekay.com']`。
+4. API 启动初始化时，若 Redis `notice_domain_api_list` 为空，写入 `ospay_api_host`。
+5. 若 Redis 已有 `notice_domain_api_list`，不覆盖，保留后台维护多回调域名的能力。
 
 ### 验证
 
@@ -1507,11 +1510,16 @@ python3.12 -m py_compile api/main.py api/config.example.py
 ```bash
 kubectl exec -n pk "$REDIS_POD" -- redis-cli GET notice_domain_api_list
 kubectl exec -n pk deploy/api-deploy -- python - <<'PY'
-import sys
+import sys, json
 sys.path.insert(0, '/app/api')
 from config import get_config
-print(get_config()['ospay_api_host'])
+conf = get_config()
+print(json.dumps({
+    'ospay_api_host': conf['ospay_api_host'],
+    'pay_url': conf['pay_url'],
+    'websocket_api_allow_host': conf['websocket_api_allow_host'],
+}, ensure_ascii=False))
 PY
 ```
 
-期望均为 `http://api.awekay.com/api`。
+期望 `ospay_api_host` 为 `http://api.awekay.com/api`，`pay_url` 为 `http://api.awekay.com/api/order/`，`websocket_api_allow_host` 为 `['api.awekay.com']`。
