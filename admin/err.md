@@ -2,6 +2,48 @@
 
 ## 常见问题
 
+### 0.8 香港出口 IP 能打开页面但后台接口 403
+
+现象：
+
+- `http://admin.awekay.com/` 首页和静态资源返回 200/304
+- 登录或访问 `/prod-api/*` 接口失败
+- 响应类似：`403: ip:42.200.231.60 禁止登录`
+
+根因：
+
+- 宿主机 Nginx 到 `admin-h5` 已正确传递真实客户端 IP
+- `admin-h5` 再把 `X-Real-IP` / `X-Forwarded-For` 传给 `admin` 后端
+- `admin` 后端 `BaseHandler.check_ip()` 读取 `sys_info.sys_ip_w` 做后台白名单校验
+- 香港出口 IP `42.200.231.60` 不在 `sys_info.sys_ip_w` 中，所以静态页面可访问，但后台接口被拒绝
+
+处理：
+
+```bash
+HK_IP=42.200.231.60
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -i -n pk mysql-0 -- mysql -uroot -pPass_1234 -D pakistan <<SQL
+UPDATE sys_info
+SET sys_ip_w = CASE
+  WHEN FIND_IN_SET('${HK_IP}', sys_ip_w) > 0 THEN sys_ip_w
+  WHEN sys_ip_w IS NULL OR sys_ip_w = '' THEN '${HK_IP}'
+  ELSE CONCAT(sys_ip_w, ',${HK_IP}')
+END
+WHERE id=1;
+SQL
+
+REDIS_POD=$(KUBECONFIG=/etc/kubernetes/admin.conf kubectl get pods -n pk -l app=redis -o jsonpath='{.items[0].metadata.name}')
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk "$REDIS_POD" -- redis-cli DEL cache_info_sys_info_1
+```
+
+验收：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/admin-h5-deploy -- sh -lc \
+  "wget -S -O - --header='X-Real-IP: 42.200.231.60' --header='X-Forwarded-For: 42.200.231.60' http://127.0.0.1/prod-api/login/getroutes 2>&1 | head"
+```
+
+期望不再返回 `403 ip:42.200.231.60 禁止登录`。若用 GET 测试 POST 路由，返回 `405 Method Not Allowed` 表示已经通过白名单并进入后端路由。
+
 ### 0.7 Admin 登录间歇性提示账号密码错误，或 `sys_info` 缓存变成 `{}`
 
 现象：
