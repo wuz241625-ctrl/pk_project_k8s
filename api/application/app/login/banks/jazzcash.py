@@ -40,23 +40,36 @@ TEST_FINGERPRINT_PATH = '/www/python/dev/api/application/app/login/banks/2025111
 
 # ========== API版本控制 ==========
 # 修改这个变量来切换v1.2/v1.5流程
-# 'v1.2': 使用旧流程（需要提前上传指纹）
-# 'v1.5': 使用新流程（不需要上传指纹，loginStep2不验证指纹）
-JAZZCASH_API_VERSION = 'v1.2'  # ⭐ 已切换到v1.5新流程
+# 'v1.2': 旧流程（先上传指纹，loginStep2 实际验证指纹）
+# 'v1.5': 新流程（先发 OTP，loginStep2 只验证 OTP，随后单独验证指纹）
+JAZZCASH_API_VERSION = 'v1.5'
 
 # Redis状态常量
 class LoginStatus:
     PRE_LOGIN = "preLogin"                      # 预登录状态
     SEND_OTP = "sendOtp"                        # OTP发送
     VERIFY_OTP = "verifyOtp"                    # OTP验证
+    FINGERPRINT_UPLOAD_REQUIRED = "fingerprintUploadRequired"  # 需要上传指纹
+    FINGERPRINT_UPLOADED = "fingerprintUploaded"               # 指纹已上传
+    FINGERPRINT_VERIFIED = "fingerprintVerified"               # 指纹已验证
     LOGIN_SUCCESSFUL = "loginSuccessful"        # 登录成功
     ACTIVE_SUCCESSFUL = "activeSuccessful"      # 激活成功
 
 # 状态转换规则定义
 STATUS_TRANSITIONS = {
-    LoginStatus.PRE_LOGIN: [ LoginStatus.SEND_OTP ],
-    LoginStatus.SEND_OTP: [ LoginStatus.VERIFY_OTP ],
-    LoginStatus.VERIFY_OTP: [ LoginStatus.LOGIN_SUCCESSFUL ],  # ⭐ 改：只能到 LOGIN_SUCCESSFUL
+    LoginStatus.PRE_LOGIN: [LoginStatus.SEND_OTP],
+    LoginStatus.SEND_OTP: [LoginStatus.SEND_OTP, LoginStatus.VERIFY_OTP],
+    LoginStatus.VERIFY_OTP: [
+        LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+        LoginStatus.FINGERPRINT_UPLOADED,
+        LoginStatus.LOGIN_SUCCESSFUL,
+    ],
+    LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: [LoginStatus.FINGERPRINT_UPLOADED],
+    LoginStatus.FINGERPRINT_UPLOADED: [
+        LoginStatus.FINGERPRINT_VERIFIED,
+        LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+    ],
+    LoginStatus.FINGERPRINT_VERIFIED: [LoginStatus.ACTIVE_SUCCESSFUL],
     LoginStatus.LOGIN_SUCCESSFUL: [ LoginStatus.ACTIVE_SUCCESSFUL ],
     LoginStatus.ACTIVE_SUCCESSFUL: []  # 终态
 }
@@ -616,7 +629,7 @@ class JazzCash:
             # LoginStatus.Active_SUCCESSFUL 后，会话会被爬单程序命中且删除
             
             if LoginStatus.LOGIN_SUCCESSFUL not in session_data['status_history']:
-                if status_new != LoginStatus.LOGIN_SUCCESSFUL:
+                if status_new not in (LoginStatus.LOGIN_SUCCESSFUL, LoginStatus.ACTIVE_SUCCESSFUL):
                     expire_time = self.expire_time_login_pending
                     expire_desc = f'{self.expire_time_login_pending / 60}分钟'
                 else:
@@ -983,9 +996,9 @@ class JazzCash:
             
             # ========== 根据API版本决定是否检查指纹 ==========
             if JAZZCASH_API_VERSION == 'v1.5':
-                # v1.5流程：跳过指纹检查
-                self.logger.info(f'{self._log_key(funcName)} v1.5流程：跳过指纹检查（不验证指纹）')
-                fingerprint_uploaded = True  # v1.5不需要提前检查，设为True告诉前端不需要上传
+                # v1.5流程：先发 OTP，OTP 验证后再上传/验证指纹。
+                self.logger.info(f'{self._log_key(funcName)} v1.5流程：跳过登录前指纹检查，OTP 后再验证指纹')
+                fingerprint_uploaded = False
             else:
                 # v1.2流程：检查指纹（保持原有逻辑）
                 self.logger.info(f'{self._log_key(funcName)} v1.2流程：检查指纹上传状态')
@@ -1114,11 +1127,11 @@ class JazzCash:
             
             # ========== 根据API版本决定next_step ==========
             if JAZZCASH_API_VERSION == 'v1.5':
-                # v1.5流程：所有用户都直接进入send_otp（不管指纹状态）
-                fingerprint_uploaded = True  # 强制设为True
+                # v1.5流程：所有用户都直接进入 send_otp，OTP 通过后再处理指纹。
+                fingerprint_uploaded = False
                 next_step = 'send_otp'
                 message = '预登录成功，可以发送OTP'
-                self.logger.info(f'{self._log_key(funcName)} v1.5流程: next_step=send_otp (跳过指纹上传)')
+                self.logger.info(f'{self._log_key(funcName)} v1.5流程: next_step=send_otp (指纹改到OTP之后)')
             else:
                 # v1.2流程：根据用户类型和指纹状态决定（保持原有逻辑）
                 if is_new_user:
@@ -1485,240 +1498,73 @@ class JazzCash:
             # 调用API
             api_result_verify_otp = await self._verify_otp(session_data, otp)
             
-            # ========== [新增] 处理 loginStep2 (verify_otp) 的冷却期 ==========
+            otp_payload = api_result_verify_otp.get('data', {}) or {}
+            serv_gen_id = otp_payload.get('requestId') or otp_payload.get('serv_gen_id') or ''
+            cd_until = 0
             if api_result_verify_otp.get('status') == 'cooldown':
-                # OTP验证返回冷却期（和 EasyPaisa 一致：返回 success）
-                self.logger.warning(f'{self._log_key(funcName)} loginStep2 返回冷却期，但OTP验证成功')
-                
+                self.logger.warning(f'{self._log_key(funcName)} loginStep2 返回冷却期，但OTP已验证成功')
                 cd_until = api_result_verify_otp.get('cd_until', 0)
-                cooldown_msg = api_result_verify_otp.get('message', '账号处于冷却期')
-                
-                # ⭐ 重要：保存 Payment 记录（和 EasyPaisa 一致）
-                fingerprint_path = session_data.get('fingerprint_path')
-                self.logger.info(f'{self._log_key(funcName)} 冷却期也需要保存 Payment，指纹路径: {fingerprint_path}')
-                
-                # 从session中获取name参数（name已是必需参数）
-                name = session_data.get('name', '')
-                self.logger.info(f'{self._log_key(funcName)} 从session获取name: {name}')
-                
-                real_payment_id = await self._save_payment(session_data, name=name, fingerprint_path=fingerprint_path)
-                
-                if not real_payment_id:
-                    raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
-                
-                # 如果是新用户，更新 redis_key
-                is_new_user = session_data.get('is_new_user', False)
-                if is_new_user:
-                    self.logger.info(f'{self._log_key(funcName)} 新用户，更新 redis_key')
-                    await self.redis.delete(redis_key)
-                    redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
-                
-                # 保存冷却期到 session，状态更新为 LOGIN_SUCCESSFUL
-                if cd_until:
-                    se_until = await self._update_session_status(
-                        redis_key, 
-                        session_data, 
-                        LoginStatus.LOGIN_SUCCESSFUL,  # ⭐ 状态改为成功
-                        {
-                            'cd_until': cd_until,
-                            'id': real_payment_id,
-                            'redis_key': redis_key,
-                            'real_payment_id': real_payment_id,
-                        }
-                    )
-                    
-                    cd_time_str = datetime.fromtimestamp(cd_until).strftime('%Y-%m-%d %H:%M:%S')
-                    self.logger.warning(f'{self._log_key(funcName)} OTP验证成功，但账号冷却至 {cd_time_str}')
-                    
-                    return {
-                        'status': 'success',  # ⭐ 改为 success（和 EasyPaisa 一致）
-                        'message': 'OTP验证成功',
-                        'data': {
-                            'serv_gen_id': api_result_verify_otp.get('data', {}).get('requestId', ''),
-                            'cd_until': cd_until,
-                            'se_until': se_until,
-                            'next_step': 'active_account'  # ⭐ 提示需要继续激活
-                        }
-                    }
-                else:
-                    # 无冷却期时间，返回基本成功信息
-                    se_until = await self._update_session_status(
-                        redis_key, 
-                        session_data, 
-                        LoginStatus.LOGIN_SUCCESSFUL,
-                        {
-                            'id': real_payment_id,
-                            'redis_key': redis_key,
-                            'real_payment_id': real_payment_id,
-                        }
-                    )
-                    
-                    return {
-                        'status': 'success',
-                        'message': 'OTP验证成功',
-                        'data': {
-                            'serv_gen_id': api_result_verify_otp.get('data', {}).get('requestId', ''),
-                            'cd_until': 0,
-                            'se_until': se_until,
-                            'next_step': 'active_account'
-                        }
-                    }
 
-            session_data['serv_gen_id'] = api_result_verify_otp['data'].get('requestId')
-            
-            # 调用 secondLogin 验证账户状态并获取账号信息
-            api_result_verify_acct = await self._verify_account(session_data)
-            
-            # 处理账号验证结果
-            if api_result_verify_acct.IsSuccess:
-                # ✅ 账户正常：仅保存基础信息，不提取账户详情
-                self.logger.info(f'{self._log_key(funcName)} 账户验证成功，保存基础信息...')
-                
-                # ✅ 改：保存基础信息（包含指纹路径，但不保存 account_entire、account_accno、account_iban）
-                # 从 session_data 中获取指纹路径（在 upload_fingerprint_http 中已保存）
-                fingerprint_path = session_data.get('fingerprint_path')
-                self.logger.info(f'{self._log_key(funcName)} 指纹路径: {fingerprint_path}')
-                
-                # 从session中获取name参数（name已是必需参数）
-                name = session_data.get('name', '')
-                self.logger.info(f'{self._log_key(funcName)} 从session获取name: {name}')
-                
-                real_payment_id = await self._save_payment(session_data, name=name, fingerprint_path=fingerprint_path)
-                
-                if real_payment_id:
-                    is_new_user = session_data.get('is_new_user', False)
-                    if is_new_user:
-                        # 如果是新用户，payment_id 从 phone 变为了数据库生成的 ID
-                        self.logger.info(f'{self._log_key(funcName)} 新用户，更新 redis_key: {redis_key} → pre_login_{bankname}_{real_payment_id}')
-                        await self.redis.delete(redis_key)
-                        redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
-                    
-                    # ✅ 建立登录进程锁 - 防止N分钟内重复登录
-                    
-                    # 1. Payment ID锁 - 防止用户用payment_id重复登录
-                    login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)
-                    await self.redis.setex(login_on_payment_key, self.lock_time_login_duplicate_avoid, 1)
-                    
-                    # 2. 手机号锁 - 防止用户用手机号重复登录
-                    login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)
-                    await self.redis.setex(login_on_phone_key, self.lock_time_login_duplicate_avoid, 1)
-                    
-                    self.logger.info(f'{self._log_key(funcName)} Payment锁: {login_on_payment_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-                    self.logger.info(f'{self._log_key(funcName)} Phone锁: {login_on_phone_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-                    
-                    # 计算时间戳
-                    now_ts = time.time()
-                    
-                    # ✅ 改：状态更新为 LOGIN_SUCCESSFUL（不是 ACTIVE_SUCCESSFUL）
-                    self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态. {session_data.get('status')} → {LoginStatus.LOGIN_SUCCESSFUL}')
-                    se_until = await self._update_session_status(
-                        redis_key, session_data, LoginStatus.LOGIN_SUCCESSFUL,
-                        {
-                            'id': real_payment_id,
-                            'redis_key': redis_key,
-                            'real_payment_id': real_payment_id,
-                            'serv_gen_id': api_result_verify_otp['data'].get('requestId'),
-                            'selected_upi': session_phone,
-                            'upi_list': [ session_phone ],
-                            'completion_time': int(now_ts),
-                            'cd_until': 0,  # 账户正常，无冷却期
-                        }
-                    )
-                    
-                    self.logger.info(f'{self._log_key(funcName)} OTP验证完成！')
-                    
-                    # ✅ 改：返回简化信息（不返回账户信息）
-                    result = {
-                        'status': 'success',
-                        'message': 'OTP验证成功',
-                        'data': {
-                            'serv_gen_id': api_result_verify_otp['data'].get('requestId'),
-                            'se_until': se_until,
-                            'next_step': 'active_account'  # ⚠️ 新增：提示需要继续
-                        }
-                    }
-                    self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-                    return result
-                else:
-                    raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
-            
-            # ========== 处理 secondLogin 返回的冷却期 ==========
-            elif api_result_verify_acct.IsInCoolDown:
-                # ⚠️ 账户处于冷却期（和 EasyPaisa 一致：保存 Payment 并返回 success）
-                self.logger.warning(f'{self._log_key(funcName)} verify_otp 中 secondLogin 返回冷却期，但OTP验证成功')
-                
-                # cd_until 已经在 _verify_account 中计算并保存到 session_data 了
-                cd_until = session_data.get('cd_until', 0)
-                
-                # 保存基础信息（和 EasyPaisa 一样：即使冷却期也保存 Payment）
-                fingerprint_path = session_data.get('fingerprint_path')
-                self.logger.info(f'{self._log_key(funcName)} 指纹路径: {fingerprint_path}')
-                
-                # 从session中获取name参数（name已是必需参数）
-                name = session_data.get('name', '')
-                self.logger.info(f'{self._log_key(funcName)} 从session获取name: {name}')
-                
-                real_payment_id = await self._save_payment(session_data, name=name, fingerprint_path=fingerprint_path)
-                
-                if real_payment_id:
-                    is_new_user = session_data.get('is_new_user', False)
-                    if is_new_user:
-                        await self.redis.delete(redis_key)
-                        redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
-                    
-                    # 建立登录进程锁（和 EasyPaisa 一样：即使冷却期也设置锁）
-                    login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(bankname=session_bankname, payment_id=session_payment_id)
-                    await self.redis.setex(login_on_payment_key, self.lock_time_login_duplicate_avoid, 1)
-                    
-                    login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(bankname=session_bankname, phone=session_phone)
-                    await self.redis.setex(login_on_phone_key, self.lock_time_login_duplicate_avoid, 1)
-                    
-                    self.logger.info(f'{self._log_key(funcName)} Payment锁: {login_on_payment_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-                    self.logger.info(f'{self._log_key(funcName)} Phone锁: {login_on_phone_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-                    
-                    # 计算时间戳
-                    now_ts = time.time()
-                    
-                    # 更新会话状态为 LOGIN_SUCCESSFUL（和 EasyPaisa 一样）
-                    se_until = await self._update_session_status(
-                        redis_key, session_data, LoginStatus.LOGIN_SUCCESSFUL,
-                        {
-                            'id': real_payment_id,
-                            'redis_key': redis_key,
-                            'real_payment_id': real_payment_id,
-                            'cd_until': cd_until,
-                            'completion_time': int(now_ts),
-                        }
-                    )
-                    
-                    # ⭐ 返回 success（和 EasyPaisa 一致）
-                    self.logger.warning(f'{self._log_key(funcName)} OTP验证成功，账号冷却至 {datetime.fromtimestamp(cd_until).strftime("%Y-%m-%d %H:%M:%S") if cd_until else "未知"}')
-                    
-                    result = {
-                        'status': 'success',  # ⭐ 改为 success
-                        'message': 'OTP验证成功',
-                        'data': {
-                            'serv_gen_id': api_result_verify_otp['data'].get('requestId'),
-                            'cd_until': cd_until,  # ⭐ 返回冷却期时间（前端/后续流程会用到）
-                            'se_until': se_until,
-                            'next_step': 'active_account'  # ⭐ 提示需要继续激活
-                        }
-                    }
-                    self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-                    return result
-                else:
-                    raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
-            
-            else:
-                # ❌ 账户状态异常（需要重新登录、修改PIN等）
-                self.logger.error(f'{self._log_key(funcName)} 账户状态异常')
-                self.logger.error(f'{self._log_key(funcName)} IsNeedRelogin={api_result_verify_acct.IsNeedRelogin}')
-                self.logger.error(f'{self._log_key(funcName)} IsNeedChangePin={api_result_verify_acct.IsNeedChangePin}')
-                
-                raise NewApiError(
-                    ErrorCode.VerifyAccount, 
-                    f'Account verification failed, please login again or contact support'
-                )
+            fingerprint_path = session_data.get('fingerprint_path')
+            name = session_data.get('name', '')
+            real_payment_id = await self._save_payment(session_data, name=name, fingerprint_path=fingerprint_path)
+            if not real_payment_id:
+                raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
+
+            old_payment_id = payment_id
+            is_new_user = session_data.get('is_new_user', False)
+            if is_new_user:
+                self.logger.info(f'{self._log_key(funcName)} 新用户，更新 redis_key: {redis_key} → pre_login_{bankname}_{real_payment_id}')
+                await self.redis.delete(redis_key)
+                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id)
+
+            self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态. {session_data.get("status")} → {LoginStatus.VERIFY_OTP}')
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.VERIFY_OTP,
+                {
+                    'id': real_payment_id,
+                    'redis_key': redis_key,
+                    'real_payment_id': real_payment_id,
+                    'previous_payment_id': old_payment_id,
+                    'serv_gen_id': serv_gen_id,
+                    'selected_upi': session_phone,
+                    'upi_list': [session_phone],
+                    'cd_until': cd_until,
+                }
+            )
+
+            next_phase = (
+                LoginStatus.FINGERPRINT_UPLOADED
+                if session_data.get('fingerprint_path')
+                else LoginStatus.FINGERPRINT_UPLOAD_REQUIRED
+            )
+            status_check = await self._validate_status_transition(
+                session_data,
+                LoginStatus.VERIFY_OTP,
+                next_phase,
+                f'{self._log_key(funcName)}'
+            )
+            if not status_check['valid']:
+                raise NewApiError(ErrorCode.Logined2, status_check['message'])
+
+            se_until = await self._update_session_status(redis_key, session_data, next_phase)
+
+            result = {
+                'status': 'success',
+                'message': 'OTP验证成功',
+                'data': {
+                    'serv_gen_id': serv_gen_id,
+                    'cd_until': cd_until,
+                    'se_until': se_until,
+                    'next_phase': next_phase,
+                    'payment_id': real_payment_id,
+                    'previous_payment_id': old_payment_id,
+                }
+            }
+            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
+            return result
         except NewApiError:
             raise  # 重新抛出NewApiError，不要重新包装
         except Exception as e:
@@ -1735,6 +1581,210 @@ class JazzCash:
             # [UNLOCK] 释放payment接口锁
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
             self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
+    async def verify_fingerprint_http(self, data):
+        """指纹验证并完成 JazzCash 激活。"""
+        funcName = 'verify_fingerprint_http'
+        lockName = 'verify_fingerprint'
+        payment_lock_id = None
+        payment_lock_value = None
+        self.login_data = data
+        try:
+            self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
+
+            required_fields = ['bankname', 'payment_id']
+            if not all(field in data for field in required_fields):
+                missing_fields = [field for field in required_fields if field not in data]
+                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
+
+            bankname = data['bankname']
+            payment_id = data['payment_id']
+            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+
+            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
+
+            session_data = await self._get_session_data(redis_key)
+            if not session_data:
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_otp_http first')
+
+            current_status = session_data.get('status', 'UNKNOWN')
+            if current_status == LoginStatus.ACTIVE_SUCCESSFUL:
+                return {
+                    'status': 'success',
+                    'message': '账号已经激活成功，请勿重复激活',
+                    'data': {'phase': LoginStatus.ACTIVE_SUCCESSFUL}
+                }
+
+            status_check = await self._validate_status_transition(
+                session_data,
+                LoginStatus.FINGERPRINT_UPLOADED,
+                LoginStatus.FINGERPRINT_VERIFIED,
+                f'{self._log_key(funcName)}'
+            )
+            if not status_check['valid']:
+                raise NewApiError(ErrorCode.Logined2, status_check['message'])
+
+            verified = await self._verify_fingerprint(session_data)
+            if not verified:
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+                    {'last_error': {'code': 'FP_UPSTREAM_REJECTED'}},
+                )
+                return {
+                    'status': 'error',
+                    'message': '上游拒绝当前指纹，请重新上传',
+                    'data': {
+                        'code': 'FP_UPSTREAM_REJECTED',
+                        'phase': LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+                    }
+                }
+
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.FINGERPRINT_VERIFIED,
+                {'last_error': None},
+            )
+            return await self._activate_after_fingerprint(redis_key, session_data)
+        except NewApiError:
+            raise
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}', exc_info=True)
+            raise NewApiError(ErrorCode.VerifyFingerPrint, f'FingerPrint verification failed: {str(e)}')
+        finally:
+            await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
+            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
+    async def _activate_after_fingerprint(self, redis_key, session_data):
+        """JazzCash 指纹通过后，内部完成 secondLogin 取账号信息并激活。"""
+        funcName = 'verify_fingerprint_http - 激活账号'
+
+        required_session_fields = ['phone', 'id', 'bankname']
+        missing_fields = [field for field in required_session_fields if not session_data.get(field)]
+        if missing_fields:
+            raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {", ".join(missing_fields)}')
+
+        session_phone = session_data.get('phone')
+        session_payment_id = session_data.get('id')
+        session_bankname = session_data.get('bankname')
+        session_status = session_data.get('status', 'UNKNOWN')
+
+        if session_status == LoginStatus.ACTIVE_SUCCESSFUL:
+            return {
+                'status': 'success',
+                'message': '账号已经激活成功，请勿重复激活',
+                'data': {'phase': LoginStatus.ACTIVE_SUCCESSFUL}
+            }
+
+        status_check = await self._validate_status_transition(
+            session_data,
+            LoginStatus.FINGERPRINT_VERIFIED,
+            LoginStatus.ACTIVE_SUCCESSFUL,
+            f'{self._log_key(funcName)}'
+        )
+        if not status_check['valid']:
+            raise NewApiError(ErrorCode.Logined2, status_check['message'])
+
+        api_result_verify_acct = await self._verify_account(session_data)
+
+        if api_result_verify_acct.IsSuccess:
+            secondlogin_outer_data = api_result_verify_acct.data or {}
+            if isinstance(secondlogin_outer_data, str):
+                try:
+                    secondlogin_outer_data = json.loads(secondlogin_outer_data)
+                except json.JSONDecodeError:
+                    secondlogin_outer_data = {}
+
+            if isinstance(secondlogin_outer_data, dict):
+                secondlogin_account_data = secondlogin_outer_data.get('data', secondlogin_outer_data)
+                if not isinstance(secondlogin_account_data, dict):
+                    secondlogin_account_data = {}
+            else:
+                secondlogin_account_data = {}
+
+            account_iban = secondlogin_account_data.get('iban', '')
+            account_accno = session_phone
+            account_entire_json = json.dumps(secondlogin_account_data, ensure_ascii=False)
+
+            login_on_payment_key = self.LOGIN_LOCK_PAYMENT_KEY.format(
+                bankname=session_bankname,
+                payment_id=session_payment_id,
+            )
+            await self.redis.setex(login_on_payment_key, self.lock_time_login_duplicate_avoid, 1)
+
+            login_on_phone_key = self.LOGIN_LOCK_PHONE_KEY.format(
+                bankname=session_bankname,
+                phone=session_phone,
+            )
+            await self.redis.setex(login_on_phone_key, self.lock_time_login_duplicate_avoid, 1)
+
+            await self._update_session_status(redis_key, session_data, LoginStatus.ACTIVE_SUCCESSFUL)
+            await self._update_payment(
+                session_payment_id,
+                session_data,
+                fingerprint_path=session_data.get('fingerprint_path'),
+                account_entire=account_entire_json,
+                account_accno=account_accno,
+                account_iban=account_iban,
+            )
+
+            await self.redis.sadd('payment_online_ds', session_payment_id)
+            qr_channel = session_data.get('qr_channel', '1003')
+            channels = qr_channel.split(',') if isinstance(qr_channel, str) else [qr_channel]
+            for channel in channels:
+                channel = str(channel).strip()
+                if not channel:
+                    continue
+                await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)
+                await self.redis.rpush(f'payment_active_{channel}', session_payment_id)
+
+            result = {
+                'status': 'success',
+                'message': '账号激活成功',
+                'data': {
+                    'phase': LoginStatus.ACTIVE_SUCCESSFUL,
+                    'account_iban': account_iban,
+                    'account_accno': account_accno,
+                }
+            }
+            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
+            return result
+
+        if api_result_verify_acct.IsInCoolDown:
+            return {
+                'status': 'error',
+                'message': '当前处于冷却期',
+                'data': {
+                    'code': 'FP_COOLDOWN',
+                    'phase': 'inCooldown',
+                    'cd_until': session_data.get('cd_until', 0),
+                }
+            }
+
+        if api_result_verify_acct.IsNeedRelogin:
+            return {
+                'status': 'error',
+                'message': '会话已过期，请重新开始',
+                'data': {
+                    'code': 'FP_SESSION_EXPIRED',
+                    'phase': 'needsRelogin',
+                }
+            }
+
+        return {
+            'status': 'error',
+            'message': '账号状态异常',
+            'data': {
+                'code': 'FP_UPSTREAM_TRANSIENT',
+                'phase': LoginStatus.FINGERPRINT_UPLOADED,
+                'isNeedChangePin': api_result_verify_acct.IsNeedChangePin,
+                'isNeedFingerPrint': api_result_verify_acct.IsNeedFingerPrint,
+            }
+        }
 
     async def active_account_http(self, data):
         """
@@ -2200,11 +2250,14 @@ class JazzCash:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
             
-            # ⭐ 关键：允许在 PRE_LOGIN 或 SEND_OTP 状态下上传指纹
-            # - PRE_LOGIN: pre_login 发现没有指纹，直接上传
-            # - SEND_OTP: send_otp 返回 code 403（指纹缺失），上传后重新发送OTP
+            # 兼容旧流程的 PRE_LOGIN/SEND_OTP，同时支持新流程 OTP 通过后的指纹上传。
             current_status = session_data.get('status', 'UNKNOWN')
-            allowed_statuses = [LoginStatus.PRE_LOGIN, LoginStatus.SEND_OTP]
+            allowed_statuses = [
+                LoginStatus.PRE_LOGIN,
+                LoginStatus.SEND_OTP,
+                LoginStatus.VERIFY_OTP,
+                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+            ]
             if current_status not in allowed_statuses:
                 self.logger.error(f'{self._log_key(funcName)} 状态错误: {current_status}, 期望 {allowed_statuses}')
                 raise NewApiError(ErrorCode.SessionNotExist, f'Invalid status: {current_status}, expected one of {allowed_statuses}')
@@ -2290,25 +2343,35 @@ class JazzCash:
                 fingerprint_path = await self._save_fingerprint(session_data, file["body"], session_bankname, session_payment_id, session_phone)
                 self.logger.info(f'{self._log_key(funcName)} 指纹文件已保存: {fingerprint_path}')
             
+            next_status = (
+                LoginStatus.FINGERPRINT_UPLOADED
+                if current_status in (LoginStatus.VERIFY_OTP, LoginStatus.FINGERPRINT_UPLOAD_REQUIRED)
+                else current_status
+            )
+            next_action = 'verify_fingerprint' if next_status == LoginStatus.FINGERPRINT_UPLOADED else 'send_otp'
+
             # ========== 更新会话（记录上传次数和指纹路径）==========
             self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态，记录上传次数: {session_fg_times}')
             await self._update_session_status(
-                redis_key, session_data, session_data.get('status'),
+                redis_key, session_data, next_status,
                 {
                     'fg_times': session_fg_times,
-                    'fingerprint_path': fingerprint_path  # 保存指纹路径到 session
+                    'fingerprint_path': fingerprint_path,
+                    'fingerprint_uploaded': True,
                 }
             )
             
             self.logger.info(f'{self._log_key(funcName)} 指纹上传成功！')
             result = {
                 'status': 'success',
-                'message': '指纹上传成功，请继续发送OTP',
+                'message': '指纹上传成功，请继续验证指纹' if next_action == 'verify_fingerprint' else '指纹上传成功，请继续发送OTP',
                 'data': {
                     'maximum': FINGERPRINT_UPLOAD_ATTEMPTS_MAXIMUM,
                     # 'current': session_fg_times
                     'current': 0,
-                    'next_step': 'send_otp'  # 告诉前端下一步应该调用 send_otp
+                    'phase': next_status,
+                    'next_phase': next_status,
+                    'next_step': next_action
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -3111,8 +3174,8 @@ class JazzCash:
                 raise NewApiError(ErrorCode.VerifyFingerPrint, 'FingerPrint verification decode failed')
             
             # 分析响应状态
-            status = response_data.lower()
-            status_desc = response_data.lower()
+            status = str(response_data).lower()
+            status_desc = str(response_data).lower()
             
             self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}')
         if status == 'true':
@@ -3362,15 +3425,11 @@ class JazzCash:
             "otpcode": otp
         }
         
-        # ========== API版本控制验证行为 ==========
-        if JAZZCASH_API_VERSION == 'v1.2':
-            request_msg["should_verify_otpcode"] = False       # 验证OTP
-            request_msg["should_verify_fingerprint"] = True   # 验证指纹
-            self.logger.info(f'{self._log_key(funcName)} v1.2模式: should_verify_otpcode=True, should_verify_fingerprint=True')
-        elif JAZZCASH_API_VERSION == 'v1.5':
-            request_msg["should_verify_otpcode"] = True       # 验证OTP
-            request_msg["should_verify_fingerprint"] = False  # 不验证指纹（因为没上传）
-            self.logger.info(f'{self._log_key(funcName)} v1.5模式: should_verify_otpcode=True, should_verify_fingerprint=False')
+        # loginStep2 只验证 OTP。指纹必须走 verify_fingerprint_http 单独验证，
+        # 否则 OTP 页面会“看似验码、实际验指纹”。
+        request_msg["should_verify_otpcode"] = True
+        request_msg["should_verify_fingerprint"] = False
+        self.logger.info(f'{self._log_key(funcName)} OTP验证模式: should_verify_otpcode=True, should_verify_fingerprint=False')
         
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
         

@@ -609,3 +609,30 @@ ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no r
 - `easypaisa_monitor:*` / `pakistanpay_v2:*` 全部 `RUNNING`
 - `easypaisa_runtime:snapshot:533280.selected_iban` 已不再是 `null`
 - `hash_easypaisa[533280].account_iban` 已不再是空串
+
+## 2026-04-26 JazzCash OTP 后指纹验证链路
+
+本轮目标：
+
+- JazzCash 上号固定为：`pre_login -> get_otp -> verify_otp -> upload_fingerprint/verify_fingerprint -> activeSuccessful`
+- `verify_otp` 只验证 OTP：`should_verify_otpcode=True`、`should_verify_fingerprint=False`
+- `/api/v1/login/verify_fingerprint` 支持 `bankname=jazzcash`，成功后内部完成 secondLogin、更新 `payment`、写 Redis 在线队列
+- 旧 `/api/v1/login/active_account` 暂保留兼容，但新 App 不再调用
+
+本地验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
+python3.12 -m unittest api.tests.test_easypaisa_business_flow_v2 api.tests.test_jazzcash_business_flow_v2 -v
+python3.12 -m py_compile \
+  api/application/app/login/banks/jazzcash.py \
+  api/application/lakshmi_api/controllers/http_login_controller.py
+```
+
+验收重点：
+
+- JazzCash `JAZZCASH_API_VERSION` 必须是 `v1.5`
+- `verify_otp_http()` 返回 `data.next_phase`，不能返回 `next_step=active_account`
+- OTP 后上传指纹时 Redis session 从 `fingerprintUploadRequired` 进入 `fingerprintUploaded`
+- `verify_fingerprint_http()` 成功后 Redis session 为 `activeSuccessful`
