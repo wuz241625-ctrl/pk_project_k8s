@@ -4283,6 +4283,18 @@ class JazzCashAutoPayout:
                     if is_reject:
                         return transfer_result  # 直接返回驳回结果，包含 reject=True
                     
+                    if transfer_result.get('pending_check'):
+                        return {
+                            'success': False,
+                            'pending_check': True,
+                            'treat_as_success': False,
+                            'message': f"JazzCash转账结果待核查(code={error_code}): {message}",
+                            'code': error_code,
+                            'account_used': account_id,
+                            'payment_id': selected_account['payment_id'],
+                            'partner_id': selected_account.get('partner_id')
+                        }
+
                     # ✅ code=402 (转账失败) 特殊处理：放回订单池重试
                     if error_code == 402:
                         return {
@@ -4773,9 +4785,36 @@ class JazzCashAutoPayout:
                         'can_retry': False,
                         'code': code
                     }
-                elif code in [500, 503]:
-                    # Error - 服务器严重错误 (500: 业务错误, 503: 服务不可用)
-                    self.logger.error(f"服务器严重错误: {msg}")
+                elif code == 500:
+                    # JazzCashMerchant v1.6 文档说明转账 code=500 不能直接判定失败。
+                    self.logger.warning(f"JazzCash转账返回500，进入待核查: {msg}")
+
+                    process_details.update({
+                        'lock_release_time': datetime.now().isoformat(),
+                        'lock_release_status': 'success',
+                        'lock_release_details': {
+                            'account_lock_released': True,
+                            'payment_id_lock_released': True,
+                            'release_reason': 'pending_reconciliation'
+                        },
+                        'total_duration_ms': int((time.time() - process_start_time) * 1000)
+                    })
+                    
+                    # 记录完整的交易记录（待核查）
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                                                "pending_reconciliation", error_message=msg, start_time=start_time,
+                                                before_balance=before_balance, process_details=process_details)
+                    
+                    return {
+                        'success': False,
+                        'pending_check': True,
+                        'message': f'JazzCash转账返回500，待核查: {msg}',
+                        'can_retry': False,
+                        'code': code
+                    }
+                elif code == 503:
+                    # NetworkError - 服务不可用
+                    self.logger.error(f"JazzCash网络或服务不可用: {msg}")
                     
                     # 记录完整的交易记录（服务器严重错误）
                     self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
@@ -4784,7 +4823,7 @@ class JazzCashAutoPayout:
                     
                     return {
                         'success': False,
-                        'message': f'EasyPaisa服务器错误: {msg}',
+                        'message': f'JazzCash服务器错误: {msg}',
                         'can_retry': False,
                         'code': code
                     }
@@ -5429,6 +5468,27 @@ class JazzCashAutoPayout:
                             cur.execute(sql, (order_code,))
                             connection.commit()
                             self.logger.info(f'订单{order_code}已重置为待处理状态(status=0)')
+                            success_result = False
+                            return success_result
+                        elif result.get('pending_check'):
+                            current_retry_count = order_data.get('retry_count', 0)
+                            new_retry_count = current_retry_count + 1
+                            sql = """
+                                UPDATE orders_df 
+                                SET status = 2, retry_count = %s
+                                WHERE code = %s AND status IN (0, 1)
+                            """
+                            cur.execute(sql, (new_retry_count, order_code))
+                            affected_rows = cur.rowcount
+                            connection.commit()
+                            if affected_rows > 0:
+                                self.logger.warning(
+                                    f'订单{order_code}进入待核查(status=2)，不设置payment_id失败冷却: '
+                                    f'{result["message"]}'
+                                )
+                            else:
+                                self.logger.warning(f'订单{order_code}状态已不是0或1，跳过待核查更新')
+                            
                             success_result = False
                             return success_result
                         elif result.get('treat_as_success', True):  # 默认按成功处理

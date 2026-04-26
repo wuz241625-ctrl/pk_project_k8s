@@ -3710,6 +3710,8 @@ class JazzCash:
         
         request_msg = {
             "account_id": phone,
+            "should_verify_otpcode": False,
+            "should_verify_fingerprint": True,
         }
         
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')

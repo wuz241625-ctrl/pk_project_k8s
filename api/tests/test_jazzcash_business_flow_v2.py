@@ -367,7 +367,14 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         self.assertEqual(request_data, "data=encoded")
         self.assertEqual(captured["action"], "loginStep2")
-        self.assertEqual(captured["payload"], {"account_id": "03001234567"})
+        self.assertEqual(
+            captured["payload"],
+            {
+                "account_id": "03001234567",
+                "should_verify_otpcode": False,
+                "should_verify_fingerprint": True,
+            },
+        )
 
     def test_verify_otp_success_returns_fingerprint_phase_not_active_account(self):
         asyncio.run(self._run_verify_otp_success_case())

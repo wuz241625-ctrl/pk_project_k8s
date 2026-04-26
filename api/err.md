@@ -2,6 +2,44 @@
 
 ## 常见问题
 
+### 0.18 JazzCashMerchant v1.6 `loginStep2` 和代付 `500` 语义误用
+
+现象：
+
+- JazzCashBusiness 指纹验证调用 `loginStep2` 时只传 `account_id`
+- 代付 `transferToAcc` / `transferToCard` 返回 `code=500` 时被当成 `server_error`，外层继续给 `payment_id` 打失败冷却
+
+根因：
+
+1. v1.6 文档里的 `loginStep2` 同时支持 OTP 与指纹两个开关；当前业务需要“真实发送验证码，但 `verify_otp` 只推进到指纹流程”，所以 `loginStep2` 必须明确关闭 OTP 校验、开启指纹校验。
+2. v1.6 文档对转账接口特别说明：`code=500` 是异常/未知结果，不能直接判定代付失败，必须后续查账或人工核查。
+
+处理：
+
+```json
+{
+  "account_id": "03xxxxxxxxx",
+  "should_verify_otpcode": false,
+  "should_verify_fingerprint": true
+}
+```
+
+- [jazzcash.py](/Users/tear/pk_project_k8s/api/application/app/login/banks/jazzcash.py) 的 `_build_verify_fingerprint_request()` 使用上面 payload 调 `action=loginStep2`
+- [jazzcash_auto_payout.py](/Users/tear/pk_project_k8s/api/jobs/jazzcash/jazzcash_auto_payout.py) 对代付 `code=500` 返回：
+  - `pending_check=True`
+  - 交易日志状态 `pending_reconciliation`
+  - 外层订单置 `status=2` 待核查
+  - 不调用 `set_payment_id_failed()`，不写失败冷却
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m unittest \
+  api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_build_verify_fingerprint_request_uses_login_step2 \
+  api.tests.test_jazzcash_auto_payout.JazzCashAutoPayoutV16Tests -v
+```
+
 ### 0.17 MySQL Service 误挂空库导致共享缓存和业务查询异常
 
 现象：

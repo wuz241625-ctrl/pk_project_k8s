@@ -624,20 +624,32 @@ ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no r
 ```bash
 cd /Users/tear/pk_project_k8s
 python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
-python3.12 -m unittest api.tests.test_easypaisa_business_flow_v2 api.tests.test_jazzcash_business_flow_v2 -v
+python3.12 -m unittest api.tests.test_easypaisa_business_flow_v2 api.tests.test_jazzcash_business_flow_v2 api.tests.test_jazzcash_auto_payout -v
 python3.12 -m py_compile \
   api/application/app/login/banks/jazzcash.py \
-  api/application/lakshmi_api/controllers/http_login_controller.py
+  api/application/lakshmi_api/controllers/http_login_controller.py \
+  api/jobs/jazzcash/jazzcash_auto_payout.py
 ```
 
 验收重点：
 
 - JazzCash `JAZZCASH_API_VERSION` 必须是 `v1.5`
 - JazzCash 不配置上游 `verify_fingerprint` action；指纹验证请求必须使用 `action=loginStep2`
+- `loginStep2` 是指纹校验入口，当前业务不在这里校验 OTP；payload 必须显式传：
+
+```json
+{
+  "account_id": "03xxxxxxxxx",
+  "should_verify_otpcode": false,
+  "should_verify_fingerprint": true
+}
+```
+
 - `verify_otp_http()` 返回 `data.next_phase`，不能返回 `next_step=active_account`
 - `verify_otp_http()` 不能调用 JazzCash 上游，也不能调用 `_verify_account()`
 - OTP 后上传指纹时 Redis session 从 `fingerprintUploadRequired` 进入 `fingerprintUploaded`
 - `verify_fingerprint_http()` 成功后 Redis session 为 `activeSuccessful`
+- 代付 `transferToAcc/transferToCard` 返回 `code=500` 时不能直接按失败或驳回处理，必须进入 `pending_reconciliation`/待核查，订单置 `status=2` 但不设置 `payment_id` 失败冷却
 
 ## 2026-04-26 API 回调域名缓存
 
