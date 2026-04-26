@@ -17,6 +17,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
+from application.jazzcash_runtime.reader import JazzCashAdminRuntimeReader
 from application.message import msg
 import hashlib
 import requests
@@ -44,6 +45,13 @@ def is_easypaisa_payment(payment):
     )
 
 
+def is_jazzcash_payment(payment):
+    return (
+        str((payment or {}).get('bank_type_id') or '') == '98'
+        or str((payment or {}).get('bank_type') or '') == '98'
+    )
+
+
 async def requeue_df_if_online(handler, payment_id):
     payment = await handler.get_result_by_condition(
         'payment',
@@ -53,8 +61,15 @@ async def requeue_df_if_online(handler, payment_id):
     if not payment:
         await handler.redis.lrem('payment_active_df', 0, payment_id)
         return False
-    bank_type = 97 if is_easypaisa_payment(payment) else (payment or {}).get('bank_type_id') or (payment or {}).get('bank_type')
-    reader = EasyPaisaAdminRuntimeReader(handler.redis)
+    if is_easypaisa_payment(payment):
+        bank_type = 97
+        reader = EasyPaisaAdminRuntimeReader(handler.redis)
+    elif is_jazzcash_payment(payment):
+        bank_type = 98
+        reader = JazzCashAdminRuntimeReader(handler.redis)
+    else:
+        bank_type = (payment or {}).get('bank_type_id') or (payment or {}).get('bank_type')
+        reader = EasyPaisaAdminRuntimeReader(handler.redis)
     if not await reader.is_payment_online_df(payment_id, bank_type=bank_type):
         await handler.redis.lrem('payment_active_df', 0, payment_id)
         return False

@@ -22,8 +22,9 @@ conf = get_config()
 
 
 class TimeOutGuard:
-    """EP 专用回压校验器；任一银行字段为 97 时必须以 runtime 派单索引为准。"""
-    INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
+    """runtime 银行回压校验器；EP/JazzCash 必须以各自 runtime 派单索引为准。"""
+    EASYPAISA_INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
+    JAZZCASH_INDEX_DISPATCH_DS = "jazzcash_runtime:index:dispatch_ds"
 
     def __init__(self, redis_client):
         self.redis = redis_client
@@ -32,10 +33,16 @@ class TimeOutGuard:
     def _is_easypaisa(bank_type_id=None, bank_type=None) -> bool:
         return str(bank_type_id or "") == "97" or str(bank_type or "") == "97"
 
+    @staticmethod
+    def _is_jazzcash(bank_type_id=None, bank_type=None) -> bool:
+        return str(bank_type_id or "") == "98" or str(bank_type or "") == "98"
+
     def check(self, payment_id, bank_type_id=None, bank_type=None) -> bool:
-        if not self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
-            return True
-        return bool(self.redis.sismember(self.INDEX_DISPATCH_DS, str(payment_id)))
+        if self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
+            return bool(self.redis.sismember(self.EASYPAISA_INDEX_DISPATCH_DS, str(payment_id)))
+        if self._is_jazzcash(bank_type_id=bank_type_id, bank_type=bank_type):
+            return bool(self.redis.sismember(self.JAZZCASH_INDEX_DISPATCH_DS, str(payment_id)))
+        return True
 
 
 def main():
@@ -178,7 +185,7 @@ def order_timeout(conn, rds):
                         bank_type_id=i.get('bank_type_id'),
                         bank_type=i.get('bank_type'),
                     ):
-                        logging.info(f"【码监控】: 码 {payment_id} 不在 INDEX_DISPATCH_DS, 跳过 rpush {list_name}")
+                        logging.info(f"【码监控】: 码 {payment_id} 不在 runtime dispatch_ds 索引, 跳过 rpush {list_name}")
                     else:
                         rds.lrem(list_name, 0, payment_id)
                         rds.rpush(list_name, payment_id)  # 尾部插入

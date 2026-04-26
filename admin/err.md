@@ -449,3 +449,32 @@ admin 侧只有 EasyPaisa runtime reader/service，JazzCashBusiness 仍走 legac
 PYTHONPATH=admin python3.12 -m unittest admin.tests.test_jazzcash_runtime_reader -v
 python3.12 -m py_compile admin/application/jazzcash_runtime/*.py admin/application/partner/partner.py
 ```
+
+## 2026-04-26 JazzCashBusiness admin 代付回队被 legacy `payment_online_df` 误导
+
+### 现象
+
+JazzCashBusiness snapshot 缺失或已经离线时，如果 Redis 里仍残留 `payment_online_df`，admin 代付确认/驳回后的回队逻辑可能把账号重新推回 `payment_active_df`。
+
+### 根因
+
+`admin/application/order/order.py` 之前只接入了 `EasyPaisaAdminRuntimeReader`。对于非 EasyPaisa 银行会退回 legacy 判断，导致 `bank_type=98` 的 JazzCashBusiness 仍信任旧集合。
+
+### 处理
+
+- 新增 `is_jazzcash_payment()` 判断 `bank_type/bank_type_id=98`。
+- `requeue_df_if_online()` 对 JazzCashBusiness 使用 `JazzCashAdminRuntimeReader.is_payment_online_df()`。
+- snapshot 缺失且 runtime read 默认开启时，JazzCashBusiness 回队结果为 false，并清理 `payment_active_df` 残留。
+
+### 排错口径
+
+- 代付回队前先看 `jazzcash_runtime:snapshot:{payment_id}`。
+- `payment_online_df` 对 JazzCashBusiness 只能作为 bridge 投影，不是回队准入。
+- 如果 `payment_active_df` 出现离线 JazzCashBusiness，优先查 admin 回队路径和 `jazzcash_runtime:index:df_order_enabled`。
+
+### 本轮验证
+
+```bash
+PYTHONPATH=admin python3.12 -m unittest admin.tests.test_jazzcash_runtime_reader -v
+python3.12 -m py_compile admin/application/order/order.py admin/application/jazzcash_runtime/*.py
+```

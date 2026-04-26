@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import json
 import random
 import re
@@ -27,7 +28,9 @@ import requests
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
+from application.easypaisa_runtime import keyspace as easypaisa_keyspace
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
+from application.jazzcash_runtime import keyspace as jazzcash_keyspace
 from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.message import msg, msg_en
 from application.sign import SignatureAndVerification
@@ -59,6 +62,13 @@ def _redis_text(value) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8")
     return str(value)
+
+
+async def _redis_get_value(redis_client, key):
+    value = redis_client.get(key)
+    if inspect.isawaitable(value):
+        return await value
+    return value
 
 
 async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None, bank_type=None):
@@ -120,6 +130,24 @@ async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=N
         runtime_reader,
         bank_type=(payment or {}).get('bank_type'),
     )
+
+
+async def _has_collection_kickoff(self, payment_id):
+    payment = await self.get_result_by_condition(
+        'payment',
+        ['bank_type', 'bank_type_id'],
+        {'id': payment_id},
+    )
+    if not payment:
+        return True
+
+    bank_type_id = (payment or {}).get('bank_type_id')
+    bank_type = (payment or {}).get('bank_type')
+    if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+        return await _redis_get_value(self.redis, easypaisa_keyspace.kickoff_key(payment_id)) is not None
+    if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+        return await _redis_get_value(self.redis, jazzcash_keyspace.kickoff_key(payment_id)) is not None
+    return await _redis_get_value(self.redis, 'kick_off_' + str(payment_id)) is not None
 
 
 def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
@@ -2168,15 +2196,15 @@ class Pay(BaseHandler):
                     self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
 
                 self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                # 检查 'kick_off_' + str(i) 键是否存在
+                # runtime 银行只看各自 runtime kickoff key，避免 legacy 脏 key 误拦截。
                 try:
-                    kick_off = self.redis.get('kick_off_' + str(i))
-                    self.logger.info(f"Step 24.4: 检查 'kick_off_' + {i}: {kick_off}, 订单 {code}, 金额 {amount}")
+                    kick_off = await _has_collection_kickoff(self, i)
+                    self.logger.info(f"Step 24.4: 检查 {i} 是否存在代收 kickoff: {kick_off}, 订单 {code}, 金额 {amount}")
                     if kick_off:
-                        self.logger.info(f"Step 24.5: {i} 被标记为 'kick_off_'，跳过处理, 订单 {code}, 金额 {amount}")
+                        self.logger.info(f"Step 24.5: {i} 被标记为代收 kickoff，跳过处理, 订单 {code}, 金额 {amount}")
                         continue
                 except Exception as e:
-                    self.logger.error(f"Step 24.4: 检查 'kick_off_' 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
+                    self.logger.error(f"Step 24.4: 检查代收 kickoff 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
                     continue
 
                 # 移除列表中的元素
@@ -2837,7 +2865,7 @@ class Pay(BaseHandler):
                     self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
 
                 self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                if self.redis.get('kick_off_' + str(i)):
+                if await _has_collection_kickoff(self, i):
                     continue
                 await self.redis.lrem(list_name, 0, i)
                 await self.redis.rpush(list_name, i)

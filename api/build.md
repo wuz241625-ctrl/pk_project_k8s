@@ -771,3 +771,36 @@ python3.12 -m py_compile \
 - 激活成功必须通过 `JazzCashRuntimeService.mark_active_successful()` 写 snapshot/index，再由 legacy bridge 派生旧队列。
 - 代收判断读 `dispatch_ds/ds_order_enabled`，代付判断读 `dispatch_df/df_order_enabled`。
 - `order_push.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py` 只能把旧 `payment_active_df/payment_online_df` 当兼容投影消费，主状态必须以 runtime 为准。
+
+## 2026-04-26 JazzCashBusiness 唯一真相源补漏验收
+
+本轮补齐 websocket monitor、订单超时回队和代收回队的剩余入口：
+
+- `bank_type/bank_type_id=98` 的 websocket ds/df 上下线必须调用 `JazzCashRuntimeService`。
+- `time_out.py` 对 JazzCashBusiness 回队必须检查 `jazzcash_runtime:index:dispatch_ds`。
+- `pay.py` 代收回队对 JazzCashBusiness 只认 `jazzcash_runtime:kickoff:{payment_id}`，不再被 legacy `kick_off_{payment_id}` 脏 key 误拦。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.test_jazzcash_business_flow_v2 \
+  api.tests.test_websocket_monitor_ep_dispatch \
+  api.tests.test_time_out_guard \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.test_order_push_easypaisa_runtime_guard -v
+
+python3.12 -m py_compile \
+  api/application/jazzcash_runtime/*.py \
+  api/application/websocket/monitor.py \
+  api/application/pay/pay.py \
+  api/jobs/time_out.py
+```
+
+验收重点：
+
+- snapshot 缺失时，JazzCashBusiness 默认不能因为 `payment_online_ds/payment_online_df` 残留而继续接单。
+- `jazzcash_runtime:index:dispatch_ds` 是 JazzCashBusiness 超时回队的唯一准入索引。
+- legacy `kick_off_*` 只影响非 runtime 银行；JazzCashBusiness 必须以 runtime kickoff key 为准。

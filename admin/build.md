@@ -194,3 +194,31 @@ python3.12 -m py_compile \
 - `payment_online_ds/payment_online_df` 残留时，JazzCashBusiness admin 列表不能误显示在线。
 - 收款资料筛选 `collect/pay` 合并 runtime index，排除 JazzCashBusiness legacy 脏成员。
 - `resettingPayment` 对 JazzCashBusiness 必须调用 `JazzCashAdminRuntimeService.force_reset()`。
+
+## 2026-04-26 JazzCashBusiness admin 回队补漏验收
+
+admin 代付确认/驳回后的 `payment_active_df` 回队也必须遵循 JazzCashBusiness runtime：
+
+- `bank_type/bank_type_id=97`：继续走 `EasyPaisaAdminRuntimeReader`。
+- `bank_type/bank_type_id=98`：走 `JazzCashAdminRuntimeReader`。
+- 其他银行：保留 legacy 兼容逻辑。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=admin python3.12 -m unittest \
+  admin.tests.test_jazzcash_runtime_reader \
+  admin.tests.test_easypaisa_runtime_reader \
+  admin.tests.test_admin_collection_control -v
+
+python3.12 -m py_compile \
+  admin/application/jazzcash_runtime/*.py \
+  admin/application/order/order.py \
+  admin/application/partner/partner.py
+```
+
+验收重点：
+
+- JazzCashBusiness snapshot 缺失时，即使 `payment_online_df` 残留也不能回队。
+- JazzCashBusiness snapshot `online=true && df_order_enabled=true` 时，确认/驳回后才能回到 `payment_active_df`。

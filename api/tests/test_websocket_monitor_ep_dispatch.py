@@ -136,14 +136,14 @@ class WebsocketMonitorEPDispatchTests(unittest.IsolatedAsyncioTestCase):
         assert json.loads(result['data'])['status'] == 0
 
     async def test_non_ep_online_ds_preserves_legacy_write(self):
-        """非 EP 码商（bank_type != 97）走原 legacy 写入，不调 runtime service。"""
+        """非 runtime 码商走原 legacy 写入，不调 runtime service。"""
         from application.websocket.monitor import Websocket
         handler = Websocket.__new__(Websocket)
         handler.redis = self.redis
         handler.qr_id = 888888
         handler.logger = mock.MagicMock()
         handler.get_result_by_condition = mock.AsyncMock(
-            return_value={'certified': 1, 'channel': '1003', 'bank_type': '98'}  # jazzcash
+            return_value={'certified': 1, 'channel': '1003', 'bank_type': '14'}
         )
 
         with mock.patch(
@@ -156,3 +156,71 @@ class WebsocketMonitorEPDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         mock_service.set_ds_order_dispatch.assert_not_awaited()
         assert await self.redis.sismember('payment_online_ds', 888888)
+
+    async def test_jazzcash_online_ds_calls_runtime_dispatch(self):
+        from application.websocket.monitor import Websocket
+        handler = Websocket.__new__(Websocket)
+        handler.redis = self.redis
+        handler.qr_id = 7001
+        handler.logger = mock.MagicMock()
+        handler.get_result_by_condition = mock.AsyncMock(
+            return_value={'certified': 1, 'manual_status': 0, 'status': 1, 'channel': '1003', 'bank_type': '98'}
+        )
+        handler.query = mock.AsyncMock(return_value=[])
+
+        with mock.patch('application.websocket.monitor.JazzCashRuntimeService') as mock_service_cls:
+            mock_service = mock_service_cls.return_value
+            mock_service.set_ds_order_dispatch = mock.AsyncMock()
+
+            result = await handler.qrcode_online(online=True, _type='ds')
+
+        mock_service.set_ds_order_dispatch.assert_awaited_once()
+        call = mock_service.set_ds_order_dispatch.await_args
+        assert call.kwargs['enabled'] is True
+        assert call.kwargs['channels'] == ['1003']
+        assert json.loads(result['data'])['status'] == 1
+        assert not await self.redis.sismember('payment_online_ds', 7001)
+
+    async def test_jazzcash_online_df_calls_runtime_dispatch(self):
+        from application.websocket.monitor import Websocket
+        handler = Websocket.__new__(Websocket)
+        handler.redis = self.redis
+        handler.qr_id = 7001
+        handler.logger = mock.MagicMock()
+        handler.get_result_by_condition = mock.AsyncMock(
+            return_value={'certified': 1, 'manual_status': 0, 'status': 1, 'channel': '1003', 'bank_type': '98'}
+        )
+        handler.query = mock.AsyncMock(return_value=[])
+
+        with mock.patch('application.websocket.monitor.JazzCashRuntimeService') as mock_service_cls:
+            mock_service = mock_service_cls.return_value
+            mock_service.set_df_order_dispatch = mock.AsyncMock()
+
+            result = await handler.qrcode_online(online=True, _type='df')
+
+        mock_service.set_df_order_dispatch.assert_awaited_once()
+        call = mock_service.set_df_order_dispatch.await_args
+        assert call.kwargs['enabled'] is True
+        assert call.kwargs['channels'] == ['1003']
+        assert json.loads(result['data'])['status'] == 1
+        assert not await self.redis.sismember('payment_online_df', 7001)
+
+    async def test_jazzcash_offline_uses_runtime_dispatch(self):
+        from application.websocket.monitor import Websocket
+        handler = Websocket.__new__(Websocket)
+        handler.redis = self.redis
+        handler.qr_id = 7001
+        handler.logger = mock.MagicMock()
+        handler.get_result_by_condition = mock.AsyncMock(
+            return_value={'bank_type': '98', 'bank_type_id': '98', 'channel': '1003'}
+        )
+
+        with mock.patch('application.websocket.monitor.JazzCashRuntimeService') as mock_service_cls:
+            mock_service = mock_service_cls.return_value
+            mock_service.set_ds_order_dispatch = mock.AsyncMock()
+            mock_service.set_df_order_dispatch = mock.AsyncMock()
+
+            await handler.qrcode_online(online=False, _type=None)
+
+        mock_service.set_ds_order_dispatch.assert_awaited_once()
+        mock_service.set_df_order_dispatch.assert_awaited_once()

@@ -12,6 +12,7 @@ from application.base import BaseHandler, RewriteJsonEncoder
 import bcrypt
 
 from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
+from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 from application.message import msg
 from application.websocket import bank_analysis, callback
 
@@ -20,6 +21,13 @@ def _is_easypaisa_payment(payment):
     return (
         str((payment or {}).get('bank_type_id') or '') == '97'
         or str((payment or {}).get('bank_type') or '') == '97'
+    )
+
+
+def _is_jazzcash_payment(payment):
+    return (
+        str((payment or {}).get('bank_type_id') or '') == '98'
+        or str((payment or {}).get('bank_type') or '') == '98'
     )
 
 
@@ -139,6 +147,20 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                         self.logger.info(f"[runtime] EP {self.qr_id} set_ds_order_dispatch({ds_enabled}) channels={self.qr_channels}")
                         if not ds_enabled:
                             return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
+                    elif _is_jazzcash_payment(bank):
+                        # JazzCashBusiness 由 jazzcash_runtime 作为唯一真相源，legacy 队列只作为派生投影。
+                        runtime_service = JazzCashRuntimeService(self.redis)
+                        ds_enabled = (
+                            str(bank.get('status')) == '1'
+                            and str(bank.get('certified')) == '1'
+                            and str(bank.get('manual_status') or 0) != '1'
+                        )
+                        await runtime_service.set_ds_order_dispatch(
+                            self.qr_id, enabled=ds_enabled, channels=self.qr_channels,
+                            source='websocket_jazzcash_ds_online')
+                        self.logger.info(f"[runtime] JazzCash {self.qr_id} set_ds_order_dispatch({ds_enabled}) channels={self.qr_channels}")
+                        if not ds_enabled:
+                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
                     else:
                         # 非 EP 通道：保留原 legacy 写入
                         await self.redis.sadd('payment_online_ds', self.qr_id)
@@ -166,6 +188,18 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                         self.logger.info(f"[runtime] EP {self.qr_id} set_df_order_dispatch({df_enabled}) channels={self.qr_channels}")
                         if not df_enabled:
                             return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
+                    elif _is_jazzcash_payment(bank):
+                        runtime_service = JazzCashRuntimeService(self.redis)
+                        df_enabled = str(bank.get('status')) == '1' and str(bank.get('certified')) == '1'
+                        await runtime_service.set_df_order_dispatch(
+                            self.qr_id,
+                            enabled=df_enabled,
+                            channels=self.qr_channels,
+                            source='websocket_jazzcash_df_online',
+                        )
+                        self.logger.info(f"[runtime] JazzCash {self.qr_id} set_df_order_dispatch({df_enabled}) channels={self.qr_channels}")
+                        if not df_enabled:
+                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
                     else:
                         await self.redis.sadd('payment_online_df', self.qr_id)
                         await self.redis.lrem('payment_active_df', 0, self.qr_id)
@@ -186,6 +220,13 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                         self.qr_id, enabled=False, channels=resolved_channels,
                         source='websocket_offline')
                     self.logger.info(f"[runtime] EP {self.qr_id} set_ds_order_dispatch(False)")
+                elif _is_jazzcash_payment(bank):
+                    runtime_service = JazzCashRuntimeService(self.redis)
+                    resolved_channels = (bank.get('channel') or '').split(',') if bank and bank.get('channel') else None
+                    await runtime_service.set_ds_order_dispatch(
+                        self.qr_id, enabled=False, channels=resolved_channels,
+                        source='websocket_jazzcash_ds_offline')
+                    self.logger.info(f"[runtime] JazzCash {self.qr_id} set_ds_order_dispatch(False)")
                 else:
                     # 非 EP 通道：保留原 legacy 写入
                     await self.redis.srem('payment_online_ds', self.qr_id)
@@ -210,6 +251,16 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                         source='websocket_df_offline',
                     )
                     self.logger.info(f"[runtime] EP {self.qr_id} set_df_order_dispatch(False)")
+                elif _is_jazzcash_payment(bank):
+                    runtime_service = JazzCashRuntimeService(self.redis)
+                    resolved_channels = (bank.get('channel') or '').split(',') if bank and bank.get('channel') else None
+                    await runtime_service.set_df_order_dispatch(
+                        self.qr_id,
+                        enabled=False,
+                        channels=resolved_channels,
+                        source='websocket_jazzcash_df_offline',
+                    )
+                    self.logger.info(f"[runtime] JazzCash {self.qr_id} set_df_order_dispatch(False)")
                 else:
                     await self.redis.srem('payment_online_df', self.qr_id)
                     await self.redis.lrem('payment_active_df', 0, self.qr_id)

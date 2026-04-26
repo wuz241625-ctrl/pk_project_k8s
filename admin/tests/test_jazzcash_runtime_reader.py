@@ -2,6 +2,8 @@ import json
 import os
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 CURRENT_DIR = os.path.dirname(__file__)
@@ -248,6 +250,52 @@ class PartnerJazzCashRuntimeHelperTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["online_status"], 1)
         self.assertEqual(row["online_ds"], 0)
         self.assertEqual(row["online_df"], 1)
+
+
+class OrderJazzCashRuntimeRequeueTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.redis = FakeRedis()
+
+    async def test_order_requeue_does_not_trust_jazzcash_legacy_without_snapshot(self):
+        from application.order.order import requeue_df_if_online
+
+        await self.redis.sadd("payment_online_df", 7001)
+        await self.redis.rpush("payment_active_df", 7001)
+        handler = SimpleNamespace(
+            redis=self.redis,
+            get_result_by_condition=AsyncMock(return_value={"bank_type": 98, "bank_type_id": 98}),
+        )
+
+        result = await requeue_df_if_online(handler, 7001)
+
+        self.assertFalse(result)
+        self.assertEqual(self.redis.lists["payment_active_df"], [])
+
+    async def test_order_requeue_uses_jazzcash_runtime_snapshot(self):
+        from application.jazzcash_runtime import keyspace
+        from application.order.order import requeue_df_if_online
+
+        await self.redis.set(
+            keyspace.snapshot_key(7001),
+            json.dumps(
+                {
+                    "payment_id": 7001,
+                    "online": True,
+                    "collect_enabled": True,
+                    "df_order_enabled": True,
+                    "dispatch_df": True,
+                }
+            ),
+        )
+        handler = SimpleNamespace(
+            redis=self.redis,
+            get_result_by_condition=AsyncMock(return_value={"bank_type": 98, "bank_type_id": 98}),
+        )
+
+        result = await requeue_df_if_online(handler, 7001)
+
+        self.assertTrue(result)
+        self.assertEqual(self.redis.lists["payment_active_df"], ["7001"])
 
 
 if __name__ == "__main__":

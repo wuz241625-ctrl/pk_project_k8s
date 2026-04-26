@@ -19,6 +19,7 @@ class FakeRedis:
         self.ttl_map = {}
         self.set_buckets = {}
         self.list_buckets = {}
+        self.zset_buckets = {}
 
     async def get(self, key):
         return self.storage.get(key)
@@ -67,6 +68,12 @@ class FakeRedis:
         bucket = self.list_buckets.setdefault(key, [])
         bucket.append(str(value))
         return len(bucket)
+
+    async def zadd(self, key, mapping):
+        bucket = self.zset_buckets.setdefault(key, {})
+        for member, score in mapping.items():
+            bucket[str(member)] = float(score)
+        return True
 
 
 class DummySession:
@@ -236,6 +243,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(update_args[0], payment_id)
         self.assertEqual(update_kwargs["fingerprint_path"], "/tmp/jazzcash.zip")
         self.assertIn(str(payment_id), self.redis.set_buckets["payment_online_ds"])
+        self.assertIn(str(payment_id), self.redis.set_buckets["jazzcash_runtime:index:ds_order_enabled"])
         self.assertIn(str(payment_id), self.redis.list_buckets["payment_active_1003"])
 
     def test_verify_fingerprint_controller_supports_jazzcash(self):

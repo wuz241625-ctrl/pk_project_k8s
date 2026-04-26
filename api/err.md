@@ -1630,3 +1630,47 @@ python3.12 -m py_compile \
   api/jobs/jazzcash/jazzcash_monitor.py \
   api/jobs/jazzcash/jazzcash_auto_payout.py
 ```
+
+## 2026-04-26 JazzCashBusiness websocket/time_out/pay 回队仍绕过 runtime
+
+### 现象
+
+上一轮 runtime 收口后复查仍发现：
+
+- websocket monitor 对 `bank_type=98` 仍会走非 EP legacy 分支，直接写 `payment_online_ds/payment_online_df`。
+- `time_out.py` 只校验 EasyPaisa 的 `easypaisa_runtime:index:dispatch_ds`，JazzCashBusiness 超时后可能被 legacy 队列回推。
+- `pay.py` 代收回队会检查 legacy `kick_off_{payment_id}`，JazzCashBusiness runtime 在线时也可能被历史脏 key 拦住。
+
+### 根因
+
+这些入口早期只区分 EasyPaisa 和非 EasyPaisa。JazzCashBusiness 接入独立 runtime 后，如果不增加 `bank_type/bank_type_id=98` 分支，就会继续把 legacy Redis key 当成主状态。
+
+### 处理
+
+- `api/application/websocket/monitor.py` 增加 JazzCashBusiness 分流，ds/df 上下线调用 `JazzCashRuntimeService`。
+- `api/application/jazzcash_runtime/runtime_service.py` 补 `set_df_order_dispatch()`。
+- `api/jobs/time_out.py` 的 `TimeOutGuard` 增加 `jazzcash_runtime:index:dispatch_ds` 校验。
+- `api/application/pay/pay.py` 新增 `_has_collection_kickoff()`，runtime 银行只读各自 runtime kickoff key。
+- 删除被 git 跟踪的旧 `api/jobs/jazzcash/jazzcash_auto_payout.py.bak`，避免死代码继续保留直接读写 legacy 队列的 JazzCashBusiness 旧口径。
+
+### 排错口径
+
+- JazzCashBusiness 可否代收：先看 `jazzcash_runtime:snapshot:{payment_id}.ds_order_enabled/dispatch_ds` 和 `jazzcash_runtime:index:dispatch_ds`。
+- JazzCashBusiness 是否被踢下线或暂停：先看 `jazzcash_runtime:kickoff:{payment_id}`。
+- `kick_off_{payment_id}` 只作为非 runtime 银行 legacy 口径，不能作为 JazzCashBusiness 业务结论。
+
+### 本轮验证
+
+```bash
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.test_jazzcash_business_flow_v2 \
+  api.tests.test_websocket_monitor_ep_dispatch \
+  api.tests.test_time_out_guard \
+  api.tests.jazzcash_runtime.test_reader -v
+
+python3.12 -m py_compile \
+  api/application/jazzcash_runtime/*.py \
+  api/application/websocket/monitor.py \
+  api/application/pay/pay.py \
+  api/jobs/time_out.py
+```

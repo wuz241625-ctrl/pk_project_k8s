@@ -223,6 +223,53 @@ class JazzCashRuntimeService:
     async def set_collection_dispatch(self, payment_id, **kwargs) -> Dict[str, Any]:
         return await self.set_ds_order_dispatch(payment_id, **kwargs)
 
+    async def set_df_order_dispatch(
+        self,
+        payment_id,
+        *,
+        enabled: bool,
+        phone: Optional[str] = None,
+        channels=None,
+        source: str,
+        online_ttl: int = 660,
+    ) -> Dict[str, Any]:
+        """只控制 JazzCashBusiness 代付 DF 派单资格，不改变代收派单资格。"""
+        current = await self.read_snapshot(payment_id) or {}
+        resolved_channels = keyspace.normalize_channels(
+            current.get("channels") if channels is None else channels
+        )
+
+        if current.get("online"):
+            return await self.mark_active_successful(
+                payment_id,
+                phone=phone or current.get("phone"),
+                selected_accno=current.get("selected_accno"),
+                selected_iban=current.get("selected_iban"),
+                source=source,
+                online_ttl=online_ttl,
+                collect_enabled=bool(current.get("collect_enabled")) if "collect_enabled" in current else True,
+                ds_order_enabled=self._flag_from_snapshot(current, "ds_order_enabled", "dispatch_ds", False),
+                df_order_enabled=bool(enabled),
+                channels=resolved_channels,
+            )
+
+        snapshot = await self.write_snapshot(
+            payment_id,
+            {
+                "phone": phone or current.get("phone"),
+                "df_order_enabled": False,
+                "dispatch_df": False,
+                "channels": resolved_channels,
+                "last_transition": source,
+            },
+            source=source,
+        )
+        await self.redis.srem(keyspace.INDEX_DF_ORDER_ENABLED, payment_id)
+        await self.redis.srem(keyspace.INDEX_DISPATCH_DF, payment_id)
+        await self.redis.srem(keyspace.LEGACY_PAYMENT_ONLINE_DF, payment_id)
+        await self.redis.lrem(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, payment_id)
+        return snapshot
+
     async def pause_order_dispatch(self, payment_id, *, phone=None, channels=None, source: str) -> Dict[str, Any]:
         current = await self.read_snapshot(payment_id) or {}
         is_online = bool(current.get("online"))

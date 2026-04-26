@@ -2,7 +2,7 @@ import json
 import os
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 class FakeRedis:
@@ -103,6 +103,28 @@ class JazzCashRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
         handler = SimpleNamespace(redis=self.redis, db_orm=None)
 
         self.assertEqual(await UpiHandler._collection_online_payment_ids(handler), ["7001"])
+
+    async def test_pay_requeue_ignores_legacy_kickoff_for_jazzcash(self):
+        from application.pay.pay import _has_collection_kickoff
+
+        await self.redis.set("kick_off_7001", "1")
+        handler = SimpleNamespace(
+            redis=self.redis,
+            get_result_by_condition=AsyncMock(return_value={"bank_type": 98, "bank_type_id": 98}),
+        )
+
+        self.assertFalse(await _has_collection_kickoff(handler, 7001))
+
+    async def test_pay_requeue_uses_runtime_kickoff_for_jazzcash(self):
+        from application.pay.pay import _has_collection_kickoff
+
+        await self.redis.set("jazzcash_runtime:kickoff:7001", "admin_off")
+        handler = SimpleNamespace(
+            redis=self.redis,
+            get_result_by_condition=AsyncMock(return_value={"bank_type": 98, "bank_type_id": 98}),
+        )
+
+        self.assertTrue(await _has_collection_kickoff(handler, 7001))
 
 
 if __name__ == "__main__":
