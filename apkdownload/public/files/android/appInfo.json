@@ -1,13 +1,13 @@
 {
   "lakshmi": {
-    "version": "1.0.0",
-    "filename": "lakshmi_v1.0.0.202406232042.apk",
-    "path": "/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk",
-    "size": "27.6 MB",
-    "updateTime": "Jun 23, 2024, 20:00 p.m",
+    "version": "0.1.6",
+    "filename": "ashrafi_v0.1.6_202604261714.apk",
+    "path": "/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk",
+    "size": "68.6 MB",
+    "updateTime": "Apr 26, 2026, 17:14",
     "compatibility": "Android 8+",
     "language": "EN",
-    "developer": null,
-    "introduction": "Welcome to Lakshmi, a trusted Indian trading platform. Here, we provide users with convenient digital wallet services, allowing you to easily conduct various transactions. Whether you are looking for a part-time opportunity or want to increase your income,Lakshmi is your best choice. Join us and make money on Lakshmi!"
+    "developer": "Ashrafi",
+    "introduction": "Ashrafi merchant app for wallet onboarding, fingerprint activation, and payment account management."
   }
 }
