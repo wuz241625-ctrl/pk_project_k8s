@@ -133,7 +133,7 @@ class JazzCash:
     PAYMENT_INTERFACE_LOCK_KEY = 'payment_interface_lock:{payment_id}:{operation_name}'
     
     
-    FINGERPRINT_PATH = '/fingerprint/'
+    FINGERPRINT_PATH = 'fingerprint'
     FINGERPRINT_FILENAME = '{bankname}_{payment_id}_{phone}.zip'
 
     API_ENDPOINTS = {

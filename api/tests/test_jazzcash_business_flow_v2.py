@@ -149,6 +149,44 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
     def test_jazzcash_has_no_upstream_verify_fingerprint_action(self):
         self.assertNotIn("verify_fingerprint", self.jazzcash.API_ENDPOINTS)
 
+    def test_save_fingerprint_uses_mounted_module_fingerprint_dir(self):
+        asyncio.run(self._run_save_fingerprint_mount_dir_case())
+
+    async def _run_save_fingerprint_mount_dir_case(self):
+        session = self._session(LoginStatus.FINGERPRINT_UPLOAD_REQUIRED)
+        save_path = None
+        root_dir = Path("/fingerprint")
+        root_existed = root_dir.exists()
+        expected_dir = Path(jazzcash_module.__file__).resolve().parent / "fingerprint"
+        expected_dir_existed = expected_dir.exists()
+
+        try:
+            save_path = await self.jazzcash._save_fingerprint(
+                session,
+                b"zip-data",
+                "jazzcash",
+                533298,
+                "03409297123",
+            )
+            saved = Path(save_path).resolve()
+            saved.relative_to(expected_dir.resolve())
+            self.assertEqual(saved.name, "jazzcash_533298_03409297123.zip")
+            self.assertEqual(session["fingerprint_path"], save_path)
+            self.assertEqual(saved.read_bytes(), b"zip-data")
+        finally:
+            if save_path:
+                Path(save_path).unlink(missing_ok=True)
+            if not expected_dir_existed and expected_dir.exists():
+                try:
+                    expected_dir.rmdir()
+                except OSError:
+                    pass
+            if not root_existed and root_dir.exists():
+                try:
+                    root_dir.rmdir()
+                except OSError:
+                    pass
+
     def test_pre_login_writes_runtime_snapshot_with_qr_channel(self):
         asyncio.run(self._run_pre_login_qr_channel_case())
 

@@ -730,6 +730,13 @@ kubectl get pods -n pk -l app=api -o wide
 kubectl exec -n pk deploy/api-deploy -- sh -lc 'mount | grep /app/api/application/app/login/banks/fingerprint'
 ```
 
+指纹保存路径回归测试：
+
+```bash
+python3 -m unittest api.tests.test_jazzcash_business_flow_v2.JazzCashBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
+python3 -m unittest api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_save_fingerprint_uses_mounted_module_fingerprint_dir -v
+```
+
 期望：
 
 - `api-fingerprint-pvc` 为 `Bound`
