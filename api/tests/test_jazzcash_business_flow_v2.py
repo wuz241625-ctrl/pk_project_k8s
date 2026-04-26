@@ -4,7 +4,6 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from urllib.parse import parse_qs
 from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -120,7 +119,10 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
     def test_jazzcash_uses_send_otp_first_api_mode(self):
         self.assertEqual(jazzcash_module.JAZZCASH_API_VERSION, "v1.5")
 
-    def test_build_verify_otp_request_verifies_otp_not_fingerprint(self):
+    def test_jazzcash_has_no_upstream_verify_fingerprint_action(self):
+        self.assertNotIn("verify_fingerprint", self.jazzcash.API_ENDPOINTS)
+
+    def test_build_verify_fingerprint_request_uses_login_step2(self):
         captured = {}
 
         def fake_encode(func_name, action, payload):
@@ -131,15 +133,13 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         self.jazzcash._encode_indus_request = MagicMock(side_effect=fake_encode)
 
-        request_data = self.jazzcash._build_verify_otp_request(
-            self._session(LoginStatus.SEND_OTP),
-            "123456",
+        request_data = self.jazzcash._build_verify_fingerprint_request(
+            self._session(LoginStatus.FINGERPRINT_UPLOADED)
         )
 
-        self.assertEqual(parse_qs(request_data).get("data"), ["encoded"])
+        self.assertEqual(request_data, "data=encoded")
         self.assertEqual(captured["action"], "loginStep2")
-        self.assertTrue(captured["payload"]["should_verify_otpcode"])
-        self.assertFalse(captured["payload"]["should_verify_fingerprint"])
+        self.assertEqual(captured["payload"], {"account_id": "03001234567"})
 
     def test_verify_otp_success_returns_fingerprint_phase_not_active_account(self):
         asyncio.run(self._run_verify_otp_success_case())
@@ -151,7 +151,8 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         self.jazzcash._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
         self.jazzcash._release_payment_interface_lock = AsyncMock(return_value=True)
-        self.jazzcash._verify_otp = AsyncMock(return_value={"status": "success", "data": {"requestId": "req-1"}})
+        self.jazzcash._verify_otp = AsyncMock(side_effect=AssertionError("verify_otp 不应调用 JazzCash 上游"))
+        self.jazzcash.retry_make_request = MagicMock(side_effect=AssertionError("verify_otp 不应发起 HTTP 上游请求"))
         self.jazzcash._save_payment = AsyncMock(return_value=payment_id)
         self.jazzcash._verify_account = AsyncMock(side_effect=AssertionError("verify_otp 不应再做账号激活"))
 
@@ -161,9 +162,12 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         stored = json.loads(await self.redis.get(redis_key))
         self.assertEqual(stored["status"], "fingerprintUploadRequired")
+        self.assertTrue(stored["bank_specific_data"]["otp_verified"])
+        self.assertTrue(stored["otp_submitted"])
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"]["next_phase"], "fingerprintUploadRequired")
         self.assertNotIn("next_step", result["data"])
+        self.jazzcash._verify_otp.assert_not_awaited()
         self.jazzcash._verify_account.assert_not_awaited()
 
     def test_upload_fingerprint_after_otp_sets_fingerprint_uploaded(self):

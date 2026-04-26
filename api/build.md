@@ -615,8 +615,8 @@ ssh -i /Users/tear/pk_project/open_ssh_private.txt -o StrictHostKeyChecking=no r
 本轮目标：
 
 - JazzCash 上号固定为：`pre_login -> get_otp -> verify_otp -> upload_fingerprint/verify_fingerprint -> activeSuccessful`
-- `verify_otp` 只验证 OTP：`should_verify_otpcode=True`、`should_verify_fingerprint=False`
-- `/api/v1/login/verify_fingerprint` 支持 `bankname=jazzcash`，成功后内部完成 secondLogin、更新 `payment`、写 Redis 在线队列
+- JazzCash 上游没有独立“验证 OTP”能力：`verify_otp` 只做本地 OTP 提交检查和 session 推进，不调用上游 `loginStep2`
+- `/api/v1/login/verify_fingerprint` 支持 `bankname=jazzcash`，内部使用上游 `loginStep2` 验证指纹，成功后完成 secondLogin、更新 `payment`、写 Redis 在线队列
 - 旧 `/api/v1/login/active_account` 暂保留兼容，但新 App 不再调用
 
 本地验证命令：
@@ -633,6 +633,8 @@ python3.12 -m py_compile \
 验收重点：
 
 - JazzCash `JAZZCASH_API_VERSION` 必须是 `v1.5`
+- JazzCash 不配置上游 `verify_fingerprint` action；指纹验证请求必须使用 `action=loginStep2`
 - `verify_otp_http()` 返回 `data.next_phase`，不能返回 `next_step=active_account`
+- `verify_otp_http()` 不能调用 JazzCash 上游，也不能调用 `_verify_account()`
 - OTP 后上传指纹时 Redis session 从 `fingerprintUploadRequired` 进入 `fingerprintUploaded`
 - `verify_fingerprint_http()` 成功后 Redis session 为 `activeSuccessful`

@@ -4,7 +4,7 @@
 
 **Goal:** 把 JazzCash 上号链路改为发送验证码、验证验证码、验证指纹、激活成功。
 
-**Architecture:** 后端沿用 JazzCash 银行驱动与 HTTP controller，把 OTP 和指纹验证拆成两个独立状态；Flutter 沿用 EasyPaisa phase 模型，但 JazzCash 指纹成功后直接 activeSuccess。
+**Architecture:** 后端沿用 JazzCash 银行驱动与 HTTP controller，把 OTP 提交和指纹验证拆成两个独立状态；JazzCash 上游没有 verifyFingerprint action，公开 `verify_fingerprint` 内部仍调用上游 `loginStep2` 验指纹。Flutter 沿用 EasyPaisa phase 模型，但 JazzCash 指纹成功后直接 activeSuccess。
 
 **Tech Stack:** Python 3.12 unittest、Tornado handler、Redis session、Flutter/Riverpod、flutter_test。
 
@@ -17,8 +17,9 @@
 - Test: `/Users/tear/pk_project_k8s/api/tests/test_jazzcash_business_flow_v2.py`
 
 - [x] 写失败测试：确认 `JAZZCASH_API_VERSION == "v1.5"`。
-- [x] 写失败测试：确认 `_build_verify_otp_request()` 只验 OTP，不验指纹。
-- [x] 实现：新增指纹阶段状态，修正 `loginStep2` payload。
+- [x] 写失败测试：确认 JazzCash 不存在上游 `verify_fingerprint` action。
+- [x] 写失败测试：确认 `_build_verify_fingerprint_request()` 使用 `action=loginStep2`。
+- [x] 实现：新增指纹阶段状态，`verify_otp_http()` 不再调用 JazzCash 上游。
 - [x] 运行：`python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v`。
 
 ### Task 2: 后端 OTP 后指纹阶段
@@ -27,7 +28,7 @@
 - Modify: `/Users/tear/pk_project_k8s/api/application/app/login/banks/jazzcash.py`
 - Test: `/Users/tear/pk_project_k8s/api/tests/test_jazzcash_business_flow_v2.py`
 
-- [x] 写失败测试：`verify_otp_http()` 返回 `next_phase=fingerprintUploadRequired` 且不调用 `_verify_account()`。
+- [x] 写失败测试：`verify_otp_http()` 返回 `next_phase=fingerprintUploadRequired` 且不调用上游或 `_verify_account()`。
 - [x] 写失败测试：OTP 后上传指纹把 session 推进到 `fingerprintUploaded`。
 - [x] 实现：`verify_otp_http()` 保存 payment 后进入指纹阶段；`upload_fingerprint_http()` 接受 OTP 后状态。
 - [x] 运行后端定向单测。
@@ -41,7 +42,7 @@
 
 - [x] 写失败测试：`JazzCash.verify_fingerprint_http()` 成功后 activeSuccessful。
 - [x] 写失败测试：HTTP controller 支持 `bankname=jazzcash`。
-- [x] 实现：新增公开方法，内部验指纹、secondLogin、更新 payment 与 Redis 在线队列。
+- [x] 实现：新增公开方法，内部用 `loginStep2` 验指纹、secondLogin、更新 payment 与 Redis 在线队列。
 - [x] 运行后端定向单测。
 
 ### Task 4: Flutter JazzCash 新链路

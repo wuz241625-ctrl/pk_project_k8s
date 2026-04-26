@@ -41,7 +41,7 @@ TEST_FINGERPRINT_PATH = '/www/python/dev/api/application/app/login/banks/2025111
 # ========== API版本控制 ==========
 # 修改这个变量来切换v1.2/v1.5流程
 # 'v1.2': 旧流程（先上传指纹，loginStep2 实际验证指纹）
-# 'v1.5': 新流程（先发 OTP，loginStep2 只验证 OTP，随后单独验证指纹）
+# 'v1.5': 新流程（先发 OTP；OTP 提交只推进本地状态；loginStep2 仍用于指纹验证）
 JAZZCASH_API_VERSION = 'v1.5'
 
 # Redis状态常量
@@ -138,8 +138,8 @@ class JazzCash:
         'base_url': conf.get('jazzcash_api_url', 'http://34.150.42.92:84'),
         # JazzCash v1.2 接口
         'is_logined': 'isLogined',       # 查询云机实体分配情况
-        'send_otp': 'loginStep1',        # 发送OTP（需要提前上传指纹）
-        'verify_otp': 'loginStep2',      # 验证OTP
+        'send_otp': 'loginStep1',        # 发送 OTP
+        'login_step2': 'loginStep2',     # JazzCash 上游实际用于验证指纹，不验证 OTP
         'verify_account': 'secondLogin', # 验证账户状态
         'fingerprint_upload_url': 'https://jazzcashbusiness.zpay.today/upload_data',  # 指纹上传专用域名
         'fingerprint_check_url': 'https://jazzcashbusiness.zpay.today/is_data_uploaded',  # 查询指纹是否已上传
@@ -623,10 +623,8 @@ class JazzCash:
             if additional_data:
                 session_data.update(additional_data)
             
-            # pre_login 时，会话只会短暂存在，且可以被续期
-            # verify_otp 时，会话将持续较长时间，此时状态必为 LoginStatus.LOGIN_SUCCESSFUL
-            # verify_otp 后，只会更改内容，不会续期，直到状态被改为 LoginStatus.Active_SUCCESSFUL
-            # LoginStatus.Active_SUCCESSFUL 后，会话会被爬单程序命中且删除
+            # pre_login / send_otp / verify_otp / fingerprint 阶段使用待登录 TTL。
+            # activeSuccessful 后会话保留更长时间，供后续采集/爬单流程命中。
             
             if LoginStatus.LOGIN_SUCCESSFUL not in session_data['status_history']:
                 if status_new not in (LoginStatus.LOGIN_SUCCESSFUL, LoginStatus.ACTIVE_SUCCESSFUL):
@@ -951,7 +949,7 @@ class JazzCash:
                     'client_id': '',                        # 客户端ID
                     'client_secret': '',                    # 客户端密钥
                     'bearer_token': '',                     # Bearer令牌
-                    'serv_gen_id': '',                      # 将在OTP验证后获取
+                    'serv_gen_id': '',                      # JazzCash 当前链路不依赖 OTP 上游 requestId
                 },
                 
                 # === UPI相关 ===
@@ -1495,15 +1493,11 @@ class JazzCash:
 
             self.logger.info(f'{self._log_key(funcName)} 状态转换验证通过！')
             
-            # 调用API
-            api_result_verify_otp = await self._verify_otp(session_data, otp)
-            
-            otp_payload = api_result_verify_otp.get('data', {}) or {}
-            serv_gen_id = otp_payload.get('requestId') or otp_payload.get('serv_gen_id') or ''
+            # JazzCash 上游没有“验证 OTP”的独立能力，loginStep2 实际用于验证指纹。
+            # 这里仅把用户已提交 OTP 作为本地状态推进点，真正的上游校验在
+            # verify_fingerprint_http -> loginStep2 中完成。
+            serv_gen_id = ''
             cd_until = 0
-            if api_result_verify_otp.get('status') == 'cooldown':
-                self.logger.warning(f'{self._log_key(funcName)} loginStep2 返回冷却期，但OTP已验证成功')
-                cd_until = api_result_verify_otp.get('cd_until', 0)
 
             fingerprint_path = session_data.get('fingerprint_path')
             name = session_data.get('name', '')
@@ -1532,6 +1526,12 @@ class JazzCash:
                     'selected_upi': session_phone,
                     'upi_list': [session_phone],
                     'cd_until': cd_until,
+                    'otp_submitted': True,
+                    'bank_specific_data': {
+                        **(session_data.get('bank_specific_data') or {}),
+                        'otp_sent': True,
+                        'otp_verified': True,
+                    },
                 }
             )
 
@@ -1553,7 +1553,7 @@ class JazzCash:
 
             result = {
                 'status': 'success',
-                'message': 'OTP验证成功',
+                'message': '验证码已提交，请继续验证指纹',
                 'data': {
                     'serv_gen_id': serv_gen_id,
                     'cd_until': cd_until,
@@ -2686,96 +2686,6 @@ class JazzCash:
         else:
             raise NewApiError(ErrorCode.SendOTPFail, f'OTP Sending failed: {status_desc}')
 
-    async def _verify_otp(self, session_data, otp):
-        funcName = 'OTP验证'
-            
-        url = self.API_ENDPOINTS['base_url']
-        self.logger.info(f'{self._log_key(funcName)} 请求URL: {url}')
-        
-        # 构建请求数据
-        request_data = self._build_verify_otp_request(session_data, otp)
-        
-        if ISTEST:
-            status = 200
-            status_desc = ''
-            serv_gen_id = '123123'
-        else:
-            response = self.retry_make_request(
-                method='POST',
-                url=url,
-                data=request_data,
-                # proxies=await self._get_proxy_for_request(session_data) # 获取代理配置
-            )
-            
-            # 记录响应的详细信息
-            self._log_response(funcName, response)
-            
-            if not response:
-                raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification request failed')
-            
-            status_code = response.status_code
-            
-            if status_code != 200:
-                self.logger.error(f'{self._log_key(funcName)} HTTP状态码错误: {status_code}')
-                raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification request failed')
-            
-            self.logger.info(f'{self._log_key(funcName)} HTTP请求成功!')
-
-            # 解析响应
-            response_data = self._decode_indus_response(funcName, response.text)
-            
-            if not response_data:
-                self.logger.error(f'{self._log_key(funcName)} 解码失败!')
-                raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification decode failed')
-            
-            # 分析响应状态
-            status = response_data.get('code')
-            status_desc = response_data.get('msg', '无状态描述')
-            serv_gen_id = ((response_data or {}).get('data') or {}).get('requestId', '')
-            
-            self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}, serv_gen_id: {serv_gen_id}')
-        
-        # ========== 处理冷却期 (code 501 + responseCode='JC-CPS-COOL-T01') ==========
-        if status == 501:
-            inner_data = response_data.get('data', {})
-            response_code = inner_data.get('responseCode', '')
-            
-            if response_code == 'JC-CPS-COOL-T01':
-                # 冷却期
-                self.logger.warning(f'{self._log_key(funcName)} OTP验证返回冷却期 code 501, responseCode={response_code}')
-                response_msg = inner_data.get('message_en', status_desc)
-                
-                # 计算冷却期结束时间
-                cd_until = self._parse_cooldown_time(response_msg)
-                
-                return {
-                    'status': 'cooldown',
-                    'message': response_msg,
-                    'cd_until': cd_until,
-                    'data': response_data.get('data', {})
-                }
-            else:
-                # 其他 501 错误
-                self.logger.error(f'{self._log_key(funcName)} OTP验证失败 code 501, responseCode={response_code}')
-                raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {status_desc}')
-        
-        # ========== 处理 500 错误 ==========
-        if status == 500:
-            inner_data = response_data.get('data', {})
-            response_code = inner_data.get('responseCode', '')
-            self.logger.error(f'{self._log_key(funcName)} OTP验证失败 code 500, responseCode={response_code}')
-            raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {status_desc}')
-        
-        # ========== 处理成功 ==========
-        if status in [ 100, 200 ]:
-            return {
-                'status': 'success',
-                'message': 'OTP验证成功',
-                'data': {'serv_gen_id': serv_gen_id}
-            }
-        else:
-            raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {status_desc}')
-
     async def _is_logined(self, session_data):
         """
         查询云机实体分配情况
@@ -3144,7 +3054,7 @@ class JazzCash:
         request_data = self._build_verify_fingerprint_request(session_data)
         
         if ISTEST:
-            status = 200
+            return True
         else:
             response = self.retry_make_request(
                 method='POST',
@@ -3173,14 +3083,21 @@ class JazzCash:
                 self.logger.error(f'{self._log_key(funcName)} 解码失败!')
                 raise NewApiError(ErrorCode.VerifyFingerPrint, 'FingerPrint verification decode failed')
             
-            # 分析响应状态
-            status = str(response_data).lower()
-            status_desc = str(response_data).lower()
-            
-            self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}')
-        if status == 'true':
-            return True
-        else:
+            if isinstance(response_data, bool):
+                return response_data
+            if isinstance(response_data, str):
+                return response_data.strip().lower() == 'true'
+            if isinstance(response_data, dict):
+                status = response_data.get('code')
+                inner_data = response_data.get('data')
+                response_code = inner_data.get('responseCode', '') if isinstance(inner_data, dict) else ''
+                self.logger.info(
+                    f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, responseCode: {response_code}'
+                )
+                if status in [100, 200]:
+                    return True
+                if isinstance(inner_data, bool):
+                    return inner_data
             return False
 
     async def _change_pin(self, session_data, pin):
@@ -3412,32 +3329,6 @@ class JazzCash:
         
         return encoded_msg
 
-    def _build_verify_otp_request(self, session_data, otp):
-        funcName = '构建OTP验证'
-        
-        # 获取基础参数
-        phone = session_data.get('phone')
-        
-        self.logger.info(f'{self._log_key(funcName)} 参数 phone: {phone}, otp: {otp}')
-        
-        request_msg = {
-            "account_id": phone,
-            "otpcode": otp
-        }
-        
-        # loginStep2 只验证 OTP。指纹必须走 verify_fingerprint_http 单独验证，
-        # 否则 OTP 页面会“看似验码、实际验指纹”。
-        request_msg["should_verify_otpcode"] = True
-        request_msg["should_verify_fingerprint"] = False
-        self.logger.info(f'{self._log_key(funcName)} OTP验证模式: should_verify_otpcode=True, should_verify_fingerprint=False')
-        
-        self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
-        
-        encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_otp'], request_msg)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
-        
-        return encoded_msg
-
     def _build_verify_account_request(self, session_data):
         funcName = '构建账号验证'
         
@@ -3469,10 +3360,9 @@ class JazzCash:
             "account_id": phone,
         }
         
-        json_str = json.dumps(request_msg, ensure_ascii=False, indent=2)
-        self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
+        self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
         
-        encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_fingerprint'], json_str)
+        encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['login_step2'], request_msg)
         self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
         
         return encoded_msg

@@ -1435,34 +1435,31 @@ JazzCash 业务要求展示为：
 发送验证码 -> 验证验证码 -> 验证指纹 -> 激活成功
 ```
 
-但旧后端在 `jazzcash.py::_build_verify_otp_request()` 中生成：
+但旧后端在 OTP 页面对应的 `loginStep2` 请求中生成：
 
 ```python
 should_verify_otpcode = False
 should_verify_fingerprint = True
 ```
 
-这会让 `/api/v1/login/verify_otp` 的页面语义和真实上游动作不一致：用户输入 OTP 时，服务端实际主要在验指纹。Flutter 端上一轮还兼容了 `next_step=active_account`，会把 OTP 成功直接接到 `/login/active_account`，没有显式指纹验证步骤。
+这会让 `/api/v1/login/verify_otp` 的页面语义和真实上游动作不一致：用户输入 OTP 时，服务端实际在调用 `loginStep2` 验指纹。进一步复核后确认，JazzCash 上游没有独立的 `verifyFingerprint` action，`loginStep2` 本身就是指纹验证动作。
 
 ### 根因
 
-1. JazzCash 仍停留在 `v1.2` 旧流程语义：先上传指纹，再让 `loginStep2` 验指纹。
-2. `JAZZCASH_API_VERSION` 注释写着已切到 v1.5，但实际值仍是 `v1.2`。
-3. `VerifyFingerprint` controller 只支持 EasyPaisa，JazzCash 无公开 `/login/verify_fingerprint` 分支。
+1. JazzCash 真实上游语义是：`loginStep1` 发 OTP，`loginStep2` 验指纹；不存在单独的上游 `verifyFingerprint`。
+2. 旧代码把 `loginStep2` 挂在 `/login/verify_otp` 下，导致 OTP 页面实际在做指纹验证。
+3. `VerifyFingerprint` controller 只支持 EasyPaisa，JazzCash 没有自己的公开 `/login/verify_fingerprint` 分支。
 4. App 把 JazzCash OTP 后的 `next_step=active_account` 作为成功收尾，没有走“OTP 后验指纹”。
 
 ### 处理
 
 1. JazzCash 切到 `v1.5` send-OTP-first 模式。
-2. `loginStep2` payload 固定为：
-   - `should_verify_otpcode=True`
-   - `should_verify_fingerprint=False`
-3. `verify_otp_http()` 只保存 payment/session，并返回：
+2. `verify_otp_http()` 不再调用 JazzCash 上游，只做 OTP 非空检查、本地状态推进、保存 payment/session，并返回：
    - `next_phase=fingerprintUploadRequired`
    - 或已有指纹时 `next_phase=fingerprintUploaded`
-4. `upload_fingerprint_http()` 允许 OTP 后状态，并推进到 `fingerprintUploaded`。
-5. 新增 `JazzCash.verify_fingerprint_http()`，成功后内部完成 secondLogin、更新 payment、写 Redis 在线队列并返回 `activeSuccessful`。
-6. Flutter 端移除 JazzCash `active_account` 收尾依赖，JazzCash 指纹验证成功即 `activeSuccess`。
+3. `upload_fingerprint_http()` 允许 OTP 后状态，并推进到 `fingerprintUploaded`。
+4. 新增 `JazzCash.verify_fingerprint_http()`，内部调用上游 `loginStep2` 验指纹；成功后再 secondLogin、更新 payment、写 Redis 在线队列并返回 `activeSuccessful`。
+5. Flutter 端移除 JazzCash `active_account` 收尾依赖，JazzCash 指纹验证成功即 `activeSuccess`。
 
 ### 验证
 
@@ -1473,8 +1470,9 @@ python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 
 关键断言：
 
-- `_build_verify_otp_request()` 的 OTP/指纹布尔开关正确
-- `verify_otp_http()` 不调用 `_verify_account()`
+- JazzCash 不配置上游 `verify_fingerprint` action
+- `_build_verify_fingerprint_request()` 使用 `action=loginStep2`
+- `verify_otp_http()` 不调用 JazzCash 上游，也不调用 `_verify_account()`
 - OTP 后上传指纹可进入 `fingerprintUploaded`
 - `/login/verify_fingerprint` 支持 `bankname=jazzcash`
 - 指纹验证成功后 session 为 `activeSuccessful`
