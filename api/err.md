@@ -1958,3 +1958,72 @@ mysql -e "SELECT id,status,certified,manual_status,phone,account_accno,account_i
 ```
 
 如果 session 是 `activeSuccessful`，但 DB `status=0` 或 snapshot `collect_enabled=false`，优先检查账户选择完成后的 active 同步链路，而不是先按人工禁用处理。
+
+## 2026-04-28 JazzCashBusiness loginStep2 冷却期被误判为指纹拒绝
+
+### 现象
+
+JCB 用户完成 OTP、上传指纹后调用 `verify_fingerprint_http`，上游实际进入设备变更冷却期，但本地返回：
+
+```json
+{
+  "code": "FP_UPSTREAM_REJECTED",
+  "phase": "fingerprintUploadRequired"
+}
+```
+
+采集端随后反复要求用户重新上传指纹，Redis snapshot 里也会出现 `session_phase=fingerprintUploadRequired`。
+
+### 根因
+
+旧实现只把 `_verify_fingerprint()` 当成布尔值：
+
+- `true`：继续 secondLogin 并激活。
+- `false`：一律退回 `fingerprintUploadRequired`。
+
+但官方 JazzCash Business App 里设备变更 BVS 流程有独立 cool-down 分支：
+
+- APK 字符串中存在 `cooldown_hours=120 Minutes`。
+- App 会调用 `account/merchant/bvs/cooldown`。
+- 参数包含 `transactionType=bvs-cooldown`、`deviceCoolEnabled=true`、`useCase=deviceChange`。
+
+所以冷却期不是坏指纹，也不是重新采集；它表示设备已注册，等待冷却完成后继续使用。
+
+### 修复
+
+- `_verify_fingerprint()` 改为结构化结果：`verified`、`cooldown`、`rejected`、`transient`。
+- `cooldown` 分支写入：
+  - `status=fingerprintUploaded`
+  - `cd_until/cooldown_until`
+  - `last_error.code=FP_COOLDOWN`
+  - 保留 `fingerprint_path`
+- 冷却未结束时，`verify_fingerprint_http` 短路返回 `next_action=wait_cooldown`，不打上游。
+- `payment_status_http` 根据 `fingerprintUploaded + FP_COOLDOWN + cd_until` 返回 `wait_cooldown`。
+
+### 排查命令
+
+```bash
+redis-cli GET pre_login_jazzcash_{payment_id}
+redis-cli GET jazzcash_runtime:session:{payment_id}
+redis-cli GET jazzcash_runtime:snapshot:{payment_id}
+```
+
+正确状态应类似：
+
+```json
+{
+  "status": "fingerprintUploaded",
+  "fingerprint_path": "/fingerprint/jazzcash_533280_03001234567.zip",
+  "cd_until": 1777330000,
+  "last_error": {
+    "code": "FP_COOLDOWN"
+  }
+}
+```
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
+```

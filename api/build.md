@@ -876,3 +876,35 @@ PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_runtime_s
 - `select_accts_http()` 更新 payment 时必须携带 `status=activeSuccessful`，从而写回 `payment.status=1`。
 - `login_flow` 写入 `activeSuccessful` runtime snapshot 时必须显式恢复 `collect_enabled/ds_order_enabled/df_order_enabled`。
 - 如果后台或 App 后续手动禁用、人工锁定、健康暂停，仍由对应开关入口关闭派单，不改变本轮默认激活语义。
+
+## 2026-04-28 JazzCashBusiness 冷却期流程验收
+
+本轮修复 JCB `loginStep2` 设备冷却期被误判为指纹拒绝的问题。冷却期应保持 `fingerprintUploaded`，保留 `/fingerprint` 中已上传的指纹文件，等待 `cd_until` 后继续验证。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
+
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.jazzcash_runtime.test_sync_collection_worker -v
+
+python3.12 -m py_compile \
+  api/application/app/login/banks/jazzcash.py \
+  api/application/jazzcash_runtime/runtime_service.py \
+  api/application/jazzcash_runtime/reader.py \
+  api/application/jazzcash_runtime/sync_runtime_service.py
+
+git diff --check
+```
+
+验收重点：
+
+- `loginStep2` 返回冷却期时，session/runtime snapshot 都保持 `fingerprintUploaded`。
+- `last_error.code=FP_COOLDOWN` 且 `cd_until` 未到时，`payment_status_http.next_action=wait_cooldown`。
+- 冷却期间重复调用 `verify_fingerprint_http` 不再打上游。
+- 冷却结束后继续复用同一份 `fingerprint_path` 进行指纹验证。
+- 明确指纹被上游拒绝时仍按 `FP_UPSTREAM_REJECTED` 要求重新上传。

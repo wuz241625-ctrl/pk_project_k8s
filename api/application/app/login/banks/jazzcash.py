@@ -939,6 +939,120 @@ class JazzCash:
             return {'valid': False, 'message': message}
         return {'valid': True, 'message': '状态转换有效'}
 
+    def _coerce_timestamp(self, value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _cooldown_until_from_session(self, session_data) -> int:
+        return self._coerce_timestamp(
+            session_data.get('cd_until') or session_data.get('cooldown_until')
+        )
+
+    def _is_cooldown_error(self, last_error) -> bool:
+        if not isinstance(last_error, dict):
+            return False
+        return last_error.get('code') in {'FP_COOLDOWN', 'SL_COOLDOWN'}
+
+    def _fingerprint_cooldown_in_effect(self, session_data):
+        cd_until = self._cooldown_until_from_session(session_data)
+        if cd_until <= int(time.time()):
+            return None
+        last_error = session_data.get('last_error') or {}
+        if not self._is_cooldown_error(last_error):
+            return None
+        return {
+            'cd_until': cd_until,
+            'message': last_error.get('message') or '当前处于冷却期，请等待冷却结束后重试',
+        }
+
+    def _build_fingerprint_cooldown_response(self, cd_until, message=None):
+        return {
+            'status': 'error',
+            'message': message or '当前处于冷却期，请等待冷却结束后重试',
+            'data': {
+                'code': 'FP_COOLDOWN',
+                'phase': 'inCooldown',
+                'next_phase': LoginStatus.FINGERPRINT_UPLOADED,
+                'next_action': 'wait_cooldown',
+                'cd_until': cd_until,
+                'cooldown_until': cd_until,
+                'isInCoolDown': True,
+                'isNeedReLogin': False,
+                'isNeedChangePin': False,
+                'isNeedFingerPrint': False,
+            }
+        }
+
+    def _payment_status_next_action(self, status, last_error=None, cd_until=0):
+        if (
+            status == LoginStatus.FINGERPRINT_UPLOADED
+            and self._is_cooldown_error(last_error)
+            and self._coerce_timestamp(cd_until) > int(time.time())
+        ):
+            return 'wait_cooldown'
+
+        next_action_map = {
+            LoginStatus.PRE_LOGIN: 'get_otp',
+            LoginStatus.SEND_OTP: 'verify_otp',
+            LoginStatus.VERIFY_OTP: 'upload_fingerprint',
+            LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: 'upload_fingerprint',
+            LoginStatus.FINGERPRINT_UPLOADED: 'verify_fingerprint',
+            LoginStatus.FINGERPRINT_VERIFIED: 'verify_fingerprint',
+            LoginStatus.LOGIN_SUCCESSFUL: 'verify_fingerprint',
+            LoginStatus.ACTIVE_SUCCESSFUL: 'ready',
+            'offline': 'get_otp',
+        }
+        return next_action_map.get(status, 'unknown')
+
+    def _looks_like_cooldown_response(self, status, response_code='', message='') -> bool:
+        text = f'{response_code} {message}'.lower()
+        return (
+            response_code == 'JC-CPS-COOL-T01'
+            or 'cooldown' in text
+            or 'cool down' in text
+            or 'cool-down' in text
+            or '冷却' in text
+        )
+
+    def _normalize_fingerprint_verify_result(self, raw_result, session_data=None):
+        if raw_result is True:
+            return {'outcome': 'verified'}
+        if raw_result is False or raw_result is None:
+            return {'outcome': 'rejected', 'message': '上游拒绝当前指纹'}
+
+        if isinstance(raw_result, dict):
+            outcome = raw_result.get('outcome') or raw_result.get('status')
+            if outcome == 'success':
+                outcome = 'verified'
+            if outcome == 'error' and raw_result.get('code') == 'FP_COOLDOWN':
+                outcome = 'cooldown'
+
+            if outcome == 'cooldown':
+                message = raw_result.get('message') or '当前处于冷却期，请等待冷却结束后重试'
+                cd_until = self._coerce_timestamp(raw_result.get('cd_until'))
+                if not cd_until:
+                    cd_until = self._parse_cooldown_time(message)
+                return {
+                    'outcome': 'cooldown',
+                    'message': message,
+                    'cd_until': cd_until,
+                    'data': raw_result.get('data') or {},
+                }
+            if outcome in {'verified', 'rejected', 'transient'}:
+                return {
+                    'outcome': outcome,
+                    'message': raw_result.get('message'),
+                    'code': raw_result.get('code'),
+                    'data': raw_result.get('data') or {},
+                }
+
+        if isinstance(raw_result, str):
+            return {'outcome': 'verified'} if raw_result.strip().lower() == 'true' else {'outcome': 'rejected'}
+
+        return {'outcome': 'rejected', 'message': '上游拒绝当前指纹'}
+
     # ================== HTTP请求方法 ==================
     def make_request(self, method, url, headers=None, data=None, files=None, proxies=None):
         self.logger.info('请求 {method} {url}, headers:{headers} data:{data} 代理:{proxies}'.format(method=method, url=url, headers=headers, data=data, proxies=proxies))
@@ -1938,6 +2052,26 @@ class JazzCash:
                     'data': {'phase': LoginStatus.ACTIVE_SUCCESSFUL}
                 }
 
+            active_cooldown = self._fingerprint_cooldown_in_effect(session_data)
+            if active_cooldown and current_status in (LoginStatus.FINGERPRINT_UPLOADED, LoginStatus.FINGERPRINT_VERIFIED):
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.FINGERPRINT_UPLOADED,
+                    {
+                        'cd_until': active_cooldown['cd_until'],
+                        'cooldown_until': active_cooldown['cd_until'],
+                        'last_error': {
+                            'code': 'FP_COOLDOWN',
+                            'message': active_cooldown['message'],
+                        },
+                    },
+                )
+                return self._build_fingerprint_cooldown_response(
+                    active_cooldown['cd_until'],
+                    active_cooldown['message'],
+                )
+
             status_check = await self._validate_status_transition(
                 session_data,
                 LoginStatus.FINGERPRINT_UPLOADED,
@@ -1947,8 +2081,55 @@ class JazzCash:
             if not status_check['valid']:
                 raise NewApiError(ErrorCode.Logined2, status_check['message'])
 
-            verified = await self._verify_fingerprint(session_data)
-            if not verified:
+            verify_result = self._normalize_fingerprint_verify_result(
+                await self._verify_fingerprint(session_data),
+                session_data,
+            )
+            verify_outcome = verify_result.get('outcome')
+            if verify_outcome == 'cooldown':
+                cd_until = self._coerce_timestamp(verify_result.get('cd_until')) or self._parse_cooldown_time(
+                    verify_result.get('message') or ''
+                )
+                cooldown_message = verify_result.get('message') or '当前处于冷却期，请等待冷却结束后重试'
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.FINGERPRINT_UPLOADED,
+                    {
+                        'cd_until': cd_until,
+                        'cooldown_until': cd_until,
+                        'last_error': {
+                            'code': 'FP_COOLDOWN',
+                            'message': cooldown_message,
+                            'source': 'loginStep2',
+                        },
+                    },
+                )
+                return self._build_fingerprint_cooldown_response(cd_until, cooldown_message)
+
+            if verify_outcome == 'transient':
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.FINGERPRINT_UPLOADED,
+                    {
+                        'last_error': {
+                            'code': 'FP_UPSTREAM_TRANSIENT',
+                            'message': verify_result.get('message') or '上游暂时无法完成指纹验证',
+                        },
+                    },
+                )
+                return {
+                    'status': 'error',
+                    'message': '上游暂时无法完成指纹验证，请稍后重试',
+                    'data': {
+                        'code': 'FP_UPSTREAM_TRANSIENT',
+                        'phase': LoginStatus.FINGERPRINT_UPLOADED,
+                        'next_action': 'verify_fingerprint',
+                    }
+                }
+
+            if verify_outcome != 'verified':
                 await self._update_session_status(
                     redis_key,
                     session_data,
@@ -2074,15 +2255,29 @@ class JazzCash:
             return result
 
         if api_result_verify_acct.IsInCoolDown:
-            return {
-                'status': 'error',
-                'message': '当前处于冷却期',
-                'data': {
-                    'code': 'FP_COOLDOWN',
-                    'phase': 'inCooldown',
-                    'cd_until': session_data.get('cd_until', 0),
-                }
-            }
+            cd_until = self._coerce_timestamp(
+                getattr(api_result_verify_acct, 'cd_until', 0)
+                or session_data.get('cd_until')
+                or session_data.get('cooldown_until')
+            )
+            if not cd_until:
+                cd_until = self._parse_cooldown_time('secondLogin cooldown')
+            cooldown_message = getattr(api_result_verify_acct, 'message', None) or '当前处于冷却期，请等待冷却结束后重试'
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.FINGERPRINT_UPLOADED,
+                {
+                    'cd_until': cd_until,
+                    'cooldown_until': cd_until,
+                    'last_error': {
+                        'code': 'FP_COOLDOWN',
+                        'message': cooldown_message,
+                        'source': 'secondLogin',
+                    },
+                },
+            )
+            return self._build_fingerprint_cooldown_response(cd_until, cooldown_message)
 
         if api_result_verify_acct.IsNeedRelogin:
             return {
@@ -2888,18 +3083,6 @@ class JazzCash:
             payment_ids = data['payment_ids']
             paymentIDArray = [x.strip() for x in payment_ids.split(",") if x.strip()]
 
-            next_action_map = {
-                LoginStatus.PRE_LOGIN: 'get_otp',
-                LoginStatus.SEND_OTP: 'verify_otp',
-                LoginStatus.VERIFY_OTP: 'upload_fingerprint',
-                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: 'upload_fingerprint',
-                LoginStatus.FINGERPRINT_UPLOADED: 'verify_fingerprint',
-                LoginStatus.FINGERPRINT_VERIFIED: 'verify_fingerprint',
-                LoginStatus.LOGIN_SUCCESSFUL: 'verify_fingerprint',
-                LoginStatus.ACTIVE_SUCCESSFUL: 'ready',
-                'offline': 'get_otp',
-            }
-            
             objs = []
             for payment_id in paymentIDArray:
                 session_ctx = await self._resolve_session_context(bankname, payment_id)
@@ -2907,13 +3090,15 @@ class JazzCash:
                 runtime_snapshot = await self.runtime_service.read_snapshot(resolved_payment_id)
                 if runtime_snapshot:
                     status = runtime_snapshot.get('session_phase', '')
+                    last_error = runtime_snapshot.get('last_error')
+                    cd_until = runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0))
                     obj = {
                         "payment_id": payment_id,
                         "resolved_payment_id": resolved_payment_id if str(resolved_payment_id) != str(payment_id) else None,
                         "status": status,
-                        "error": runtime_snapshot.get('last_error'),
-                        "cd_until": runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0)),
-                        "next_action": next_action_map.get(status, 'unknown'),
+                        "error": last_error,
+                        "cd_until": cd_until,
+                        "next_action": self._payment_status_next_action(status, last_error, cd_until),
                     }
                     objs.append(obj)
                     continue
@@ -2933,7 +3118,11 @@ class JazzCash:
                     "resolved_payment_id": resolved_payment_id if str(resolved_payment_id) != str(payment_id) else None,
                     "status": session_data.get('status', ''),
                     "error": session_data.get('last_error'),
-                    "next_action": next_action_map.get(session_data.get('status'), 'unknown'),
+                    "next_action": self._payment_status_next_action(
+                        session_data.get('status'),
+                        session_data.get('last_error'),
+                        session_data.get('cd_until', session_data.get('cooldown_until', 0)),
+                    ),
                     "phone": session_data.get('phone', ''),
                     "pin": session_data.get('pinCode', ''),
                     "cd_until": session_data.get('cd_until', 0),
@@ -3355,10 +3544,10 @@ class JazzCash:
                 response_msg = inner_data.get('message_en', status_desc)
                 
                 if response_code == 'JC-CPS-COOL-T01':
-                    # 冷却期（参考 EasyPaisa：只设置标志，不计算时间）
-                    # cd_until 已在 verify_otp_http 时计算并保存到 session_data
                     self.logger.warning(f'{self._log_key(funcName)} 账号处于冷却期 code 501: {response_msg}')
                     result.IsInCoolDown = True
+                    result.cd_until = self._parse_cooldown_time(response_msg)
+                    result.message = response_msg
                 else:
                     # 其他 501 错误 - 账号异常
                     self.logger.error(f'{self._log_key(funcName)} 账号异常 code 501, responseCode={response_code}: {status_desc}')
@@ -3398,7 +3587,7 @@ class JazzCash:
             result.IsSuccess = True
         return result
 
-    async def _verify_fingerprint(self, session_data) -> bool:
+    async def _verify_fingerprint(self, session_data):
         funcName = '指纹验证'
             
         url = self.API_ENDPOINTS['base_url']
@@ -3408,7 +3597,7 @@ class JazzCash:
         request_data = self._build_verify_fingerprint_request(session_data)
         
         if ISTEST:
-            return True
+            return {'outcome': 'verified'}
         else:
             response = self.retry_make_request(
                 method='POST',
@@ -3438,21 +3627,47 @@ class JazzCash:
                 raise NewApiError(ErrorCode.VerifyFingerPrint, 'FingerPrint verification decode failed')
             
             if isinstance(response_data, bool):
-                return response_data
+                return {'outcome': 'verified'} if response_data else {'outcome': 'rejected'}
             if isinstance(response_data, str):
-                return response_data.strip().lower() == 'true'
+                return {'outcome': 'verified'} if response_data.strip().lower() == 'true' else {'outcome': 'rejected'}
             if isinstance(response_data, dict):
                 status = response_data.get('code')
+                status_desc = response_data.get('msg', '无状态描述')
                 inner_data = response_data.get('data')
+                if isinstance(inner_data, str):
+                    try:
+                        inner_data = json.loads(inner_data)
+                    except json.JSONDecodeError:
+                        pass
                 response_code = inner_data.get('responseCode', '') if isinstance(inner_data, dict) else ''
+                response_msg = (
+                    inner_data.get('message_en')
+                    or inner_data.get('message')
+                    or status_desc
+                ) if isinstance(inner_data, dict) else status_desc
                 self.logger.info(
-                    f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, responseCode: {response_code}'
+                    f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, responseCode: {response_code}, msg: {response_msg}'
                 )
+                if self._looks_like_cooldown_response(status, response_code, response_msg):
+                    return {
+                        'outcome': 'cooldown',
+                        'message': response_msg,
+                        'cd_until': self._parse_cooldown_time(response_msg),
+                        'data': inner_data if isinstance(inner_data, dict) else response_data,
+                    }
                 if status in [100, 200]:
-                    return True
+                    return {'outcome': 'verified'}
                 if isinstance(inner_data, bool):
-                    return inner_data
-            return False
+                    return {'outcome': 'verified'} if inner_data else {'outcome': 'rejected', 'message': response_msg}
+                if status in [401, 503]:
+                    return {'outcome': 'transient', 'message': response_msg, 'code': status}
+                return {
+                    'outcome': 'rejected',
+                    'message': response_msg,
+                    'code': response_code or status,
+                    'data': inner_data if isinstance(inner_data, dict) else response_data,
+                }
+            return {'outcome': 'rejected'}
 
     async def _change_pin(self, session_data, pin):
         funcName = 'PIN修改'
