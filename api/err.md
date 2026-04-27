@@ -2027,3 +2027,39 @@ redis-cli GET jazzcash_runtime:snapshot:{payment_id}
 cd /Users/tear/pk_project_k8s
 PYTHONPATH=api python3.12 -m unittest api.tests.test_jazzcash_business_flow_v2 -v
 ```
+
+## 2026-04-28 API 发布脚本 kubectl apply 返回 Authentication required
+
+### 现象
+
+执行远端 `/opt/cicd/k8s/sh/deploy-api.sh` 时，镜像已成功构建并推送到 Harbor，但发布阶段失败：
+
+```text
+Error from server (Forbidden): <html>...Authentication required...</html>
+```
+
+### 根因
+
+脚本直接调用 `kubectl apply` 和 `kubectl rollout status`，没有固定 `KUBECONFIG`。在非交互 SSH 环境中，默认 kubeconfig 指到了错误上下文，返回了需要登录的 HTML 页面。
+
+### 修复
+
+远端脚本头部增加默认 kubeconfig：
+
+```bash
+export KUBECONFIG=${KUBECONFIG:-/etc/kubernetes/admin.conf}
+```
+
+本次镜像 `10.170.0.18:30086/lib/api:20260427165321` 已经推送成功，因此直接用正确 kubeconfig 补应用同一个 YAML：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/api/k8s/api-deployment.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/api-deploy -n pk --timeout=180s
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl get deploy api-deploy -n pk -o jsonpath='{.spec.template.spec.containers[*].image}'
+```
+
+### 验收
+
+- `bash -n /opt/cicd/k8s/sh/deploy-api.sh` 通过。
+- `api-deploy` rollout 成功。
+- 当前线上镜像为 `10.170.0.18:30086/lib/api:20260427165321`。

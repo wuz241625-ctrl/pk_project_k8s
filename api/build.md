@@ -45,6 +45,19 @@ python3.12 -m pytest tests/test_router_easypay_cleanup.py tests/test_easypay_soa
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/api-deploy -- printenv RUN_ENV
 ```
 
+远端 API 发布脚本 `/opt/cicd/k8s/sh/deploy-api.sh` 需要固定 kubeconfig，否则在非交互 SSH 环境可能读到错误的默认上下文并返回登录页 HTML。脚本头部应保留：
+
+```bash
+export KUBECONFIG=${KUBECONFIG:-/etc/kubernetes/admin.conf}
+```
+
+如果镜像已经构建并推送，但 `kubectl apply` 失败，可以用同一个 YAML 手动补发布：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl apply -f /opt/cicd/k8s/api/k8s/api-deployment.yaml
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/api-deploy -n pk --timeout=180s
+```
+
 真实客户端 IP 白名单/黑名单解析验证：
 
 ```bash
