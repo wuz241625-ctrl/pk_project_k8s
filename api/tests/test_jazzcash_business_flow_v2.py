@@ -623,10 +623,10 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.jazzcash._verify_fingerprint.assert_not_awaited()
         self.jazzcash._verify_account.assert_awaited_once()
 
-    def test_legacy_uploaded_cooldown_after_expiry_uses_second_login(self):
-        asyncio.run(self._run_legacy_uploaded_cooldown_after_expiry_case())
+    def test_uploaded_cooldown_after_expiry_rechecks_login_step2(self):
+        asyncio.run(self._run_uploaded_cooldown_after_expiry_rechecks_login_step2_case())
 
-    async def _run_legacy_uploaded_cooldown_after_expiry_case(self):
+    async def _run_uploaded_cooldown_after_expiry_rechecks_login_step2_case(self):
         payment_id = 533280
         redis_key = self.jazzcash.PRELOGIN_KEY.format(bankname="jazzcash", payment_id=payment_id)
         session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
@@ -645,7 +645,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
 
         self.jazzcash._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
         self.jazzcash._release_payment_interface_lock = AsyncMock(return_value=True)
-        self.jazzcash._verify_fingerprint = AsyncMock(side_effect=AssertionError("旧冷却状态到期后也不应重复 loginStep2"))
+        self.jazzcash._verify_fingerprint = AsyncMock(return_value={"outcome": "verified"})
         self.jazzcash._verify_account = AsyncMock(return_value=account_status)
         self.jazzcash._update_payment = AsyncMock(return_value=payment_id)
 
@@ -657,7 +657,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"]["phase"], LoginStatus.ACTIVE_SUCCESSFUL)
         self.assertEqual(stored["status"], LoginStatus.ACTIVE_SUCCESSFUL)
-        self.jazzcash._verify_fingerprint.assert_not_awaited()
+        self.jazzcash._verify_fingerprint.assert_awaited_once()
         self.jazzcash._verify_account.assert_awaited_once()
 
     def test_payment_status_reports_wait_cooldown_for_verified_jcb_session(self):

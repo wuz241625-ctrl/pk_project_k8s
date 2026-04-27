@@ -25,7 +25,7 @@ public/files/android/appInfo.json
 当前 Ashrafi App 使用 `ashrafi_merchant` 配置键，实际文件指向：
 
 ```text
-public/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk
+public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
 ```
 
 下载页展示名与 Flutter Android 包保持一致：
@@ -59,6 +59,6 @@ KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/apkdownl
 ## 访问验收
 
 ```bash
-curl -I http://apkdownload.awekay.com/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk
+curl -I http://apkdownload.awekay.com/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
 curl -s http://apkdownload.awekay.com/files/android/appInfo.json
 ```

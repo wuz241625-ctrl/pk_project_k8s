@@ -920,7 +920,7 @@ git diff --check
 - `last_error.code=FP_COOLDOWN` 且 `cd_until` 未到时，`payment_status_http.next_action=wait_cooldown`。
 - 冷却期间重复调用 `verify_fingerprint_http` 不再打上游。
 - 冷却结束后继续复用同一份 `fingerprint_path`，直接调用 `secondLogin`，不再重复 `loginStep2`。
-- 旧的 `fingerprintUploaded + FP_COOLDOWN` 冷却会话到期后也应迁移为 `fingerprintVerified` 并直接 `secondLogin`。
+- 不兼容旧的 `fingerprintUploaded + FP_COOLDOWN` 冷却会话；这种状态到期后仍按普通 `fingerprintUploaded` 流程重新走 `loginStep2`。
 - 明确指纹被上游拒绝时仍按 `FP_UPSTREAM_REJECTED` 要求重新上传。
 
 ## 2026-04-28 JazzCashBusiness loginStep2 冷却表示指纹已验证

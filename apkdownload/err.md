@@ -23,5 +23,5 @@ KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/apkdownl
 
 ```bash
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl get deploy apkdownload-deploy -n pk -o wide
-curl -I http://apkdownload.awekay.com/files/android/ashrafi/ashrafi_v0.1.6_202604261714.apk
+curl -I http://apkdownload.awekay.com/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
 ```

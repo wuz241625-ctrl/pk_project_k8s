@@ -2072,19 +2072,6 @@ class JazzCash:
                     active_cooldown['message'],
                 )
 
-            legacy_verified_cooldown = (
-                current_status == LoginStatus.FINGERPRINT_UPLOADED
-                and self._is_cooldown_error(session_data.get('last_error') or {})
-                and 0 < self._cooldown_until_from_session(session_data) <= int(time.time())
-            )
-            if legacy_verified_cooldown:
-                await self._update_session_status(
-                    redis_key,
-                    session_data,
-                    LoginStatus.FINGERPRINT_VERIFIED,
-                )
-                current_status = LoginStatus.FINGERPRINT_VERIFIED
-
             if current_status == LoginStatus.FINGERPRINT_VERIFIED:
                 return await self._activate_after_fingerprint(redis_key, session_data)
 

@@ -27,7 +27,7 @@ fingerprint_path=/fingerprint/...
 
 - 用户继续调用我方 `/login/verify_fingerprint`。
 - 后端看到 `fingerprintVerified + FP_COOLDOWN + cd_until已过`，跳过 `loginStep2`，直接执行 `secondLogin`。
-- 对已经在线上写成 `fingerprintUploaded + FP_COOLDOWN + cd_until已过` 的旧会话，先迁移为 `fingerprintVerified`，再执行 `secondLogin`。
+- 不兼容旧的 `fingerprintUploaded + FP_COOLDOWN + cd_until已过` 会话；这种状态到期后仍按普通 `fingerprintUploaded` 流程重新走 `loginStep2`。
 - `secondLogin code=200` 后进入 `activeSuccessful`。
 - `secondLogin` 仍返回冷却时，重新写入新的 `cd_until`，状态保持 `fingerprintVerified`。
 
@@ -42,7 +42,7 @@ fingerprint_path=/fingerprint/...
 - `loginStep2` 冷却分支写入 `fingerprintVerified`，并保留指纹文件路径。
 - 冷却期内重复调用不请求 `loginStep2` 或 `secondLogin`。
 - 冷却到期后直接请求 `secondLogin`，不再请求 `loginStep2`。
-- 旧的 `fingerprintUploaded + FP_COOLDOWN` 冷却会话到期后也直接请求 `secondLogin`。
+- 旧的 `fingerprintUploaded + FP_COOLDOWN` 冷却会话到期后不会迁移为 `fingerprintVerified`，而是重新走 `loginStep2`。
 - `payment_status` 对 `fingerprintVerified + FP_COOLDOWN + cd_until未到` 返回 `wait_cooldown`。
 - App 冷却文案不再说“Fingerprint is uploaded”，改为“Fingerprint verified”。
 - 后端和 App 测试、静态检查通过。
