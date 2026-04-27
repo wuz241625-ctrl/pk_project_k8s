@@ -510,7 +510,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(await self.redis.get("jazzcash_runtime:lock:phone:03001234567"), 1)
         self.assertEqual(await self.redis.get("login_on_jazzcash_533280"), "1")
 
-    def test_verify_fingerprint_cooldown_keeps_uploaded_phase_and_wait_action(self):
+    def test_verify_fingerprint_cooldown_marks_fingerprint_verified_and_waits(self):
         asyncio.run(self._run_verify_fingerprint_cooldown_case())
 
     async def _run_verify_fingerprint_cooldown_case(self):
@@ -542,14 +542,14 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["data"]["code"], "FP_COOLDOWN")
         self.assertEqual(result["data"]["phase"], "inCooldown")
-        self.assertEqual(result["data"]["next_phase"], LoginStatus.FINGERPRINT_UPLOADED)
+        self.assertEqual(result["data"]["next_phase"], LoginStatus.FINGERPRINT_VERIFIED)
         self.assertEqual(result["data"]["next_action"], "wait_cooldown")
         self.assertEqual(result["data"]["cd_until"], cd_until)
-        self.assertEqual(stored["status"], LoginStatus.FINGERPRINT_UPLOADED)
+        self.assertEqual(stored["status"], LoginStatus.FINGERPRINT_VERIFIED)
         self.assertEqual(stored["fingerprint_path"], "/fingerprint/jazzcash_533280_03001234567.zip")
         self.assertEqual(stored["last_error"]["code"], "FP_COOLDOWN")
         self.assertEqual(stored["cd_until"], cd_until)
-        self.assertEqual(snapshot["session_phase"], LoginStatus.FINGERPRINT_UPLOADED)
+        self.assertEqual(snapshot["session_phase"], LoginStatus.FINGERPRINT_VERIFIED)
         self.assertEqual(snapshot["last_error"]["code"], "FP_COOLDOWN")
         self.assertEqual(snapshot["cd_until"], cd_until)
 
@@ -560,7 +560,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         payment_id = 533280
         redis_key = self.jazzcash.PRELOGIN_KEY.format(bankname="jazzcash", payment_id=payment_id)
         cd_until = int(time.time()) + 3600
-        session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
+        session = self._session(LoginStatus.FINGERPRINT_VERIFIED)
         session.update(
             {
                 "fingerprint_path": "/fingerprint/jazzcash_533280_03001234567.zip",
@@ -583,17 +583,91 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(result["data"]["code"], "FP_COOLDOWN")
         self.assertEqual(result["data"]["next_action"], "wait_cooldown")
         self.assertEqual(result["data"]["cd_until"], cd_until)
-        self.assertEqual(stored["status"], LoginStatus.FINGERPRINT_UPLOADED)
+        self.assertEqual(stored["status"], LoginStatus.FINGERPRINT_VERIFIED)
         self.jazzcash._verify_fingerprint.assert_not_awaited()
 
-    def test_payment_status_reports_wait_cooldown_for_uploaded_jcb_session(self):
+    def test_verify_fingerprint_after_cooldown_uses_second_login_without_login_step2(self):
+        asyncio.run(self._run_verify_fingerprint_after_cooldown_uses_second_login_case())
+
+    async def _run_verify_fingerprint_after_cooldown_uses_second_login_case(self):
+        payment_id = 533280
+        redis_key = self.jazzcash.PRELOGIN_KEY.format(bankname="jazzcash", payment_id=payment_id)
+        session = self._session(LoginStatus.FINGERPRINT_VERIFIED)
+        session.update(
+            {
+                "fingerprint_path": "/fingerprint/jazzcash_533280_03001234567.zip",
+                "cd_until": int(time.time()) - 10,
+                "last_error": {"code": "FP_COOLDOWN", "message": "Device cooldown started"},
+            }
+        )
+        await self.redis.setex(redis_key, 300, json.dumps(session))
+
+        account_status = AccountStatus()
+        account_status.IsSuccess = True
+        account_status.data = {"data": {"iban": "PK00JAZZ0001", "businessDetails": {"name": "Demo"}}}
+
+        self.jazzcash._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.jazzcash._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.jazzcash._verify_fingerprint = AsyncMock(side_effect=AssertionError("冷却结束后不应重复 loginStep2"))
+        self.jazzcash._verify_account = AsyncMock(return_value=account_status)
+        self.jazzcash._update_payment = AsyncMock(return_value=payment_id)
+
+        result = await self.jazzcash.verify_fingerprint_http(
+            {"bankname": "jazzcash", "payment_id": payment_id}
+        )
+
+        stored = json.loads(await self.redis.get(redis_key))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["data"]["phase"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertEqual(stored["status"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.jazzcash._verify_fingerprint.assert_not_awaited()
+        self.jazzcash._verify_account.assert_awaited_once()
+
+    def test_legacy_uploaded_cooldown_after_expiry_uses_second_login(self):
+        asyncio.run(self._run_legacy_uploaded_cooldown_after_expiry_case())
+
+    async def _run_legacy_uploaded_cooldown_after_expiry_case(self):
+        payment_id = 533280
+        redis_key = self.jazzcash.PRELOGIN_KEY.format(bankname="jazzcash", payment_id=payment_id)
+        session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
+        session.update(
+            {
+                "fingerprint_path": "/fingerprint/jazzcash_533280_03001234567.zip",
+                "cd_until": int(time.time()) - 10,
+                "last_error": {"code": "FP_COOLDOWN", "message": "Device cooldown started"},
+            }
+        )
+        await self.redis.setex(redis_key, 300, json.dumps(session))
+
+        account_status = AccountStatus()
+        account_status.IsSuccess = True
+        account_status.data = {"data": {"iban": "PK00JAZZ0001"}}
+
+        self.jazzcash._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.jazzcash._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.jazzcash._verify_fingerprint = AsyncMock(side_effect=AssertionError("旧冷却状态到期后也不应重复 loginStep2"))
+        self.jazzcash._verify_account = AsyncMock(return_value=account_status)
+        self.jazzcash._update_payment = AsyncMock(return_value=payment_id)
+
+        result = await self.jazzcash.verify_fingerprint_http(
+            {"bankname": "jazzcash", "payment_id": payment_id}
+        )
+
+        stored = json.loads(await self.redis.get(redis_key))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["data"]["phase"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertEqual(stored["status"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.jazzcash._verify_fingerprint.assert_not_awaited()
+        self.jazzcash._verify_account.assert_awaited_once()
+
+    def test_payment_status_reports_wait_cooldown_for_verified_jcb_session(self):
         asyncio.run(self._run_payment_status_wait_cooldown_case())
 
     async def _run_payment_status_wait_cooldown_case(self):
         payment_id = 533280
         redis_key = self.jazzcash.PRELOGIN_KEY.format(bankname="jazzcash", payment_id=payment_id)
         cd_until = int(time.time()) + 3600
-        session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
+        session = self._session(LoginStatus.FINGERPRINT_VERIFIED)
         session.update(
             {
                 "cd_until": cd_until,
@@ -606,7 +680,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
             payment_id,
             {
                 "phone": session["phone"],
-                "session_phase": LoginStatus.FINGERPRINT_UPLOADED,
+                "session_phase": LoginStatus.FINGERPRINT_VERIFIED,
                 "online": False,
                 "cd_until": cd_until,
                 "last_error": session["last_error"],
@@ -618,7 +692,7 @@ class JazzCashBusinessFlowV2Tests(unittest.TestCase):
             {"bankname": "jazzcash", "payment_ids": str(payment_id)}
         )
 
-        self.assertEqual(result["datas"][0]["status"], LoginStatus.FINGERPRINT_UPLOADED)
+        self.assertEqual(result["datas"][0]["status"], LoginStatus.FINGERPRINT_VERIFIED)
         self.assertEqual(result["datas"][0]["error"]["code"], "FP_COOLDOWN")
         self.assertEqual(result["datas"][0]["cd_until"], cd_until)
         self.assertEqual(result["datas"][0]["next_action"], "wait_cooldown")

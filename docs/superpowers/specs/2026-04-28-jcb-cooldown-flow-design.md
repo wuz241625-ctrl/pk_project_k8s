@@ -42,9 +42,9 @@ JCB 冷却期不是重新上传指纹：
 1. 用户已经完成 OTP 提交。
 2. 用户已经上传并保存指纹 zip。
 3. 上游因设备变更/BVS 流程进入 120 分钟冷却。
-4. 本地必须保留 `fingerprintUploaded`，保留 `fingerprint_path`，记录 `cd_until/cooldown_until`。
+4. `loginStep2` 返回冷却表示指纹/BVS 已通过，本地必须推进到 `fingerprintVerified`，保留 `fingerprint_path`，记录 `cd_until/cooldown_until`。
 5. 冷却未结束时，`verify_fingerprint_http` 不再打上游，直接返回等待冷却。
-6. 冷却结束后，允许继续用同一份已上传指纹重试 `loginStep2`。
+6. 冷却结束后，允许继续用同一份已上传指纹直接执行 `secondLogin`，不再重试 `loginStep2`。
 7. 只有明确的扫描失败、指纹质量失败、文件无效，才退回 `fingerprintUploadRequired`。
 
 ## 状态机
@@ -57,13 +57,13 @@ flowchart TD
   D --> E["fingerprintUploaded"]
   E -->|loginStep2 成功| F["fingerprintVerified"]
   F --> G["activeSuccessful"]
-  E -->|设备变更冷却| H["inCooldown 返回态"]
-  H -->|Redis 保持| E
-  E -->|冷却结束后重试 loginStep2| F
+  E -->|loginStep2 冷却，指纹已通过| H["inCooldown 返回态"]
+  H -->|Redis 保持| F
+  F -->|冷却结束后 secondLogin| G
   E -->|明确指纹拒绝| D
 ```
 
-`inCooldown` 只是接口返回给 App/采集端的展示态，不写入 Redis `status`。Redis/runtime 的唯一真相仍是 `fingerprintUploaded + last_error.code=FP_COOLDOWN + cd_until`。
+`inCooldown` 只是接口返回给 App/采集端的展示态，不写入 Redis `status`。Redis/runtime 的唯一真相是 `fingerprintVerified + last_error.code=FP_COOLDOWN + cd_until`。
 
 ## 接口返回约定
 
@@ -76,7 +76,7 @@ flowchart TD
   "data": {
     "code": "FP_COOLDOWN",
     "phase": "inCooldown",
-    "next_phase": "fingerprintUploaded",
+    "next_phase": "fingerprintVerified",
     "next_action": "wait_cooldown",
     "cd_until": 1777330000,
     "cooldown_until": 1777330000

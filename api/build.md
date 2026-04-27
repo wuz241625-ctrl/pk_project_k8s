@@ -892,7 +892,7 @@ PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_runtime_s
 
 ## 2026-04-28 JazzCashBusiness 冷却期流程验收
 
-本轮修复 JCB `loginStep2` 设备冷却期被误判为指纹拒绝的问题。冷却期应保持 `fingerprintUploaded`，保留 `/fingerprint` 中已上传的指纹文件，等待 `cd_until` 后继续验证。
+本轮修复 JCB `loginStep2` 设备冷却期被误判为指纹拒绝的问题。`loginStep2` 返回冷却表示指纹/BVS 已通过，冷却期应保持 `fingerprintVerified`，保留 `/fingerprint` 中已上传的指纹文件，等待 `cd_until` 后直接执行 `secondLogin`。
 
 验证命令：
 
@@ -916,8 +916,18 @@ git diff --check
 
 验收重点：
 
-- `loginStep2` 返回冷却期时，session/runtime snapshot 都保持 `fingerprintUploaded`。
+- `loginStep2` 返回冷却期时，session/runtime snapshot 都保持 `fingerprintVerified`。
 - `last_error.code=FP_COOLDOWN` 且 `cd_until` 未到时，`payment_status_http.next_action=wait_cooldown`。
 - 冷却期间重复调用 `verify_fingerprint_http` 不再打上游。
-- 冷却结束后继续复用同一份 `fingerprint_path` 进行指纹验证。
+- 冷却结束后继续复用同一份 `fingerprint_path`，直接调用 `secondLogin`，不再重复 `loginStep2`。
+- 旧的 `fingerprintUploaded + FP_COOLDOWN` 冷却会话到期后也应迁移为 `fingerprintVerified` 并直接 `secondLogin`。
 - 明确指纹被上游拒绝时仍按 `FP_UPSTREAM_REJECTED` 要求重新上传。
+
+## 2026-04-28 JazzCashBusiness loginStep2 冷却表示指纹已验证
+
+补充语义：
+
+- 上游没有独立 `verifyFingerprint` action，我方 `/api/v1/login/verify_fingerprint` 只是 App 入口名。
+- `loginStep2` 返回 `JC-CPS-COOL-T01` 代表指纹/BVS 已通过，只是设备注册进入 120 分钟冷却。
+- 冷却期唯一真相源为 `fingerprintVerified + FP_COOLDOWN + cd_until`。
+- `cd_until` 之前不请求上游；`cd_until` 之后直接 `secondLogin`。

@@ -974,7 +974,7 @@ class JazzCash:
             'data': {
                 'code': 'FP_COOLDOWN',
                 'phase': 'inCooldown',
-                'next_phase': LoginStatus.FINGERPRINT_UPLOADED,
+                'next_phase': LoginStatus.FINGERPRINT_VERIFIED,
                 'next_action': 'wait_cooldown',
                 'cd_until': cd_until,
                 'cooldown_until': cd_until,
@@ -987,7 +987,7 @@ class JazzCash:
 
     def _payment_status_next_action(self, status, last_error=None, cd_until=0):
         if (
-            status == LoginStatus.FINGERPRINT_UPLOADED
+            status in (LoginStatus.FINGERPRINT_UPLOADED, LoginStatus.FINGERPRINT_VERIFIED)
             and self._is_cooldown_error(last_error)
             and self._coerce_timestamp(cd_until) > int(time.time())
         ):
@@ -2057,7 +2057,7 @@ class JazzCash:
                 await self._update_session_status(
                     redis_key,
                     session_data,
-                    LoginStatus.FINGERPRINT_UPLOADED,
+                    LoginStatus.FINGERPRINT_VERIFIED,
                     {
                         'cd_until': active_cooldown['cd_until'],
                         'cooldown_until': active_cooldown['cd_until'],
@@ -2071,6 +2071,22 @@ class JazzCash:
                     active_cooldown['cd_until'],
                     active_cooldown['message'],
                 )
+
+            legacy_verified_cooldown = (
+                current_status == LoginStatus.FINGERPRINT_UPLOADED
+                and self._is_cooldown_error(session_data.get('last_error') or {})
+                and 0 < self._cooldown_until_from_session(session_data) <= int(time.time())
+            )
+            if legacy_verified_cooldown:
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.FINGERPRINT_VERIFIED,
+                )
+                current_status = LoginStatus.FINGERPRINT_VERIFIED
+
+            if current_status == LoginStatus.FINGERPRINT_VERIFIED:
+                return await self._activate_after_fingerprint(redis_key, session_data)
 
             status_check = await self._validate_status_transition(
                 session_data,
@@ -2094,7 +2110,7 @@ class JazzCash:
                 await self._update_session_status(
                     redis_key,
                     session_data,
-                    LoginStatus.FINGERPRINT_UPLOADED,
+                    LoginStatus.FINGERPRINT_VERIFIED,
                     {
                         'cd_until': cd_until,
                         'cooldown_until': cd_until,
@@ -2266,7 +2282,7 @@ class JazzCash:
             await self._update_session_status(
                 redis_key,
                 session_data,
-                LoginStatus.FINGERPRINT_UPLOADED,
+                LoginStatus.FINGERPRINT_VERIFIED,
                 {
                     'cd_until': cd_until,
                     'cooldown_until': cd_until,
