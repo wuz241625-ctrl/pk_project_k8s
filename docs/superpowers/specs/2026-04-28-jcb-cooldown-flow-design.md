@@ -15,6 +15,10 @@ JazzCashBusiness 指纹验证使用上游 `loginStep2`：
 
 当前实现把 `loginStep2` 未返回成功的情况统一降级为 `FP_UPSTREAM_REJECTED`，并把状态退回 `fingerprintUploadRequired`。这会把“设备变更后进入冷却期”误判成“指纹文件无效”，采集端会反复要求用户上传同一份指纹。
 
+## 请求边界
+
+我们实际请求的是自己的 JazzCashBusiness 上游包装接口，不是官方 JazzCash Business App 接口。官方 APK 只用于确认业务语义：设备变更/BVS 后存在 120 分钟冷却期，而且冷却期不是坏指纹。后端不新增官方 `account/merchant/bvs/cooldown` 请求，App 也只调用我们自己的 `/api/v1/login/verify_fingerprint` 与 `/api/v1/login/payment_status`。
+
 ## 官方 App 证据
 
 参照 `/Users/tear/apks/com.ibm.jazzcashmerchant@1.2.27_jadx`：
@@ -84,5 +88,4 @@ flowchart TD
 
 ## 不做的事
 
-本次不直接新增调用官方 App 的 `account/merchant/bvs/cooldown`，原因是现有后端接入的是包装后的 JazzCash 上游，当前可观测冷却已经从 `loginStep2`/包装响应返回。贸然新增未接入的官方 App 端接口会引入鉴权、Header、payload 兼容风险。
-
+本次不直接新增调用官方 App 的 `account/merchant/bvs/cooldown`，原因是现有后端接入的是自己的包装后的 JazzCash 上游，当前可观测冷却已经从 `loginStep2`/包装响应返回。贸然新增未接入的官方 App 端接口会引入鉴权、Header、payload 兼容风险，也会混淆我们自己的请求协议边界。
