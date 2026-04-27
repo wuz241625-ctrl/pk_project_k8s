@@ -965,6 +965,9 @@ class EasyPaisa:
                 selected_iban=snapshot_patch.get('selected_iban'),
                 source='login_flow',
                 online_ttl=self.lock_time_login_duplicate_avoid,
+                collect_enabled=True,
+                ds_order_enabled=True,
+                df_order_enabled=True,
                 channels=snapshot_patch.get('channels'),
             )
             if snapshot_patch.get('account_options') is not None:
@@ -2719,8 +2722,16 @@ class EasyPaisa:
                 self.logger.error(f'[Phone: {phone}] [PaymentID: {payment_id}] 账户类型检测失败: {str(e)}', exc_info=True)
                 account_type_value = ACCOUNT_TYPE_UNKNOWN
             
+            active_payment_session = dict(session_data)
+            active_payment_session.update({
+                'status': LoginStatus.ACTIVE_SUCCESSFUL,
+                'account_accno': accno,
+                'account_iban': iban,
+                'last_error': None,
+            })
+
             self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
-            await self._update_payment(payment_id, session_data, account_accno=accno, account_iban=iban, account_type=account_type_value)
+            await self._update_payment(payment_id, active_payment_session, account_accno=accno, account_iban=iban, account_type=account_type_value)
             await self._update_session_status(
                 redis_key,
                 session_data,

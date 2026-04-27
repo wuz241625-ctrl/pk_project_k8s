@@ -905,6 +905,82 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(runtime_snapshot["selected_iban"], "PK12HABB0000000088521643")
         self.assertTrue(await self.redis.sismember("payment_online_df", 533280))
 
+    def test_select_accts_http_activates_payment_and_runtime_dispatch(self):
+        asyncio.run(self._run_select_accts_activates_payment_and_runtime_dispatch_case())
+
+    async def _run_select_accts_activates_payment_and_runtime_dispatch_case(self):
+        payment_id = 533280
+        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
+        session = self._session(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
+        session["qr_channel"] = 1001
+        session["account_entire"] = json.dumps(
+            [
+                {
+                    "accno": "88521643",
+                    "accountStatus": "ACTIVE",
+                    "accountName": "Easypaisa Wallet",
+                    "IBAN": "PK12TMFB0000000088521643",
+                }
+            ]
+        )
+        await self.redis.setex(redis_key, 300, json.dumps(session))
+        await self.redis.set(
+            keyspace.snapshot_key(payment_id),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "payment_id": payment_id,
+                    "phone": session["phone"],
+                    "session_phase": LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                    "online": False,
+                    "collect_enabled": False,
+                    "ds_order_enabled": False,
+                    "df_order_enabled": False,
+                    "dispatch_ds": False,
+                    "dispatch_df": False,
+                    "channels": ["1001"],
+                }
+            ),
+        )
+
+        captured_update = {}
+
+        async def capture_update(payment_id_arg, session_arg, **kwargs):
+            captured_update["payment_id"] = payment_id_arg
+            captured_update["status"] = session_arg.get("status")
+            captured_update["kwargs"] = kwargs
+            return True
+
+        self.easypaisa._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.easypaisa._update_payment = AsyncMock(side_effect=capture_update)
+
+        result = await self.easypaisa.select_accts_http(
+            {"bankname": "easypaisa", "payment_id": payment_id, "accno": "88521643"}
+        )
+
+        runtime_snapshot = json.loads(await self.redis.get(keyspace.snapshot_key(payment_id)))
+        stored_session = json.loads(await self.redis.get(redis_key))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(captured_update["payment_id"], payment_id)
+        self.assertEqual(captured_update["status"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertEqual(captured_update["kwargs"]["account_accno"], "88521643")
+        self.assertEqual(captured_update["kwargs"]["account_iban"], "PK12TMFB0000000088521643")
+        self.assertEqual(stored_session["status"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertEqual(runtime_snapshot["session_phase"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertTrue(runtime_snapshot["online"])
+        self.assertTrue(runtime_snapshot["collect_enabled"])
+        self.assertTrue(runtime_snapshot["ds_order_enabled"])
+        self.assertTrue(runtime_snapshot["df_order_enabled"])
+        self.assertTrue(runtime_snapshot["dispatch_ds"])
+        self.assertTrue(runtime_snapshot["dispatch_df"])
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_COLLECT_ENABLED, payment_id))
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DS_ORDER_ENABLED, payment_id))
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DF_ORDER_ENABLED, payment_id))
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DISPATCH_DS, payment_id))
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DISPATCH_DF, payment_id))
+
     def test_payment_status_http_prefers_runtime_snapshot_when_session_missing(self):
         asyncio.run(self._run_payment_status_from_runtime_case())
 

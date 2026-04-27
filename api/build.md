@@ -855,3 +855,24 @@ python3.12 -m py_compile \
 - runtime 禁采时，旧 `hash_jazzcash` / `set_jazzcash` 残留不会触发上游账单接口。
 - `payment.status/certified` 不满足接单时仍保留采集，但关闭代收/代付派单。
 - 旧 `login_off_jazzcash_*` 只作为清理标记，不再覆盖 runtime 主状态。
+
+## 2026-04-27 EasyPaisa activeSuccessful 同步验收
+
+本轮修复 EasyPaisa 账户选择完成后，Redis session 已进入 `activeSuccessful` 但 DB/runtime 业务开关没有同步恢复的问题。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_select_accts_http_activates_payment_and_runtime_dispatch -v
+
+PYTHONPATH=api python3.12 -m unittest api.tests.test_easypaisa_business_flow_v2 -v
+PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_runtime_service -v
+```
+
+验收重点：
+
+- `select_accts_http()` 更新 payment 时必须携带 `status=activeSuccessful`，从而写回 `payment.status=1`。
+- `login_flow` 写入 `activeSuccessful` runtime snapshot 时必须显式恢复 `collect_enabled/ds_order_enabled/df_order_enabled`。
+- 如果后台或 App 后续手动禁用、人工锁定、健康暂停，仍由对应开关入口关闭派单，不改变本轮默认激活语义。

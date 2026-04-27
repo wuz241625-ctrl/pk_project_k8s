@@ -1909,3 +1909,52 @@ flutter test --no-test-assets \
   test/exchange_api_response_parsing_test.dart \
   test/onboarding_controller_test.dart
 ```
+
+## 2026-04-27 EasyPaisa 到了 `activeSuccessful` 但收款资料没有同步启用
+
+### 现象
+
+- 账号 `03009208353 / payment_id=533299` 的 Redis session 已经是 `activeSuccessful`。
+- status history 已完整走完：
+  `preLoginCreated -> otpSent -> otpVerified -> fingerprintUploadRequired -> fingerprintUploaded -> fingerprintVerified -> secondLoginPassed -> accountSelectionRequired -> activeSuccessful`。
+- 但前端曾显示 `status=inactive`，runtime snapshot 里 `collect_enabled/ds_order_enabled/df_order_enabled` 仍为 `false`。
+
+### 根因
+
+EasyPaisa 账户选择路径 `select_accts_http()` 的写入顺序有问题：
+
+1. 先调用 `_update_payment(payment_id, session_data, ...)`。
+2. 此时 `session_data.status` 仍是 `accountSelectionRequired`，所以 `_update_payment()` 不会写 `payment.status=1`。
+3. 后续才调用 `_update_session_status(..., activeSuccessful, ...)`，只把 Redis session/snapshot 推进到成功态。
+4. runtime 在 `accountSelectionRequired` 阶段已经写过 `collect_enabled=false`，`activeSuccessful` 时未显式覆盖，导致继续继承 false。
+
+### 修复
+
+- `select_accts_http()` 在更新 payment 前构造 active 状态的 session 副本，确保 `_update_payment()` 能看到 `status=activeSuccessful` 并写回 `payment.status=1`。
+- `_sync_runtime_state()` 在 `activeSuccessful` 分支显式传入：
+  - `collect_enabled=True`
+  - `ds_order_enabled=True`
+  - `df_order_enabled=True`
+
+### 验证
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest \
+  api.tests.test_easypaisa_business_flow_v2.EasyPaisaBusinessFlowV2Tests.test_select_accts_http_activates_payment_and_runtime_dispatch -v
+
+PYTHONPATH=api python3.12 -m unittest api.tests.test_easypaisa_business_flow_v2 -v
+PYTHONPATH=api python3.12 -m unittest api.tests.easypaisa_runtime.test_runtime_service -v
+```
+
+### 排错口径
+
+以后遇到 EasyPaisa “上号成功但 inactive/不能派单”，先查：
+
+```bash
+redis-cli GET easypaisa_runtime:session:{payment_id}
+redis-cli GET easypaisa_runtime:snapshot:{payment_id}
+mysql -e "SELECT id,status,certified,manual_status,phone,account_accno,account_iban FROM payment WHERE id={payment_id};"
+```
+
+如果 session 是 `activeSuccessful`，但 DB `status=0` 或 snapshot `collect_enabled=false`，优先检查账户选择完成后的 active 同步链路，而不是先按人工禁用处理。
