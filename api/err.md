@@ -2065,3 +2065,53 @@ KUBECONFIG=/etc/kubernetes/admin.conf kubectl get deploy api-deploy -n pk -o jso
 - `bash -n /opt/cicd/k8s/sh/deploy-api.sh` 通过。
 - `api-deploy` rollout 成功。
 - 当前线上镜像为 `10.170.0.18:30086/lib/api:20260427165321`。
+
+## 2026-04-28 JazzCashBusiness 已激活账号仍残留旧 `last_error`
+
+### 现象
+
+账号 `03409297123 / payment_id=533298` 昨天已通过 JCB 设备注册冷却，今天直接请求上游 `secondLogin` 返回成功：
+
+- `responseCode=AM-PR-T36`
+- `message_en=The transaction completed successfully`
+- `iban=PK91JCMA2012921409297123`
+
+但本地 runtime snapshot 曾停在：
+
+```json
+{
+  "session_phase": "fingerprintUploadRequired",
+  "last_error": {"code": "FP_UPSTREAM_REJECTED"},
+  "online": false
+}
+```
+
+### 根因
+
+旧版本把 `loginStep2` 冷却期误当成指纹拒绝，留下 `FP_UPSTREAM_REJECTED`。补推进 `secondLogin` 成功后，`mark_active_successful()` 会保留旧 snapshot 中未覆盖的字段，导致 `activeSuccessful` 仍可能携带旧 `last_error/cd_until/cooldown_until/session_expires_at`。
+
+### 修复
+
+- 对当前账号走现有激活链路补推进，写回：
+  - `payment.status=1`
+  - `account_accno=03409297123`
+  - `account_iban=PK91JCMA2012921409297123`
+  - `jazzcash_runtime:snapshot:533298.session_phase=activeSuccessful`
+  - runtime 在线、采集、代收、代付索引均为 1
+- `JazzCashRuntimeService.mark_active_successful()` 在写 active snapshot 时显式清理：
+  - `last_error=None`
+  - `cd_until=0`
+  - `cooldown_until=0`
+  - `session_expires_at=now+online_ttl`
+
+### 排查命令
+
+```bash
+redis-cli GET jazzcash_runtime:snapshot:{payment_id}
+redis-cli GET jazzcash_runtime:session:{payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:online {payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:dispatch_ds {payment_id}
+redis-cli SISMEMBER jazzcash_runtime:index:dispatch_df {payment_id}
+```
+
+正确 active 状态不应再携带 `FP_COOLDOWN` 或 `FP_UPSTREAM_REJECTED`。

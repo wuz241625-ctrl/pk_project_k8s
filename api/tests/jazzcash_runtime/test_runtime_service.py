@@ -159,6 +159,46 @@ class JazzCashRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.redis.get("login_on_jazzcash_7001"), "1")
         self.assertEqual(await self.redis.get("login_on_jazzcash_03495863120"), "1")
 
+    async def test_mark_active_successful_clears_stale_error_and_cooldown_fields(self):
+        from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
+        from application.jazzcash_runtime import keyspace
+
+        service = JazzCashRuntimeService(self.redis, now_provider=lambda: self.now)
+        await service.write_snapshot(
+            7001,
+            {
+                "phone": "03495863120",
+                "online": False,
+                "session_phase": "fingerprintVerified",
+                "last_error": {"code": "FP_COOLDOWN"},
+                "cd_until": self.now - 1,
+                "cooldown_until": self.now - 1,
+                "session_expires_at": self.now - 300,
+            },
+            source="jazzcash_login_flow",
+        )
+
+        snapshot = await service.mark_active_successful(
+            7001,
+            phone="03495863120",
+            selected_accno="03495863120",
+            selected_iban="PK12JAZZ000000003495863120",
+            source="login_flow",
+            online_ttl=660,
+            channels=["1003"],
+        )
+
+        self.assertIsNone(snapshot["last_error"])
+        self.assertEqual(snapshot["cd_until"], 0)
+        self.assertEqual(snapshot["cooldown_until"], 0)
+        self.assertEqual(snapshot["session_expires_at"], self.now + 660)
+
+        stored = json.loads(await self.redis.get(keyspace.snapshot_key(7001)))
+        self.assertIsNone(stored["last_error"])
+        self.assertEqual(stored["cd_until"], 0)
+        self.assertEqual(stored["cooldown_until"], 0)
+        self.assertEqual(stored["session_expires_at"], self.now + 660)
+
     async def test_force_reset_clears_runtime_indexes_sessions_jobs_and_legacy(self):
         from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
         from application.jazzcash_runtime import keyspace

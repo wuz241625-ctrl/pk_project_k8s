@@ -931,3 +931,23 @@ git diff --check
 - `loginStep2` 返回 `JC-CPS-COOL-T01` 代表指纹/BVS 已通过，只是设备注册进入 120 分钟冷却。
 - 冷却期唯一真相源为 `fingerprintVerified + FP_COOLDOWN + cd_until`。
 - `cd_until` 之前不请求上游；`cd_until` 之后直接 `secondLogin`。
+
+## 2026-04-28 JazzCashBusiness activeSuccessful 清理旧错误验收
+
+本轮处理 `03409297123 / payment_id=533298` 时确认：旧代码曾把 `loginStep2` 冷却期折叠成 `FP_UPSTREAM_REJECTED`，但当前 `secondLogin` 已能成功返回账户信息。账号补推进到 `activeSuccessful` 后，runtime snapshot 不能继续继承旧 `last_error/cd_until/cooldown_until`。
+
+验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s
+PYTHONPATH=api python3.12 -m unittest api.tests.jazzcash_runtime.test_runtime_service -v
+
+python3.12 -m py_compile api/application/jazzcash_runtime/runtime_service.py
+git diff --check
+```
+
+验收重点：
+
+- `JazzCashRuntimeService.mark_active_successful()` 写入 `activeSuccessful` 时必须清空 `last_error`。
+- `cd_until/cooldown_until` 必须归零，避免 App 状态轮询把已上线账号误展示成冷却或错误。
+- `session_expires_at` 必须刷新为当前时间加 `online_ttl`，避免 snapshot 保留过期会话时间。

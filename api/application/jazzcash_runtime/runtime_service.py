@@ -171,6 +171,10 @@ class JazzCashRuntimeService:
                 "channels": resolved_channels,
                 "session_phase": "activeSuccessful",
                 "last_transition": "activeSuccessful",
+                "session_expires_at": self._now() + int(online_ttl or 0),
+                "cd_until": 0,
+                "cooldown_until": 0,
+                "last_error": None,
             },
             source=source,
         )
