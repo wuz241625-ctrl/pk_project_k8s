@@ -41,6 +41,7 @@ def main():
     forbid(tenant, "awekay.com", "tenant.yaml")
 
     for asset in (
+        "ops/tenants/d7pay/assets/d7pay-logo-source-imagegen.png",
         "ops/tenants/d7pay/assets/d7pay-logo-mark-1024.png",
         "ops/tenants/d7pay/assets/d7pay-logo-full-1600x1200.png",
         "ops/tenants/d7pay/assets/d7pay-favicon.ico",
@@ -49,6 +50,9 @@ def main():
         "apkdownload/src/assets/logo/d7pay-logo-192x192.png",
     ):
         require_file(asset)
+
+    logo_generator = read("ops/tenants/d7pay/assets/generate_logo_assets.py")
+    require(logo_generator, "d7pay-logo-source-imagegen.png", "generate_logo_assets.py")
 
     admin_logo = read("admin-h5/src/layout/components/Sidebar/Logo.vue")
     require(admin_logo, "d7pay-logo-mark.png", "admin Logo.vue")
