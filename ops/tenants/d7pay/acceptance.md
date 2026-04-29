@@ -21,6 +21,8 @@
 
 ## 隔离验收
 
+- 现有 `pk` namespace 保持运行，不删除、不缩容、不把 D7pay 域名指向 `pk`。
+- 现有 `admin.awekay.com`、`merchant.awekay.com`、`api.awekay.com`、`apkdownload.awekay.com` 保持原业务入口，不作为 D7pay 入口。
 - K8s namespace 使用 `pk-d7pay`。
 - MySQL database 使用 `pakistan_d7pay`。
 - Redis 使用独立实例 `redis-d7pay`。
@@ -42,6 +44,7 @@
 - K8s 应对 `api/admin/merchant/apkdownload` 应用对应 patch，并完成 rollout。
 - `python3 ops/tenants/d7pay/verify_release_contract.py` 必须通过。
 - 首次部署前必须按 `ops/tenants/d7pay/current-deployment-ops-runbook.md` 检查当前线上状态、备份、配置 DNS/nginx 和验证 rollout。
+- 运维执行入口必须是 `ops/tenants/d7pay/current-deployment-ops-runbook.md`，不能只拿单个 YAML 或 patch 文件上线。
 
 ## 数据验收
 

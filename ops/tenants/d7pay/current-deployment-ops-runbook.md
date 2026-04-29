@@ -1,12 +1,45 @@
 # D7pay 当前部署检查与运维处理 Runbook
 
+## 运维只看哪一份
+
+运维执行 D7pay 首次上线时，只从这一份文档开始：
+
+```text
+ops/tenants/d7pay/current-deployment-ops-runbook.md
+```
+
+其他文件只作为引用：
+
+- `ops/tenants/d7pay/acceptance.md`：上线后验收清单。
+- `ops/tenants/d7pay/jenkins.env.example`：Jenkins 变量模板。
+- `ops/tenants/d7pay/k8s/`：K8s 资源与 patch。
+- `docs/rental/d7pay-hosted.md`：托管交付边界说明。
+
+运维不要从 `tenant.yaml`、`runtime-configmap.yaml` 或某个单独 patch 文件开始操作，因为这些文件只是发布合同的一部分，缺少当前线上状态、备份、域名、回滚和验收顺序。
+
 ## 结论
 
-检查时间：2026-04-29 20:37 Asia/Shanghai，服务器时间 2026-04-29 12:37 UTC。
+检查时间：2026-04-29 20:59 Asia/Shanghai，服务器时间 2026-04-29 12:59 UTC。
 
 当前服务器只部署了原 `pk` 实例，尚未部署 D7pay 专属实例。运维不能直接把客户域名指到现有 `pk` 服务，否则会混用 Ashrafi 的运行环境、数据、下载页和域名配置。
 
 D7pay 上线必须按本 runbook 先完成代码拉取、独立 namespace、独立数据库、独立 Redis、独立 PVC、D7pay Service/NodePort、nginx 域名和 Jenkins 发布。
+
+## 现有部署怎么处理
+
+现有 `pk` 部署按“保留、备份、旁路新增”的原则处理：
+
+1. 保留现有 `pk` namespace，不删除、不缩容、不改 Service、不改现有 NodePort。
+2. 保留现有域名：`admin.awekay.com`、`merchant.awekay.com`、`api.awekay.com`、`apkdownload.awekay.com` 继续指向当前 `pk`。
+3. 保留现有数据库、Redis、指纹 PVC 和 apkdownload 文件，不把它们改名或迁到 D7pay。
+4. D7pay 新建 `pk-d7pay` namespace，使用专属 Service/NodePort：`31080`、`31081`、`31082`、`31085`。
+5. D7pay 使用客户自有域名，不能使用 `awekay.com`；`*.d7pay.example.com` 只是文档占位。
+6. nginx 只追加 D7pay 客户域名的 server block，不覆盖现有 `awekay.com` server block。
+7. 数据层只允许新建 `pakistan_d7pay` database 和独立 Redis；不能把 D7pay 指向现有 `pakistan` 数据库。
+8. 服务器仓库可以更新到最新 `origin/main`，但更新代码不等于部署 D7pay；部署必须通过 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`。
+9. 如果任一步失败，先回滚或停用 `pk-d7pay`，不要动 `pk`。
+
+一句话：现有部署是当前业务环境，D7pay 是新增租户环境。运维的目标不是“替换现有部署”，而是在同一套集群上新增一套隔离的 D7pay 发布。
 
 ## 当前线上状态
 
@@ -118,6 +151,25 @@ lakshmi/lakshmi_v1.0.0.202406232042.apk
 
 ## 运维上线步骤
 
+### 0. 确认不是替换现有部署
+
+执行前先确认：
+
+```bash
+export KUBECONFIG=/etc/kubernetes/admin.conf
+kubectl get ns pk
+kubectl get ns pk-d7pay 2>/dev/null || true
+kubectl get svc -n pk
+```
+
+预期：
+
+- `pk` 存在并继续承载当前业务。
+- `pk-d7pay` 首次上线前不存在，或存在但只属于 D7pay。
+- `pk` 里的 `30080-30085` 不给 D7pay 复用。
+
+如果有人要求把 `admin.awekay.com`、`merchant.awekay.com`、`api.awekay.com`、`apkdownload.awekay.com` 改成 D7pay，必须停止操作并确认业务归属。
+
 ### 1. 上线前冻结与备份
 
 ```bash
@@ -143,6 +195,15 @@ python3 ops/tenants/d7pay/verify_release_contract.py
 ```
 
 如果 `git status --short` 不为空，先备份差异并停止发布，不要直接覆盖现场变更。
+
+拉代码后再次确认本地合同：
+
+```bash
+python3 ops/tenants/d7pay/verify_release_contract.py
+grep -R "awekay.com" ops/tenants/d7pay/tenant.yaml ops/tenants/d7pay/k8s/runtime-configmap.yaml && exit 1 || true
+```
+
+`tenant.yaml` 和 D7pay runtime ConfigMap 合同里不能出现 `awekay.com`。
 
 ### 3. 准备 D7pay 数据服务
 
