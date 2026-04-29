@@ -24,6 +24,7 @@ module.exports = {
         common: {
             VUE_APP_SYSTEM: "d7pay",
             VUE_APP_TITLE: "D7pay",
+            VUE_APP_FAVICON: "d7pay-favicon.ico",
         },
         dev: {
         },

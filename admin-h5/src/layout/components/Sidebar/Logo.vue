@@ -14,6 +14,8 @@
 </template>
 
 <script>
+import d7payLogo from '@/assets/brand/d7pay-logo-mark.png'
+
 export default {
   name: 'SidebarLogo',
   props: {
@@ -23,9 +25,10 @@ export default {
     }
   },
   data() {
+    const isD7pay = process.env.VUE_APP_SYSTEM === 'd7pay'
     return {
-      title: 'Vue Element Admin',
-      logo: 'https://wpimg.wallstcn.com/69a1c46c-eb1c-4b46-8bd4-e9e686ef5251.png'
+      title: process.env.VUE_APP_TITLE || 'Vue Element Admin',
+      logo: isD7pay ? d7payLogo : 'https://wpimg.wallstcn.com/69a1c46c-eb1c-4b46-8bd4-e9e686ef5251.png'
     }
   }
 }

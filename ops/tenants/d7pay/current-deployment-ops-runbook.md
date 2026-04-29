@@ -274,6 +274,7 @@ APKDOWNLOAD_DOMAIN=apkdownload.d7pay.example.com
 API_PUBLIC_SCHEME=http
 D7PAY_RUNTIME_SECRET_YAML=/root/secrets/d7pay-runtime-secret.yaml
 APP_APPLICATION_ID=com.d7pay.merchant
+APP_ICON=@mipmap/ic_launcher_d7pay
 APP_SIGNING_MODE=shared_release_keystore
 REQUIRE_RELEASE_SIGNING=true
 ```

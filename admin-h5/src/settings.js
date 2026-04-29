@@ -23,7 +23,7 @@ module.exports = {
    * @type {boolean} true | false
    * @description Whether show the logo in sidebar
    */
-  sidebarLogo: false,
+  sidebarLogo: process.env.VUE_APP_SYSTEM === 'd7pay',
 
   /**
    * @type {string | array} 'production' | ['production', 'development']

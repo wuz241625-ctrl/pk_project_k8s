@@ -7,6 +7,9 @@
 - apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_arm64_v0.1.6_202604292006.apk`。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
 - Android package 必须为 `com.d7pay.merchant`。
+- Android launcher icon 必须使用 D7pay 专属 `@mipmap/ic_launcher_d7pay`，不能覆盖默认 Ashrafi `ic_launcher`。
+- admin、merchant 的 D7pay 构建必须使用 `d7pay-favicon.ico` 和 D7pay 侧边栏 logo。
+- apkdownload 的 D7pay 构建必须使用 `d7pay-logo-192x192.png`，默认 Ashrafi 下载页 logo 不受影响。
 - D7pay 与 Ashrafi 共用同一份 release 签名配置入口，Jenkins 必须挂载 `android/key.properties` 并设置 `REQUIRE_RELEASE_SIGNING=true`。
 
 ## 本轮验证记录
@@ -15,7 +18,8 @@
 - `merchant-h5` 使用 `NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod` 构建通过，产物标题包含 `D7payMerchant`。
 - `apkdownload` 使用 `npm run build:d7pay` 构建通过，产物包含 `/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk`。
 - Flutter 使用 D7pay 构建参数构建 arm64 release APK 通过，`aapt dump badging` 验证 `application-label` 为 `D7pay Merchant`，`package` 为 `com.d7pay.merchant`。
-- Flutter `flutter test test/login_page_test.dart test/payments_controller_test.dart` 通过。
+- Flutter D7pay launcher icon 资源已生成到 `ic_launcher_d7pay` 各 density 目录，`./gradlew :app:packageDebug -PappIcon='@mipmap/ic_launcher_d7pay'` 通过，packaged manifest 确认为 `@mipmap/ic_launcher_d7pay`。
+- Flutter `flutter test --no-test-assets test/login_page_test.dart test/payments_controller_test.dart` 通过。
 - Flutter `flutter analyze lib/app/brand.dart lib/app/app.dart lib/features/login/presentation/login_page.dart lib/features/payments/presentation/home_page.dart` 通过。
 - 本地无 `android/key.properties` 时，带 `ORG_GRADLE_PROJECT_requireReleaseSigning=true` 的 release 构建必须失败并提示缺少签名文件，证明 Jenkins 正式包不会静默回退 debug 签名。
 

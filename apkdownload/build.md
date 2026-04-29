@@ -65,10 +65,11 @@ application-label:'D7pay Merchant'
 
 如果后续 `appInfo.json` 中 `d7pay_merchant.path` 为空，页面会显示 `APK Pending`，避免把旧 APK 误交付成 D7pay APK。
 
-下载页 favicon 与页面 logo 使用 Flutter Android launcher icon：
+下载页 D7pay 模式使用独立 logo，不影响默认 Ashrafi 下载页：
 
 ```text
-/Users/tear/pk_project/ashrafi_merchant_flutter/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+src/assets/logo/d7pay-logo-192x192.png
+public/d7pay-logo-192x192.png
 ```
 
 ## 线上发布

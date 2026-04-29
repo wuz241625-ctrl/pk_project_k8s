@@ -14,6 +14,8 @@
 </template>
 
 <script>
+import d7payLogo from '@/assets/brand/d7pay-logo-mark.png'
+
 export default {
     name: 'SidebarLogo',
     props: {
@@ -23,9 +25,10 @@ export default {
         }
     },
     data() {
+        const isD7pay = process.env.VUE_APP_SYSTEM === 'd7pay'
         return {
-            title: 'OSPay商户',
-            logo: ''
+            title: process.env.VUE_APP_TITLE || 'OSPay商户',
+            logo: isD7pay ? d7payLogo : ''
         }
     }
 }

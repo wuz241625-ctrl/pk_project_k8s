@@ -24,6 +24,15 @@ npm run d7pay:prod
 dist/d7pay
 ```
 
+D7pay 模式会启用侧边栏 logo，并使用：
+
+```text
+src/assets/brand/d7pay-logo-mark.png
+public/d7pay-favicon.ico
+```
+
+默认构建不受 D7pay logo 影响。
+
 ## K8s 发布
 
 线上发布脚本位于服务器：

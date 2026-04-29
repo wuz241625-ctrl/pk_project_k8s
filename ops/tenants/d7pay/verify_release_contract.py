@@ -11,6 +11,12 @@ def read(relative_path):
     return (ROOT / relative_path).read_text(encoding="utf-8")
 
 
+def require_file(relative_path):
+    path = ROOT / relative_path
+    if not path.exists():
+        raise AssertionError(f"缺少文件: {relative_path}")
+
+
 def require(text, needle, label):
     if needle not in text:
         raise AssertionError(f"{label} 缺少: {needle}")
@@ -26,6 +32,7 @@ def main():
     require(tenant, "namespace: pk-d7pay", "tenant.yaml")
     require(tenant, "mysql_database: pakistan_d7pay", "tenant.yaml")
     require(tenant, "package_name: com.d7pay.merchant", "tenant.yaml")
+    require(tenant, 'icon_resource: "@mipmap/ic_launcher_d7pay"', "tenant.yaml")
     require(tenant, "signing_policy: shared_release_keystore", "tenant.yaml")
     require(tenant, "config_py_policy: generated_from_config_example_or_secret_mount", "tenant.yaml")
     require(tenant, "domain_policy: customer_owned_required", "tenant.yaml")
@@ -33,10 +40,34 @@ def main():
     require(tenant, "api_public: 31085", "tenant.yaml")
     forbid(tenant, "awekay.com", "tenant.yaml")
 
+    for asset in (
+        "ops/tenants/d7pay/assets/d7pay-logo-mark-1024.png",
+        "ops/tenants/d7pay/assets/d7pay-logo-full-1600x1200.png",
+        "ops/tenants/d7pay/assets/d7pay-favicon.ico",
+        "admin-h5/src/assets/brand/d7pay-logo-mark.png",
+        "merchant-h5/src/assets/brand/d7pay-logo-mark.png",
+        "apkdownload/src/assets/logo/d7pay-logo-192x192.png",
+    ):
+        require_file(asset)
+
+    admin_logo = read("admin-h5/src/layout/components/Sidebar/Logo.vue")
+    require(admin_logo, "d7pay-logo-mark.png", "admin Logo.vue")
+    admin_settings = read("admin-h5/src/settings.js")
+    require(admin_settings, "sidebarLogo: process.env.VUE_APP_SYSTEM === 'd7pay'", "admin settings.js")
+
+    merchant_logo = read("merchant-h5/src/layout/components/Sidebar/Logo.vue")
+    require(merchant_logo, "d7pay-logo-mark.png", "merchant Logo.vue")
+    merchant_settings = read("merchant-h5/src/settings.js")
+    require(merchant_settings, "sidebarLogo: process.env.VUE_APP_SYSTEM === 'd7pay'", "merchant settings.js")
+
+    apk_view = read("apkdownload/src/views/apkm.vue")
+    require(apk_view, "d7pay-logo-192x192.png", "apkdownload apkm.vue")
+
     jenkins = read("ops/tenants/d7pay/jenkins.env.example")
     require(jenkins, "KUBE_NAMESPACE=pk-d7pay", "jenkins.env.example")
     require(jenkins, "RUN_ENV=PROD", "jenkins.env.example")
     require(jenkins, "APP_APPLICATION_ID=com.d7pay.merchant", "jenkins.env.example")
+    require(jenkins, "APP_ICON=@mipmap/ic_launcher_d7pay", "jenkins.env.example")
     require(jenkins, "APP_SIGNING_MODE=shared_release_keystore", "jenkins.env.example")
     require(jenkins, "REQUIRE_RELEASE_SIGNING=true", "jenkins.env.example")
     require(jenkins, "D7PAY_RUNTIME_SECRET_YAML=", "jenkins.env.example")
@@ -45,6 +76,11 @@ def main():
     require(jenkins, "APP_API_BASE_URL=${API_PUBLIC_SCHEME}://${API_DOMAIN}", "jenkins.env.example")
     require(jenkins, "deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", "jenkins.env.example")
     forbid(jenkins.replace("deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", ""), "awekay.com", "jenkins.env.example")
+
+    handoff = read("docs/rental/d7pay-hosted.md")
+    require(handoff, "APP_ICON=@mipmap/ic_launcher_d7pay", "d7pay-hosted.md")
+    ops_runbook = read("ops/tenants/d7pay/current-deployment-ops-runbook.md")
+    require(ops_runbook, "APP_ICON=@mipmap/ic_launcher_d7pay", "current-deployment-ops-runbook.md")
 
     deploy_script = read("ops/tenants/d7pay/jenkins/deploy-d7pay.sh")
     require(deploy_script, "KUBE_NAMESPACE", "deploy-d7pay.sh")

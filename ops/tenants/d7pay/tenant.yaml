@@ -42,9 +42,10 @@ app:
   package_name: com.d7pay.merchant
   signing_policy: shared_release_keystore
   signing_secret: d7pay-android-signing
-  api_base_url: http://api.d7pay.example.com
+  icon_resource: "@mipmap/ic_launcher_d7pay"
+  api_base_url: "http://<d7pay-api-domain>"
   apkdownload_app_key: d7pay_merchant
-  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant ORG_GRADLE_PROJECT_requireReleaseSigning=true flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=http://api.d7pay.example.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
+  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant ORG_GRADLE_PROJECT_appIcon='@mipmap/ic_launcher_d7pay' ORG_GRADLE_PROJECT_requireReleaseSigning=true flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=http://<d7pay-api-domain> --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
 
 jenkins:
   publish_mode: k8s
