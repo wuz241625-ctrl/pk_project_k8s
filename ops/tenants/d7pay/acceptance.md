@@ -4,27 +4,40 @@
 
 - admin 构建使用 `npm run d7pay:prod`，浏览器标题包含 `D7pay管理系统`。
 - merchant 构建使用 `npm run d7pay:prod`，登录页展示 `D7pay`。
-- apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_arm64_v0.1.6_202604291945.apk`。
+- apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_arm64_v0.1.6_202604292006.apk`。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
-- Android package 暂时保持 `com.ashrafi.pay`，原因是 Veridium/4F 授权与包名绑定。
+- Android package 必须为 `com.d7pay.merchant`。
+- D7pay 与 Ashrafi 共用同一份 release 签名配置入口，Jenkins 必须挂载 `android/key.properties` 并设置 `REQUIRE_RELEASE_SIGNING=true`。
 
 ## 本轮验证记录
 
 - `admin-h5` 使用 `NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod` 构建通过，产物标题包含 `D7pay管理系统`。
 - `merchant-h5` 使用 `NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod` 构建通过，产物标题包含 `D7payMerchant`。
-- `apkdownload` 使用 `npm run build:d7pay` 构建通过，产物包含 `/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604291945.apk`。
-- Flutter 使用 D7pay 构建参数构建 arm64 release APK 通过，`aapt dump badging` 验证 `application-label` 为 `D7pay Merchant`，`package` 为 `com.ashrafi.pay`。
+- `apkdownload` 使用 `npm run build:d7pay` 构建通过，产物包含 `/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk`。
+- Flutter 使用 D7pay 构建参数构建 arm64 release APK 通过，`aapt dump badging` 验证 `application-label` 为 `D7pay Merchant`，`package` 为 `com.d7pay.merchant`。
 - Flutter `flutter test test/login_page_test.dart test/payments_controller_test.dart` 通过。
 - Flutter `flutter analyze lib/app/brand.dart lib/app/app.dart lib/features/login/presentation/login_page.dart lib/features/payments/presentation/home_page.dart` 通过。
+- 本地无 `android/key.properties` 时，带 `ORG_GRADLE_PROJECT_requireReleaseSigning=true` 的 release 构建必须失败并提示缺少签名文件，证明 Jenkins 正式包不会静默回退 debug 签名。
 
 ## 隔离验收
 
 - K8s namespace 使用 `pk-d7pay`。
 - MySQL database 使用 `pakistan_d7pay`。
 - Redis 使用独立实例 `redis-d7pay`。
-- 指纹目录使用 `/fingerprint/d7pay`。
-- APK 下载目录使用 `/apkdownload/d7pay`。
+- API 容器内指纹目录使用唯一真相源 `/fingerprint`，宿主机目录使用 `/data/pk-d7pay/fingerprint`。
+- APK 下载目录宿主机使用 `/data/pk-d7pay/apkdownload/d7pay`，容器挂载到 `/usr/share/nginx/html/files/android/d7pay`。
 - 客户不拿 SSH、K8s、MySQL、Redis、源码仓库权限。
+
+## Jenkins / K8s 验收
+
+- Jenkins 使用 `ops/tenants/d7pay/jenkins.env.example` 中的变量合同发布。
+- Jenkins 调用 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`，不能直接复用硬编码 `pk` namespace 和默认 `build:prod` 的旧脚本。
+- Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
+- Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
+- Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。
+- K8s 应先应用 `namespace.yaml`、`runtime-configmap.yaml`、真实 Secret、`data-volumes.yaml`。
+- K8s 应对 `api/admin/merchant/apkdownload` 应用对应 patch，并完成 rollout。
+- `python3 ops/tenants/d7pay/verify_release_contract.py` 必须通过。
 
 ## 数据验收
 

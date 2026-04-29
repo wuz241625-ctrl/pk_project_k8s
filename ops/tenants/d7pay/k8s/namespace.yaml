@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pk-d7pay
+  labels:
+    tenant: d7pay
+    app.kubernetes.io/part-of: d7pay

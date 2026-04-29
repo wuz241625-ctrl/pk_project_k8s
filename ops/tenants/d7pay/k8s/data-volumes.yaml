@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: d7pay-fingerprint-pv
+  labels:
+    tenant: d7pay
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  volumeMode: Filesystem
+  local:
+    path: /data/pk-d7pay/fingerprint
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - pk-1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: d7pay-fingerprint-pvc
+  namespace: pk-d7pay
+  labels:
+    tenant: d7pay
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: manual
+  volumeName: d7pay-fingerprint-pv
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: d7pay-apkdownload-pv
+  labels:
+    tenant: d7pay
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+  volumeMode: Filesystem
+  local:
+    path: /data/pk-d7pay/apkdownload/d7pay
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - pk-1
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: d7pay-apkdownload-pvc
+  namespace: pk-d7pay
+  labels:
+    tenant: d7pay
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: manual
+  volumeName: d7pay-apkdownload-pv

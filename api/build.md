@@ -45,6 +45,25 @@ python3.12 -m pytest tests/test_router_easypay_cleanup.py tests/test_easypay_soa
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/api-deploy -- printenv RUN_ENV
 ```
 
+## D7pay Jenkins/K8s 发布配置
+
+D7pay 不提交真实 `api/config.py`。Jenkins 应使用 `api/config.example.py` 作为模板，并通过 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入：
+
+```bash
+kubectl apply -f ops/tenants/d7pay/k8s/namespace.yaml
+kubectl apply -f ops/tenants/d7pay/k8s/runtime-configmap.yaml
+kubectl apply -f ops/tenants/d7pay/k8s/data-volumes.yaml
+kubectl patch deployment api-deploy -n pk-d7pay --type=strategic --patch-file ops/tenants/d7pay/k8s/api-deployment-env.patch.yaml
+```
+
+验收重点：
+
+- `RUN_ENV=PROD`
+- `TENANT_CODE=d7pay`
+- `MYSQL_DATABASE=pakistan_d7pay`
+- `API_OSPAY_API_HOST=http://api-d7pay.awekay.com/api`
+- `/fingerprint` 挂载到 `d7pay-fingerprint-pvc`
+
 远端 API 发布脚本 `/opt/cicd/k8s/sh/deploy-api.sh` 需要固定 kubeconfig，否则在非交互 SSH 环境可能读到错误的默认上下文并返回登录页 HTML。脚本头部应保留：
 
 ```bash

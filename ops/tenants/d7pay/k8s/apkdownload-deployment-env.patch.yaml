@@ -1,0 +1,15 @@
+spec:
+  template:
+    metadata:
+      labels:
+        tenant: d7pay
+    spec:
+      containers:
+        - name: apkdownload
+          volumeMounts:
+            - name: d7pay-apkdownload-storage
+              mountPath: /usr/share/nginx/html/files/android/d7pay
+      volumes:
+        - name: d7pay-apkdownload-storage
+          persistentVolumeClaim:
+            claimName: d7pay-apkdownload-pvc

@@ -1,0 +1,13 @@
+spec:
+  template:
+    metadata:
+      labels:
+        tenant: d7pay
+    spec:
+      containers:
+        - name: merchant
+          envFrom:
+            - configMapRef:
+                name: d7pay-runtime-config
+            - secretRef:
+                name: d7pay-runtime-secret

@@ -43,6 +43,21 @@ python main.py --port=6000 --logfile=admin_6000.log
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/admin-deploy -- printenv RUN_ENV
 ```
 
+## D7pay Jenkins/K8s 发布配置
+
+D7pay 不提交真实 `admin/config.py`。Jenkins 应使用 `admin/config.example.py` 作为模板，并通过 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入：
+
+```bash
+kubectl patch deployment admin-deploy -n pk-d7pay --type=strategic --patch-file ops/tenants/d7pay/k8s/admin-deployment-env.patch.yaml
+```
+
+验收重点：
+
+- `RUN_ENV=PROD`
+- `TENANT_CODE=d7pay`
+- `MYSQL_DATABASE=pakistan_d7pay`
+- `ADMIN_API_URL=http://api:9000`
+
 ## 相关测试
 
 真实客户端 IP 与登录日志脱敏测试：

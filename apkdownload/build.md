@@ -53,7 +53,14 @@ D7pay Merchant
 当前 D7pay APK 文件指向 arm64 瘦身包，避免超过 GitHub 普通单文件限制：
 
 ```text
-public/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604291945.apk
+public/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk
+```
+
+该 APK 必须满足：
+
+```text
+package: name='com.d7pay.merchant'
+application-label:'D7pay Merchant'
 ```
 
 如果后续 `appInfo.json` 中 `d7pay_merchant.path` 为空，页面会显示 `APK Pending`，避免把旧 APK 误交付成 D7pay APK。

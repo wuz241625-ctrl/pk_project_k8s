@@ -58,3 +58,18 @@ python main.py --port=8000 --logfile=merchant_8000.log
 ```bash
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/merchant-deploy -- printenv RUN_ENV
 ```
+
+## D7pay Jenkins/K8s 发布配置
+
+D7pay 不提交真实 `merchant/config.py`。Jenkins 应使用 `merchant/config.example.py` 作为模板，并通过 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入：
+
+```bash
+kubectl patch deployment merchant-deploy -n pk-d7pay --type=strategic --patch-file ops/tenants/d7pay/k8s/merchant-deployment-env.patch.yaml
+```
+
+验收重点：
+
+- `RUN_ENV=PROD`
+- `TENANT_CODE=d7pay`
+- `MYSQL_DATABASE=pakistan_d7pay`
+- `MERCHANT_API_URL=http://api:9000`

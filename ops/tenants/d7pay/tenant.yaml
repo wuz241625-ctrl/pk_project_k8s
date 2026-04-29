@@ -14,8 +14,13 @@ kubernetes:
   image_tag_policy: pinned
   mysql_database: pakistan_d7pay
   redis_instance: redis-d7pay
-  fingerprint_mount: /fingerprint/d7pay
-  apkdownload_mount: /apkdownload/d7pay
+  fingerprint_mount: /fingerprint
+  fingerprint_host_path: /data/pk-d7pay/fingerprint
+  apkdownload_mount: /usr/share/nginx/html/files/android/d7pay
+  apkdownload_host_path: /data/pk-d7pay/apkdownload/d7pay
+  config_map: d7pay-runtime-config
+  secret: d7pay-runtime-secret
+  app_signing_secret: d7pay-android-signing
 
 frontend:
   admin_build_script: d7pay:prod
@@ -26,11 +31,26 @@ frontend:
 app:
   display_name: D7pay Merchant
   short_name: D7pay
-  package_name: com.ashrafi.pay
-  package_name_reason: Veridium/4F 授权与现有包名绑定，未取得 D7pay 新授权前不改包名。
-  api_base_url: http://api.awekay.com
+  package_name: com.d7pay.merchant
+  signing_policy: shared_release_keystore
+  signing_secret: d7pay-android-signing
+  api_base_url: http://api-d7pay.awekay.com
   apkdownload_app_key: d7pay_merchant
-  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' flutter build apk --release --dart-define=API_BASE_URL=http://api.awekay.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
+  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant ORG_GRADLE_PROJECT_requireReleaseSigning=true flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=http://api-d7pay.awekay.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
+
+jenkins:
+  publish_mode: k8s
+  env_file: ops/tenants/d7pay/jenkins.env.example
+  k8s_dir: ops/tenants/d7pay/k8s
+  config_py_policy: generated_from_config_example_or_secret_mount
+  required_steps:
+    - build-admin-h5-d7pay
+    - build-merchant-h5-d7pay
+    - build-apkdownload-d7pay
+    - build-flutter-d7pay-shared-signing
+    - apply-k8s-namespace-config-secret
+    - patch-k8s-deployments
+    - rollout-status
 
 data_policy:
   mysql: dedicated_database

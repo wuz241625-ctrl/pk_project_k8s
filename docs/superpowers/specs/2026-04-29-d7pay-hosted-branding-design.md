@@ -14,12 +14,12 @@
 
 ## 设计
 
-D7pay 以 `ops/tenants/d7pay/tenant.yaml` 作为租户配置入口，记录品牌名、域名、namespace、数据库、Redis、fingerprint、apkdownload 和 App 构建参数。admin-h5 和 merchant-h5 增加 `d7pay:prod` 构建脚本，继续复用现有构建机制。apkdownload 增加 Vite mode `d7pay`，通过 `VITE_APP_KEY=d7pay_merchant` 读取 D7pay App 元信息。Flutter App 通过 `APP_DISPLAY_NAME` 和 `APP_SHORT_NAME` 切换展示名，不改 package name。
+D7pay 以 `ops/tenants/d7pay/tenant.yaml` 作为租户配置入口，记录品牌名、域名、namespace、数据库、Redis、fingerprint、apkdownload、Jenkins 发布合同、K8s patch 和 App 构建参数。admin-h5 和 merchant-h5 增加 `d7pay:prod` 构建脚本，继续复用现有构建机制。apkdownload 增加 Vite mode `d7pay`，通过 `VITE_APP_KEY=d7pay_merchant` 读取 D7pay App 元信息。Flutter App 通过 `APP_DISPLAY_NAME`、`APP_SHORT_NAME`、`ORG_GRADLE_PROJECT_appApplicationId` 切换展示名与 APK package；D7pay package 为 `com.d7pay.merchant`，签名复用同一份 release keystore。
 
 ## 数据与安全边界
 
-D7pay 不复制我们的真实订单、真实商户、真实码商、真实指纹、真实密钥。D7pay 上线时必须使用独立 MySQL database、独立 Redis、独立 `/fingerprint/d7pay` 和独立 apkdownload 目录。客户没有源码、服务器、K8s、MySQL、Redis 权限。
+D7pay 不复制我们的真实订单、真实商户、真实码商、真实指纹、真实密钥。D7pay 上线时必须使用独立 MySQL database、独立 Redis、容器内唯一指纹目录 `/fingerprint` 加宿主机 `/data/pk-d7pay/fingerprint`，以及独立 apkdownload PVC。客户没有源码、服务器、K8s、MySQL、Redis 权限。`api/admin/merchant` 的真实 `config.py` 不提交 Git，Jenkins/K8s 通过 `config.example.py`、ConfigMap 和 Secret 注入运行配置。
 
 ## 验收标准
 
-admin、merchant、apkdownload 均可按 D7pay mode 构建。Flutter 可用 D7pay 展示名构建。D7pay 租户配置和交付文档存在。上线前按 `ops/tenants/d7pay/acceptance.md` 验证品牌、隔离、数据、业务和运维。
+admin、merchant、apkdownload 均可按 D7pay mode 构建。Flutter 可用 D7pay 展示名和 `com.d7pay.merchant` 包名构建。D7pay 租户配置、Jenkins 发布合同、K8s patch、交付文档存在。上线前按 `ops/tenants/d7pay/acceptance.md` 验证品牌、隔离、数据、业务和运维。

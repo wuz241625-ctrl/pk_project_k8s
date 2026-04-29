@@ -32,6 +32,13 @@ dist/d7pay
 /opt/cicd/k8s/sh/deploy-admin-h5.sh
 ```
 
+D7pay 由 Jenkins 使用 `ADMIN_H5_BUILD_SCRIPT=d7pay:prod` 构建，并发布到 `pk-d7pay` namespace。配置入口见：
+
+```text
+ops/tenants/d7pay/jenkins.env.example
+ops/tenants/d7pay/k8s/
+```
+
 `admin-h5` 的 Nginx 配置来自 K8s ConfigMap：
 
 ```bash

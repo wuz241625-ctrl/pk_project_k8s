@@ -4,7 +4,7 @@
 
 **目标：** 将 D7pay 作为托管专属实例品牌落地到构建配置、租户配置、下载页配置和交付文档。
 
-**架构：** 保持主干代码统一，通过 `ops/tenants/d7pay` 和前端构建 mode 承载客户差异。Flutter 只用构建参数切换展示名，保留现有 package name 以保护 Veridium/4F 授权。
+**架构：** 保持主干代码统一，通过 `ops/tenants/d7pay`、前端构建 mode、Jenkins 环境合同和 K8s patch 承载客户差异。Flutter 使用构建参数切换展示名和 APK package，签名复用同一份 release keystore。
 
 **技术栈：** Vue CLI、Vite、Flutter、Kubernetes、MySQL、Redis。
 
@@ -53,13 +53,15 @@ npm run d7pay:prod
 **文件：**
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/tenant.yaml`
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/secrets.env.example`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/jenkins.env.example`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/k8s/*.yaml`
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/acceptance.md`
 - Create: `/Users/tear/pk_project_k8s/docs/rental/d7pay-hosted.md`
 - Create: `/Users/tear/pk_project_k8s/docs/superpowers/specs/2026-04-29-d7pay-hosted-branding-design.md`
 
 - [x] **Step 1: 写入租户配置**
 
-配置 namespace、数据库、Redis、fingerprint、apkdownload、域名和 App 构建参数。
+配置 namespace、数据库、Redis、fingerprint、apkdownload、域名、Jenkins 发布变量、K8s patch 和 App 构建参数。
 
 - [x] **Step 2: 写入验收文档**
 
@@ -74,6 +76,7 @@ npm run d7pay:prod
 - Modify: `/Users/tear/pk_project/ashrafi_merchant_flutter/lib/features/login/presentation/login_page.dart`
 - Modify: `/Users/tear/pk_project/ashrafi_merchant_flutter/android/app/build.gradle.kts`
 - Modify: `/Users/tear/pk_project/ashrafi_merchant_flutter/android/app/src/main/AndroidManifest.xml`
+- Create: `/Users/tear/pk_project/ashrafi_merchant_flutter/android/key.properties.example`
 - Modify: `/Users/tear/pk_project/ashrafi_merchant_flutter/build.md`
 
 - [x] **Step 1: 添加品牌常量**
@@ -83,6 +86,10 @@ npm run d7pay:prod
 - [x] **Step 2: Android label 支持 Gradle 属性**
 
 `ORG_GRADLE_PROJECT_appLabel='D7pay Merchant'` 控制桌面名称。
+
+- [x] **Step 3: Android package 支持 Gradle 属性**
+
+`ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant` 控制 APK package；`ORG_GRADLE_PROJECT_requireReleaseSigning=true` 用于 Jenkins 正式包强制共用 release 签名。
 
 ### 任务 5：验证与发布
 
@@ -108,7 +115,7 @@ flutter test test/login_page_test.dart test/payments_controller_test.dart
 flutter analyze lib/app/brand.dart lib/app/app.dart lib/features/login/presentation/login_page.dart lib/features/payments/presentation/home_page.dart
 ```
 
-验收结果：测试与分析均通过；D7pay release APK 构建通过，`aapt dump badging` 确认 package 为 `com.ashrafi.pay`，应用展示名为 `D7pay Merchant`。
+验收结果：测试与分析均通过；D7pay release APK 构建通过，`aapt dump badging` 确认 package 为 `com.d7pay.merchant`，应用展示名为 `D7pay Merchant`。
 
 - [x] **Step 3: Git 提交推送**
 

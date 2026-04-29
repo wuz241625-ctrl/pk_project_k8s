@@ -1,0 +1,20 @@
+spec:
+  template:
+    metadata:
+      labels:
+        tenant: d7pay
+    spec:
+      containers:
+        - name: api
+          envFrom:
+            - configMapRef:
+                name: d7pay-runtime-config
+            - secretRef:
+                name: d7pay-runtime-secret
+          volumeMounts:
+            - name: fingerprint-storage
+              mountPath: /fingerprint
+      volumes:
+        - name: fingerprint-storage
+          persistentVolumeClaim:
+            claimName: d7pay-fingerprint-pvc
