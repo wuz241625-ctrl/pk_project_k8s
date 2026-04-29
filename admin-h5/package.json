@@ -15,7 +15,9 @@
     "ospay:dev": "node ./scripts/build.js ospay dev",
     "ospay:prod": "node ./scripts/build.js ospay prod",
     "789pay:dev": "node ./scripts/build.js 789pay dev",
-    "789pay:prod": "node ./scripts/build.js 789pay prod"
+    "789pay:prod": "node ./scripts/build.js 789pay prod",
+    "d7pay:dev": "node ./scripts/build.js d7pay dev",
+    "d7pay:prod": "node ./scripts/build.js d7pay prod"
   },
   "dependencies": {
     "axios": "0.18.1",

@@ -10,8 +10,8 @@ const props = defineProps({
 const baseUrl = window.location.origin;
 const appPath = ref("");
 const filename = ref("");
-const appKey = "ashrafi_merchant";
-const legacyAppKey = "lakshmi";
+const appKey = import.meta.env.VITE_APP_KEY || "ashrafi_merchant";
+const legacyAppKey = import.meta.env.VITE_APP_FALLBACK_KEY || "lakshmi";
 
 const information = ref({
   name: "Ashrafi Merchant",
@@ -56,11 +56,13 @@ onMounted(async () => {
         <div class="down-btn flexc">
           <div class="app-name">{{ information.name }}</div>
           <a
+            v-if="appPath"
             class="download-btn"
             :href="appPath"
             :download="filename"
             >Android Install</a
           >
+          <span v-else class="download-btn download-btn-disabled">APK Pending</span>
         </div>
       </div>
       <div class="b-b">
@@ -177,6 +179,10 @@ onMounted(async () => {
           font-weight: 300;
           cursor: pointer;
           text-decoration: none;
+        }
+        .download-btn-disabled {
+          background-color: #8e8e8e;
+          cursor: not-allowed;
         }
       }
       margin-bottom: 30px;

@@ -34,6 +34,30 @@ public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
 Ashrafi Merchant
 ```
 
+## D7pay 下载页构建
+
+D7pay 托管实例使用 Vite mode 读取 `d7pay_merchant` 元信息：
+
+```bash
+cd /Users/tear/pk_project_k8s/apkdownload
+npm install
+npm run build:d7pay
+```
+
+构建完成后页面标题为：
+
+```text
+D7pay Merchant
+```
+
+当前 D7pay APK 文件指向 arm64 瘦身包，避免超过 GitHub 普通单文件限制：
+
+```text
+public/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604291945.apk
+```
+
+如果后续 `appInfo.json` 中 `d7pay_merchant.path` 为空，页面会显示 `APK Pending`，避免把旧 APK 误交付成 D7pay APK。
+
 下载页 favicon 与页面 logo 使用 Flutter Android launcher icon：
 
 ```text

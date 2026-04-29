@@ -8,6 +8,22 @@ npm install
 npm run build:prod
 ```
 
+## D7pay 构建
+
+D7pay 托管实例使用独立构建变量，不需要单独长期分支：
+
+```bash
+cd /Users/tear/pk_project_k8s/admin-h5
+npm install
+npm run d7pay:prod
+```
+
+构建产物输出到：
+
+```text
+dist/d7pay
+```
+
 ## K8s 发布
 
 线上发布脚本位于服务器：

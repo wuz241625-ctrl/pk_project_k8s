@@ -1,0 +1,52 @@
+tenant_code: d7pay
+brand_name: D7pay
+platform_name: D7pay
+delivery_model: hosted_dedicated_instance
+
+domains:
+  admin: admin-d7pay.awekay.com
+  merchant: merchant-d7pay.awekay.com
+  api: api-d7pay.awekay.com
+  apkdownload: apkdownload-d7pay.awekay.com
+
+kubernetes:
+  namespace: pk-d7pay
+  image_tag_policy: pinned
+  mysql_database: pakistan_d7pay
+  redis_instance: redis-d7pay
+  fingerprint_mount: /fingerprint/d7pay
+  apkdownload_mount: /apkdownload/d7pay
+
+frontend:
+  admin_build_script: d7pay:prod
+  merchant_build_script: d7pay:prod
+  admin_title: D7pay管理系统
+  merchant_title: D7payMerchant
+
+app:
+  display_name: D7pay Merchant
+  short_name: D7pay
+  package_name: com.ashrafi.pay
+  package_name_reason: Veridium/4F 授权与现有包名绑定，未取得 D7pay 新授权前不改包名。
+  api_base_url: http://api.awekay.com
+  apkdownload_app_key: d7pay_merchant
+  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' flutter build apk --release --dart-define=API_BASE_URL=http://api.awekay.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
+
+data_policy:
+  mysql: dedicated_database
+  redis: dedicated_instance
+  fingerprint: dedicated_directory
+  apkdownload: dedicated_directory
+  copy_real_orders: false
+  copy_real_fingerprints: false
+  expose_source_code: false
+  expose_server_access: false
+  expose_database_access: false
+
+acceptance:
+  admin_brand: D7pay
+  merchant_brand: D7pay
+  app_brand: D7pay Merchant
+  required_channels:
+    - "1001"
+    - "1003"

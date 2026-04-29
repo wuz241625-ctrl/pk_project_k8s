@@ -19,5 +19,15 @@ module.exports = {
         },
         prod: {
         }
+    },
+    d7pay: {
+        common: {
+            VUE_APP_SYSTEM: "d7pay",
+            VUE_APP_TITLE: "D7pay",
+        },
+        dev: {
+        },
+        prod: {
+        }
     }
 }
