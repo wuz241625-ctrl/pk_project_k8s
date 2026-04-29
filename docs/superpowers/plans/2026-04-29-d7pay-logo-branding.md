@@ -14,7 +14,10 @@
 
 **Files:**
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/generate_logo_assets.py`
-- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-source-imagegen.png`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-source-app-*.png`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-source-sidebar-128.png`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-source-download-192.png`
+- Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-source-favicon-*.png`
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-mark-1024.png`
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-full-1600x1200.png`
 - Create: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/assets/d7pay-logo-wordmark-900x260.png`
@@ -22,7 +25,7 @@
 
 - [x] **Step 1: 编写生成脚本**
 
-使用 Pillow 从 image_gen 源图生成 D7pay mark、full logo、wordmark-safe 图和 favicon。
+使用 Pillow 从 per-size image_gen 源图集合导出 D7pay mark、full logo、wordmark-safe 图和 favicon；不从单一主图裁切所有尺寸。
 
 - [x] **Step 2: 导出 Web 资产**
 

@@ -8,7 +8,7 @@
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
 - Android package 必须为 `com.d7pay.merchant`。
 - Android launcher icon 必须使用 D7pay 专属 `@mipmap/ic_launcher_d7pay`，不能覆盖默认 Ashrafi `ic_launcher`。
-- D7pay logo 唯一源图为 `ops/tenants/d7pay/assets/d7pay-logo-source-imagegen.png`，Web、favicon、apkdownload、Android mipmap 均从该源图生成。
+- D7pay logo 使用 per-size image_gen 源图集合：Android `192/144/96/72/48`、后台 `128`、下载页 `192`、favicon `256/64/48/32/16` 均有独立源图，生成脚本只做精确导出和 ICO 封装，不从单一主图裁切。
 - admin、merchant 的 D7pay 构建必须使用 `d7pay-favicon.ico` 和 D7pay 侧边栏 logo。
 - apkdownload 的 D7pay 构建必须使用 `d7pay-logo-192x192.png`，默认 Ashrafi 下载页 logo 不受影响。
 - D7pay 与 Ashrafi 共用同一份 release 签名配置入口，Jenkins 必须挂载 `android/key.properties` 并设置 `REQUIRE_RELEASE_SIGNING=true`。
