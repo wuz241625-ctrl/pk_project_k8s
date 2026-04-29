@@ -57,6 +57,8 @@ sync_code() {
 apply_tenant_resources() {
   kubectl apply -f "${TENANT_DIR}/k8s/namespace.yaml"
   kubectl apply -f "${TENANT_DIR}/k8s/runtime-configmap.yaml"
+  kubectl apply -f "${TENANT_DIR}/k8s/h5-configmaps.yaml"
+  kubectl apply -f "${TENANT_DIR}/k8s/services.yaml"
   if [ -n "${D7PAY_RUNTIME_SECRET_YAML:-}" ]; then
     kubectl apply -f "${D7PAY_RUNTIME_SECRET_YAML}"
   else

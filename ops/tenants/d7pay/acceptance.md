@@ -36,8 +36,12 @@
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。
 - K8s 应先应用 `namespace.yaml`、`runtime-configmap.yaml`、真实 Secret、`data-volumes.yaml`。
+- K8s 应应用 `h5-configmaps.yaml`，确保 `admin-h5-nginx-conf`、`merchant-h5-nginx-conf`、`download-nginx-conf` 存在于 `pk-d7pay`。
+- K8s 应应用 `services.yaml`，确保 `api/admin/merchant` 内部服务和 D7pay 专属 NodePort 存在。
+- D7pay NodePort 必须为 `apkdownload:31080`、`admin-h5:31081`、`merchant-h5:31082`、`api-public:31085`，不能复用 `pk` 的 `30080-30085`。
 - K8s 应对 `api/admin/merchant/apkdownload` 应用对应 patch，并完成 rollout。
 - `python3 ops/tenants/d7pay/verify_release_contract.py` 必须通过。
+- 首次部署前必须按 `ops/tenants/d7pay/current-deployment-ops-runbook.md` 检查当前线上状态、备份、配置 DNS/nginx 和验证 rollout。
 
 ## 数据验收
 
@@ -63,3 +67,4 @@
 - 可一键重启 api/admin/merchant/apkdownload。
 - 可一键停用 D7pay 实例。
 - nginx 白名单对 admin 和 merchant 生效。
+- `admin-d7pay.awekay.com`、`merchant-d7pay.awekay.com`、`api-d7pay.awekay.com`、`apkdownload-d7pay.awekay.com` 均解析并代理到 D7pay 专属 NodePort。

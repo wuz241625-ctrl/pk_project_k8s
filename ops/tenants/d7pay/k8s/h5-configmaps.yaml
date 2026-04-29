@@ -1,0 +1,168 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: admin-h5-nginx-conf
+  namespace: pk-d7pay
+  labels:
+    tenant: d7pay
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        root /usr/share/nginx/html/prod/;
+        index index.html index.htm;
+
+        error_page 404 /404.html;
+        error_page 502 /502.html;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /prod-api/ {
+            proxy_pass http://admin:6000/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_set_header CF-Connecting-IP "";
+            proxy_http_version 1.1;
+            proxy_read_timeout 120;
+            proxy_send_timeout 120;
+        }
+
+        location ~ \.well-known {
+            allow all;
+        }
+
+        location ~* \.(gif|jpg|jpeg|png|bmp|swf)$ {
+            expires 30d;
+            access_log off;
+        }
+
+        location ~* \.(js|css)$ {
+            expires 12h;
+            access_log off;
+        }
+
+        location ~* \.(zip|apk|tar|gz)$ {
+            add_header Content-Disposition "attachment";
+        }
+
+        location ~ ^/(\.env|\.git|\.htaccess|\.user.ini|README|LICENSE) {
+            return 404;
+        }
+
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log;
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: merchant-h5-nginx-conf
+  namespace: pk-d7pay
+  labels:
+    tenant: d7pay
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        root /usr/share/nginx/html/prod/;
+        index index.html index.htm;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /prod-api/ {
+            proxy_pass http://merchant:8000/;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $http_x_real_ip;
+            proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
+            proxy_set_header CF-Connecting-IP "";
+            proxy_http_version 1.1;
+            proxy_connect_timeout 60s;
+            proxy_read_timeout 120s;
+            proxy_send_timeout 120s;
+        }
+
+        location /.well-known/ {
+            allow all;
+        }
+
+        location ~* \.(jpg|jpeg|png|gif|bmp|svg|webp|ico)$ {
+            expires 30d;
+            access_log off;
+        }
+
+        location ~* \.(js|css|woff2?|ttf|eot)$ {
+            expires 12h;
+            access_log off;
+        }
+
+        location ~* \.(zip|apk|tar|gz|rar|7z)$ {
+            add_header Content-Disposition "attachment";
+        }
+
+        location ~ /\.(?!well-known) {
+            deny all;
+        }
+
+        location ~ ^/(\.env|\.git|\.htaccess|README|LICENSE) {
+            return 404;
+        }
+
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log warn;
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: download-nginx-conf
+  namespace: pk-d7pay
+  labels:
+    tenant: d7pay
+data:
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+
+        error_page 404 /404.html;
+        error_page 502 /502.html;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location ~ \.well-known {
+            allow all;
+        }
+
+        location ~* \.(gif|jpg|jpeg|png|bmp|swf)$ {
+            expires 30d;
+            access_log off;
+        }
+
+        location ~* \.(js|css)$ {
+            expires 12h;
+            access_log off;
+        }
+
+        location ~* \.(zip|apk|tar|gz)$ {
+            add_header Content-Disposition "attachment";
+        }
+
+        access_log /var/log/nginx/access.log;
+        error_log /var/log/nginx/error.log;
+    }

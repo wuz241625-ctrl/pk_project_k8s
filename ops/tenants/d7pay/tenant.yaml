@@ -21,6 +21,13 @@ kubernetes:
   config_map: d7pay-runtime-config
   secret: d7pay-runtime-secret
   app_signing_secret: d7pay-android-signing
+  public_api_service: api-public
+  public_api_strategy: host_nginx_rewrites_api_prefix_to_api_public_nodeport
+  node_ports:
+    apkdownload: 31080
+    admin_h5: 31081
+    merchant_h5: 31082
+    api_public: 31085
 
 frontend:
   admin_build_script: d7pay:prod
@@ -49,6 +56,8 @@ jenkins:
     - build-apkdownload-d7pay
     - build-flutter-d7pay-shared-signing
     - apply-k8s-namespace-config-secret
+    - apply-k8s-h5-configmaps
+    - apply-k8s-services
     - patch-k8s-deployments
     - rollout-status
 
