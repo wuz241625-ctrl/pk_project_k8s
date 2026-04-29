@@ -26,6 +26,8 @@
 
 更新合同校验：`ops/tenants/d7pay/verify_release_contract.py` 检查新 Service、NodePort、H5 ConfigMap、发布脚本 apply 顺序，防止后续误删。
 
+2026-04-29 追加修正：D7pay 不能使用我们的 `awekay.com` 域名。D7pay 租户配置中的 `*.d7pay.example.com` 只作为占位，Jenkins 正式发布必须注入客户自有域名；发布脚本需要拒绝 `example.com` 和 `awekay.com`，并用客户 API 域名渲染运行时 ConfigMap。
+
 ## 数据边界
 
 D7pay 不能复用 `pk` 的 `pakistan` 数据库。运维必须创建 `pakistan_d7pay` database 和独立账号，或者提供明确的独立 MySQL endpoint 并同步修改 `runtime-configmap.yaml`。Redis 必须是 `pk-d7pay` 内可解析的独立 `redis:6379` 或独立外部 endpoint。
@@ -40,3 +42,4 @@ D7pay 不能复用 `pk` 的 `pakistan` 数据库。运维必须创建 `pakistan_
 - `services.yaml` 包含 `api-public/admin-h5/merchant-h5/apkdownload` 的 D7pay NodePort。
 - `h5-configmaps.yaml` 包含 admin、merchant、apkdownload 所需 ConfigMap。
 - `docs/rental/d7pay-hosted.md` 和 `ops/tenants/d7pay/acceptance.md` 同步引用本次运维要求。
+- D7pay 发布脚本拒绝 `example.com` 和 `awekay.com`，避免误把 D7pay 接到我们的域名。

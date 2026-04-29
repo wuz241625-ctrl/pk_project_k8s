@@ -67,4 +67,4 @@
 - 可一键重启 api/admin/merchant/apkdownload。
 - 可一键停用 D7pay 实例。
 - nginx 白名单对 admin 和 merchant 生效。
-- `admin-d7pay.awekay.com`、`merchant-d7pay.awekay.com`、`api-d7pay.awekay.com`、`apkdownload-d7pay.awekay.com` 均解析并代理到 D7pay 专属 NodePort。
+- D7pay 客户自有的 admin、merchant、api、apkdownload 域名均解析并代理到 D7pay 专属 NodePort；`*.d7pay.example.com` 只能作为占位，不能作为正式发布域名。

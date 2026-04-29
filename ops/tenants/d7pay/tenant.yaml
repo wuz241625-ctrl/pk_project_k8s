@@ -2,12 +2,13 @@ tenant_code: d7pay
 brand_name: D7pay
 platform_name: D7pay
 delivery_model: hosted_dedicated_instance
+domain_policy: customer_owned_required
 
 domains:
-  admin: admin-d7pay.awekay.com
-  merchant: merchant-d7pay.awekay.com
-  api: api-d7pay.awekay.com
-  apkdownload: apkdownload-d7pay.awekay.com
+  admin: admin.d7pay.example.com
+  merchant: merchant.d7pay.example.com
+  api: api.d7pay.example.com
+  apkdownload: apkdownload.d7pay.example.com
 
 kubernetes:
   namespace: pk-d7pay
@@ -41,9 +42,9 @@ app:
   package_name: com.d7pay.merchant
   signing_policy: shared_release_keystore
   signing_secret: d7pay-android-signing
-  api_base_url: http://api-d7pay.awekay.com
+  api_base_url: http://api.d7pay.example.com
   apkdownload_app_key: d7pay_merchant
-  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant ORG_GRADLE_PROJECT_requireReleaseSigning=true flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=http://api-d7pay.awekay.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
+  build_command: "ORG_GRADLE_PROJECT_appLabel='D7pay Merchant' ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant ORG_GRADLE_PROJECT_requireReleaseSigning=true flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64 --dart-define=API_BASE_URL=http://api.d7pay.example.com --dart-define=APP_DISPLAY_NAME='D7pay Merchant' --dart-define=APP_SHORT_NAME=D7pay"
 
 jenkins:
   publish_mode: k8s

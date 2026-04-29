@@ -110,3 +110,32 @@ git diff --check
 ```
 
 预期全部退出码为 0。
+
+### Task 6: D7pay 客户域名修正
+
+**Files:**
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/tenant.yaml`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/jenkins.env.example`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/jenkins/deploy-d7pay.sh`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/k8s/runtime-configmap.yaml`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/verify_release_contract.py`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/current-deployment-ops-runbook.md`
+- Modify: `/Users/tear/pk_project_k8s/docs/rental/d7pay-hosted.md`
+- Modify: `/Users/tear/pk_project_k8s/ops/tenants/d7pay/acceptance.md`
+- Modify: `/Users/tear/pk_project_k8s/api/build.md`
+
+- [x] **Step 1: 移除 D7pay 默认 awekay 域名**
+
+D7pay 租户配置改用 `*.d7pay.example.com` 占位，并标记 `domain_policy: customer_owned_required`。
+
+- [x] **Step 2: 发布脚本拒绝错误域名**
+
+`deploy-d7pay.sh` 对 `API_DOMAIN`、`ADMIN_DOMAIN`、`MERCHANT_DOMAIN`、`APKDOWNLOAD_DOMAIN` 执行校验，遇到 `example.com` 或 `awekay.com` 直接退出。
+
+- [x] **Step 3: 运行时 ConfigMap 由 Jenkins 域名渲染**
+
+`deploy-d7pay.sh` 根据 `API_PUBLIC_SCHEME` 和 `API_DOMAIN` 渲染 `API_PAY_URL`、`API_OSPAY_API_HOST` 和 `API_WEBSOCKET_ALLOW_HOST`，避免静态占位误发布。
+
+- [x] **Step 4: 文档同步客户自有域名要求**
+
+Runbook、托管文档、验收标准和 API 构建文档都写明 D7pay 必须使用客户自有域名，不能使用我们的 `awekay.com`。

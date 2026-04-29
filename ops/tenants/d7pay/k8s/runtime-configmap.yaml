@@ -11,9 +11,9 @@ data:
   REDIS_HOST: redis
   MYSQL_HOST: mysql
   MYSQL_DATABASE: pakistan_d7pay
-  API_PAY_URL: http://api-d7pay.awekay.com/api/order/
-  API_OSPAY_API_HOST: http://api-d7pay.awekay.com/api
-  API_WEBSOCKET_ALLOW_HOST: api-d7pay.awekay.com
+  API_PAY_URL: http://api.d7pay.example.com/api/order/
+  API_OSPAY_API_HOST: http://api.d7pay.example.com/api
+  API_WEBSOCKET_ALLOW_HOST: api.d7pay.example.com
   ADMIN_API_URL: http://api:9000
   MERCHANT_API_URL: http://api:9000
   API_CURRENT_PAY: pakistanpay

@@ -58,6 +58,8 @@ D7pay 必须使用独立 Android package name：`com.d7pay.merchant`。签名不
 
 2026-04-29 线上检查确认：当前服务器仍只运行原 `pk` 实例，仓库停在旧提交，未创建 `pk-d7pay`，未配置 D7pay 域名，线上 apkdownload 也没有 `d7pay_merchant`。首次上线前运维必须按 `ops/tenants/d7pay/current-deployment-ops-runbook.md` 执行，不能把 D7pay 域名直接指向现有 `pk` NodePort。
 
+D7pay 不能使用我们的 `awekay.com` 域名。文档和 `jenkins.env.example` 中的 `*.d7pay.example.com` 只是占位，Jenkins 正式发布前必须替换为客户自有域名；`deploy-d7pay.sh` 会拒绝 `example.com` 和 `awekay.com`。
+
 发布顺序：
 
 1. Jenkins 加载 `ops/tenants/d7pay/jenkins.env.example` 对应的真实凭据。
@@ -71,7 +73,7 @@ D7pay 必须使用独立 Android package name：`com.d7pay.merchant`。签名不
 
 ## 上线前必须完成
 
-1. 为 `admin-d7pay.awekay.com`、`merchant-d7pay.awekay.com`、`api-d7pay.awekay.com`、`apkdownload-d7pay.awekay.com` 配置 DNS 和 nginx。
+1. 为 D7pay 客户自有的 admin、merchant、api、apkdownload 域名配置 DNS 和 nginx；`*.d7pay.example.com` 只是文档占位。
 2. 创建 `pk-d7pay` namespace、独立 MySQL、独立 Redis、独立 fingerprint PVC。
 3. 应用 D7pay 专属 Service/NodePort：`31080`、`31081`、`31082`、`31085`，不要复用现有 `pk` 的 `30080-30085`。
 4. 使用干净数据初始化 D7pay，不复制真实业务数据。

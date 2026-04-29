@@ -22,6 +22,27 @@ require_env() {
   fi
 }
 
+require_customer_domain() {
+  local name="$1"
+  local value="${!name:-}"
+  require_env "${name}"
+  reject_reserved_domain_value "${name}"
+}
+
+reject_reserved_domain_value() {
+  local name="$1"
+  local value="${!name:-}"
+  if [ -z "${value}" ]; then
+    return 0
+  fi
+  case "${value}" in
+    *awekay.com*|*example.com*|*.example)
+      echo "${name} 必须替换为 D7pay 客户自有域名，当前值不能用于发布: ${value}" >&2
+      exit 1
+      ;;
+  esac
+}
+
 patch_namespace_and_image() {
   local source_yaml="$1"
   local target_yaml="$2"
@@ -47,6 +68,44 @@ pathlib.Path(target).write_text("\n".join(lines) + "\n", encoding="utf-8")
 PY
 }
 
+render_runtime_configmap() {
+  local source_yaml="${TENANT_DIR}/k8s/runtime-configmap.yaml"
+  local target_yaml="/tmp/d7pay-runtime-configmap.yaml"
+
+  python3 - "$source_yaml" "$target_yaml" <<'PY'
+import os
+import pathlib
+import sys
+
+source, target = sys.argv[1:3]
+api_domain = os.environ["API_DOMAIN"]
+api_scheme = os.environ.get("API_PUBLIC_SCHEME", "http")
+values = {
+    "API_PAY_URL": f"{api_scheme}://{api_domain}/api/order/",
+    "API_OSPAY_API_HOST": f"{api_scheme}://{api_domain}/api",
+    "API_WEBSOCKET_ALLOW_HOST": os.environ.get("API_WEBSOCKET_ALLOW_HOST", api_domain),
+    "ADMIN_API_URL": os.environ.get("ADMIN_API_URL", "http://api:9000"),
+    "MERCHANT_API_URL": os.environ.get("MERCHANT_API_URL", "http://api:9000"),
+}
+
+lines = []
+for line in pathlib.Path(source).read_text(encoding="utf-8").splitlines():
+    stripped = line.strip()
+    matched = False
+    for key, value in values.items():
+        if stripped.startswith(f"{key}:"):
+            indent = line[: len(line) - len(line.lstrip())]
+            lines.append(f"{indent}{key}: {value}")
+            matched = True
+            break
+    if not matched:
+        lines.append(line)
+
+pathlib.Path(target).write_text("\n".join(lines) + "\n", encoding="utf-8")
+print(target)
+PY
+}
+
 sync_code() {
   cd "${PROJECT_DIR}"
   git fetch --all
@@ -55,8 +114,10 @@ sync_code() {
 }
 
 apply_tenant_resources() {
+  local rendered_configmap
   kubectl apply -f "${TENANT_DIR}/k8s/namespace.yaml"
-  kubectl apply -f "${TENANT_DIR}/k8s/runtime-configmap.yaml"
+  rendered_configmap="$(render_runtime_configmap)"
+  kubectl apply -f "${rendered_configmap}"
   kubectl apply -f "${TENANT_DIR}/k8s/h5-configmaps.yaml"
   kubectl apply -f "${TENANT_DIR}/k8s/services.yaml"
   if [ -n "${D7PAY_RUNTIME_SECRET_YAML:-}" ]; then
@@ -151,6 +212,12 @@ main() {
   require_env ADMIN_COOKIE_KEY
   require_env ADMIN_ID_TOKEN_KEY
   require_env MERCHANT_COOKIE_KEY
+  require_customer_domain API_DOMAIN
+  require_customer_domain ADMIN_DOMAIN
+  require_customer_domain MERCHANT_DOMAIN
+  require_customer_domain APKDOWNLOAD_DOMAIN
+  reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST
+  reject_reserved_domain_value APP_API_BASE_URL
 
   sync_code
   python3 "${TENANT_DIR}/verify_release_contract.py"

@@ -16,6 +16,11 @@ def require(text, needle, label):
         raise AssertionError(f"{label} 缺少: {needle}")
 
 
+def forbid(text, needle, label):
+    if needle in text:
+        raise AssertionError(f"{label} 禁止出现: {needle}")
+
+
 def main():
     tenant = read("ops/tenants/d7pay/tenant.yaml")
     require(tenant, "namespace: pk-d7pay", "tenant.yaml")
@@ -23,8 +28,10 @@ def main():
     require(tenant, "package_name: com.d7pay.merchant", "tenant.yaml")
     require(tenant, "signing_policy: shared_release_keystore", "tenant.yaml")
     require(tenant, "config_py_policy: generated_from_config_example_or_secret_mount", "tenant.yaml")
+    require(tenant, "domain_policy: customer_owned_required", "tenant.yaml")
     require(tenant, "public_api_service: api-public", "tenant.yaml")
     require(tenant, "api_public: 31085", "tenant.yaml")
+    forbid(tenant, "awekay.com", "tenant.yaml")
 
     jenkins = read("ops/tenants/d7pay/jenkins.env.example")
     require(jenkins, "KUBE_NAMESPACE=pk-d7pay", "jenkins.env.example")
@@ -34,9 +41,17 @@ def main():
     require(jenkins, "REQUIRE_RELEASE_SIGNING=true", "jenkins.env.example")
     require(jenkins, "D7PAY_RUNTIME_SECRET_YAML=", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_NODEPORT=31085", "jenkins.env.example")
+    require(jenkins, "API_PUBLIC_SCHEME=http", "jenkins.env.example")
+    require(jenkins, "APP_API_BASE_URL=${API_PUBLIC_SCHEME}://${API_DOMAIN}", "jenkins.env.example")
+    require(jenkins, "deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", "jenkins.env.example")
+    forbid(jenkins.replace("deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", ""), "awekay.com", "jenkins.env.example")
 
     deploy_script = read("ops/tenants/d7pay/jenkins/deploy-d7pay.sh")
     require(deploy_script, "KUBE_NAMESPACE", "deploy-d7pay.sh")
+    require(deploy_script, "require_customer_domain API_DOMAIN", "deploy-d7pay.sh")
+    require(deploy_script, "reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST", "deploy-d7pay.sh")
+    require(deploy_script, "render_runtime_configmap", "deploy-d7pay.sh")
+    require(deploy_script, "API_PUBLIC_SCHEME", "deploy-d7pay.sh")
     require(deploy_script, "h5-configmaps.yaml", "deploy-d7pay.sh")
     require(deploy_script, "services.yaml", "deploy-d7pay.sh")
     require(deploy_script, "build_h5_service admin-h5 admin-h5-deploy", "deploy-d7pay.sh")
@@ -45,7 +60,8 @@ def main():
     configmap = read("ops/tenants/d7pay/k8s/runtime-configmap.yaml")
     require(configmap, "RUN_ENV: PROD", "runtime-configmap.yaml")
     require(configmap, "MYSQL_DATABASE: pakistan_d7pay", "runtime-configmap.yaml")
-    require(configmap, "API_OSPAY_API_HOST: http://api-d7pay.awekay.com/api", "runtime-configmap.yaml")
+    require(configmap, "API_OSPAY_API_HOST: http://api.d7pay.example.com/api", "runtime-configmap.yaml")
+    forbid(configmap, "awekay.com", "runtime-configmap.yaml")
 
     services = read("ops/tenants/d7pay/k8s/services.yaml")
     require(services, "namespace: pk-d7pay", "services.yaml")
