@@ -103,7 +103,8 @@ def main():
     require(jenkins, "D7PAY_RUNTIME_SECRET_YAML=", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_NODEPORT=31085", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_SCHEME=http", "jenkins.env.example")
-    require(jenkins, "APP_API_BASE_URL=${API_PUBLIC_SCHEME}://${API_DOMAIN}", "jenkins.env.example")
+    require(jenkins, "API_WEBSOCKET_ALLOW_HOST=api.d7pay.example.com", "jenkins.env.example")
+    require(jenkins, "APP_API_BASE_URL=http://api.d7pay.example.com", "jenkins.env.example")
     require(jenkins, "deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", "jenkins.env.example")
     forbid(jenkins.replace("deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", ""), "awekay.com", "jenkins.env.example")
 
@@ -132,6 +133,7 @@ def main():
     require(common_script, "load_env_file", "common.sh")
     require(common_script, "require_d7pay_namespace_guard", "common.sh")
     require(common_script, "reject_reserved_domain_value", "common.sh")
+    require(common_script, "存在未展开的变量引用", "common.sh")
 
     deploy_script = read("ops/tenants/d7pay/jenkins/deploy-d7pay.sh")
     require(deploy_script, "KUBE_NAMESPACE", "deploy-d7pay.sh")

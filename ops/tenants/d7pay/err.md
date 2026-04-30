@@ -55,6 +55,23 @@ grep KUBE_NAMESPACE /opt/cicd/secrets/d7pay.env
 
 确认值为 `pk-d7pay`。
 
+## 环境变量没有展开
+
+现象：
+
+```text
+APP_API_BASE_URL 存在未展开的变量引用
+```
+
+原因：`D7PAY_ENV` 是逐行读取的 key/value 文件，不执行 shell 展开；不要写 `${API_DOMAIN}` 这种引用。
+
+处理：把值写成完整客户域名，例如：
+
+```text
+API_WEBSOCKET_ALLOW_HOST=api.customer-domain.com
+APP_API_BASE_URL=http://api.customer-domain.com
+```
+
 ## healthcheck 返回 000 或 5xx
 
 原因通常是 DNS 未解析、nginx 未 reload、NodePort 未通或 deployment 未完成 rollout。

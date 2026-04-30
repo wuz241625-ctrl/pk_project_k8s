@@ -80,6 +80,10 @@ reject_reserved_domain_value() {
     return 0
   fi
   case "${value}" in
+    *\$*)
+      echo "${name} 存在未展开的变量引用，不能用于发布: ${value}" >&2
+      exit 1
+      ;;
     *awekay.com*|*example.com*|*.example)
       echo "${name} 必须替换为 D7pay 客户自有域名，当前值不能用于发布: ${value}" >&2
       exit 1

@@ -24,6 +24,8 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 - `API_DOMAIN`、`ADMIN_DOMAIN`、`MERCHANT_DOMAIN`、`APKDOWNLOAD_DOMAIN` 都是客户域名
 - `D7PAY_RUNTIME_SECRET_YAML` 指向真实 Secret YAML
 
+`D7PAY_ENV` 不执行 shell 变量展开，不能写 `${API_DOMAIN}`；所有 URL 都要写完整值。
+
 ## 日常发布
 
 ```bash
