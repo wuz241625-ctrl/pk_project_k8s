@@ -66,7 +66,7 @@ if [ -n "${D7PAY_RUNTIME_SECRET_YAML:-}" ]; then
     echo "D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在: ${D7PAY_RUNTIME_SECRET_YAML}" >&2
     exit 1
   fi
-  if grep -E "CHANGE_ME|example.com|awekay.com" "${D7PAY_RUNTIME_SECRET_YAML}" >/dev/null; then
+  if grep -E "CHANGE_ME|replace-in-jenkins|example.com|awekay.com" "${D7PAY_RUNTIME_SECRET_YAML}" >/dev/null; then
     echo "真实 Secret 文件仍包含占位值或禁用域名: ${D7PAY_RUNTIME_SECRET_YAML}" >&2
     exit 1
   fi

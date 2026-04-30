@@ -152,6 +152,7 @@ def main():
     preflight_script = read("ops/tenants/d7pay/scripts/preflight.sh")
     require(preflight_script, "verify_release_contract.py", "preflight.sh")
     require(preflight_script, "D7PAY_RUNTIME_SECRET_YAML", "preflight.sh")
+    require(preflight_script, "replace-in-jenkins", "preflight.sh")
 
     render_script = read("ops/tenants/d7pay/scripts/render-config.sh")
     require(render_script, "nginx-d7pay.conf", "render-config.sh")

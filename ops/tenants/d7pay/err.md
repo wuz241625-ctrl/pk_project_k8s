@@ -25,7 +25,7 @@ make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在
 ```
 
-原因：Jenkins 或服务器上的真实 Secret YAML 没准备好。
+原因：Jenkins 或服务器上的真实 Secret YAML 没准备好，或仍包含 `replace-in-jenkins`、`CHANGE_ME` 这类占位值。
 
 处理：
 
