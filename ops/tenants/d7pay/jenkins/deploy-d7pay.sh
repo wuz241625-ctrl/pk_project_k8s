@@ -4,6 +4,11 @@ set -euo pipefail
 # Jenkins 入口脚本示例：在服务器 /opt/cicd/k8s 上按 D7pay 租户发布。
 # 真实环境变量从 Jenkins Credentials 注入，默认值只用于说明合同。
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../scripts/common.sh
+source "${SCRIPT_DIR}/../scripts/common.sh"
+load_default_env_file
+
 PROJECT_DIR="${PROJECT_DIR:-/opt/cicd/k8s/pk_project_k8s}"
 K8S_ROOT="${K8S_ROOT:-/opt/cicd/k8s}"
 REGISTRY="${REGISTRY:-10.170.0.18:30086/lib}"
@@ -72,45 +77,18 @@ render_runtime_configmap() {
   local source_yaml="${TENANT_DIR}/k8s/runtime-configmap.yaml"
   local target_yaml="/tmp/d7pay-runtime-configmap.yaml"
 
-  python3 - "$source_yaml" "$target_yaml" <<'PY'
-import os
-import pathlib
-import sys
-
-source, target = sys.argv[1:3]
-api_domain = os.environ["API_DOMAIN"]
-api_scheme = os.environ.get("API_PUBLIC_SCHEME", "http")
-values = {
-    "API_PAY_URL": f"{api_scheme}://{api_domain}/api/order/",
-    "API_OSPAY_API_HOST": f"{api_scheme}://{api_domain}/api",
-    "API_WEBSOCKET_ALLOW_HOST": os.environ.get("API_WEBSOCKET_ALLOW_HOST", api_domain),
-    "ADMIN_API_URL": os.environ.get("ADMIN_API_URL", "http://api:9000"),
-    "MERCHANT_API_URL": os.environ.get("MERCHANT_API_URL", "http://api:9000"),
-}
-
-lines = []
-for line in pathlib.Path(source).read_text(encoding="utf-8").splitlines():
-    stripped = line.strip()
-    matched = False
-    for key, value in values.items():
-        if stripped.startswith(f"{key}:"):
-            indent = line[: len(line) - len(line.lstrip())]
-            lines.append(f"{indent}{key}: {value}")
-            matched = True
-            break
-    if not matched:
-        lines.append(line)
-
-pathlib.Path(target).write_text("\n".join(lines) + "\n", encoding="utf-8")
-print(target)
-PY
+  python3 "${TENANT_DIR}/scripts/render_runtime_config.py" --source "${source_yaml}" --output "${target_yaml}"
 }
 
 sync_code() {
   cd "${PROJECT_DIR}"
-  git fetch --all
-  git reset --hard origin/main
-  git clean -fd
+  if [ -n "$(git status --short)" ]; then
+    echo "服务器仓库存在未提交或未备份的改动，拒绝自动覆盖。请先备份或清理后再发布。" >&2
+    git status --short >&2
+    exit 1
+  fi
+  git fetch origin
+  git pull --ff-only origin main
 }
 
 apply_tenant_resources() {
@@ -218,6 +196,7 @@ main() {
   require_customer_domain APKDOWNLOAD_DOMAIN
   reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST
   reject_reserved_domain_value APP_API_BASE_URL
+  require_d7pay_namespace_guard
 
   sync_code
   python3 "${TENANT_DIR}/verify_release_contract.py"

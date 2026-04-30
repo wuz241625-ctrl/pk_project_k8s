@@ -60,6 +60,18 @@ def main():
         "admin-h5/src/assets/brand/d7pay-logo-mark.png",
         "merchant-h5/src/assets/brand/d7pay-logo-mark.png",
         "apkdownload/src/assets/logo/d7pay-logo-192x192.png",
+        "Makefile",
+        "build.md",
+        "err.md",
+        "ops/tenants/d7pay/README_OPERATIONS.md",
+        "ops/tenants/d7pay/build.md",
+        "ops/tenants/d7pay/err.md",
+        "ops/tenants/d7pay/scripts/common.sh",
+        "ops/tenants/d7pay/scripts/preflight.sh",
+        "ops/tenants/d7pay/scripts/render_runtime_config.py",
+        "ops/tenants/d7pay/scripts/render-config.sh",
+        "ops/tenants/d7pay/scripts/healthcheck.sh",
+        "ops/tenants/d7pay/scripts/rollback.sh",
     ):
         require_file(asset)
 
@@ -97,19 +109,65 @@ def main():
 
     handoff = read("docs/rental/d7pay-hosted.md")
     require(handoff, "APP_ICON=@mipmap/ic_launcher_d7pay", "d7pay-hosted.md")
+    require(handoff, "ops/tenants/d7pay/README_OPERATIONS.md", "d7pay-hosted.md")
+    require(handoff, "make d7pay-preflight", "d7pay-hosted.md")
     ops_runbook = read("ops/tenants/d7pay/current-deployment-ops-runbook.md")
     require(ops_runbook, "APP_ICON=@mipmap/ic_launcher_d7pay", "current-deployment-ops-runbook.md")
+    require(ops_runbook, "ops/tenants/d7pay/README_OPERATIONS.md", "current-deployment-ops-runbook.md")
+    require(ops_runbook, "make d7pay-deploy", "current-deployment-ops-runbook.md")
+
+    operations_readme = read("ops/tenants/d7pay/README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-preflight", "README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-render-config", "README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-deploy", "README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-healthcheck", "README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-rollback", "README_OPERATIONS.md")
+    require(operations_readme, "不能把 D7pay 指到 `awekay.com`", "README_OPERATIONS.md")
+
+    makefile = read("Makefile")
+    for target in ("d7pay-preflight", "d7pay-render-config", "d7pay-deploy", "d7pay-healthcheck", "d7pay-rollback"):
+        require(makefile, target, "Makefile")
+
+    common_script = read("ops/tenants/d7pay/scripts/common.sh")
+    require(common_script, "load_env_file", "common.sh")
+    require(common_script, "require_d7pay_namespace_guard", "common.sh")
+    require(common_script, "reject_reserved_domain_value", "common.sh")
 
     deploy_script = read("ops/tenants/d7pay/jenkins/deploy-d7pay.sh")
     require(deploy_script, "KUBE_NAMESPACE", "deploy-d7pay.sh")
+    require(deploy_script, "load_default_env_file", "deploy-d7pay.sh")
     require(deploy_script, "require_customer_domain API_DOMAIN", "deploy-d7pay.sh")
     require(deploy_script, "reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST", "deploy-d7pay.sh")
+    require(deploy_script, "require_d7pay_namespace_guard", "deploy-d7pay.sh")
     require(deploy_script, "render_runtime_configmap", "deploy-d7pay.sh")
-    require(deploy_script, "API_PUBLIC_SCHEME", "deploy-d7pay.sh")
+    require(deploy_script, "scripts/render_runtime_config.py", "deploy-d7pay.sh")
     require(deploy_script, "h5-configmaps.yaml", "deploy-d7pay.sh")
     require(deploy_script, "services.yaml", "deploy-d7pay.sh")
     require(deploy_script, "build_h5_service admin-h5 admin-h5-deploy", "deploy-d7pay.sh")
     require(deploy_script, "pnpm run build:d7pay", "deploy-d7pay.sh")
+    require(deploy_script, "git pull --ff-only origin main", "deploy-d7pay.sh")
+    forbid(deploy_script, "git reset --hard", "deploy-d7pay.sh")
+    forbid(deploy_script, "git clean -fd", "deploy-d7pay.sh")
+
+    preflight_script = read("ops/tenants/d7pay/scripts/preflight.sh")
+    require(preflight_script, "verify_release_contract.py", "preflight.sh")
+    require(preflight_script, "D7PAY_RUNTIME_SECRET_YAML", "preflight.sh")
+
+    render_script = read("ops/tenants/d7pay/scripts/render-config.sh")
+    require(render_script, "nginx-d7pay.conf", "render-config.sh")
+    require(render_script, "runtime-configmap.yaml", "render-config.sh")
+
+    render_runtime_config = read("ops/tenants/d7pay/scripts/render_runtime_config.py")
+    require(render_runtime_config, "API_PUBLIC_SCHEME", "render_runtime_config.py")
+    require(render_runtime_config, "API_OSPAY_API_HOST", "render_runtime_config.py")
+
+    healthcheck_script = read("ops/tenants/d7pay/scripts/healthcheck.sh")
+    require(healthcheck_script, "kubectl rollout status", "healthcheck.sh")
+    require(healthcheck_script, "curl", "healthcheck.sh")
+
+    rollback_script = read("ops/tenants/d7pay/scripts/rollback.sh")
+    require(rollback_script, "CONFIRM_D7PAY_ROLLBACK=1", "rollback.sh")
+    require(rollback_script, "scale-zero", "rollback.sh")
 
     configmap = read("ops/tenants/d7pay/k8s/runtime-configmap.yaml")
     require(configmap, "RUN_ENV: PROD", "runtime-configmap.yaml")

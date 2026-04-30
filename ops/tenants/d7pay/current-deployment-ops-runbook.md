@@ -2,18 +2,28 @@
 
 ## 运维只看哪一份
 
-运维执行 D7pay 首次上线时，只从这一份文档开始：
+运维日常执行不要啃这份长文档，先看一页 SOP：
 
 ```text
-ops/tenants/d7pay/current-deployment-ops-runbook.md
+ops/tenants/d7pay/README_OPERATIONS.md
 ```
 
-其他文件只作为引用：
+运维只需要按 SOP 跑下面几个命令：
+
+```bash
+make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+本 runbook 是排障和细节说明，其他文件只作为引用：
 
 - `ops/tenants/d7pay/acceptance.md`：上线后验收清单。
 - `ops/tenants/d7pay/jenkins.env.example`：Jenkins 变量模板。
 - `ops/tenants/d7pay/k8s/`：K8s 资源与 patch。
 - `docs/rental/d7pay-hosted.md`：托管交付边界说明。
+- `ops/tenants/d7pay/err.md`：常见错误与处理。
 
 运维不要从 `tenant.yaml`、`runtime-configmap.yaml` 或某个单独 patch 文件开始操作，因为这些文件只是发布合同的一部分，缺少当前线上状态、备份、域名、回滚和验收顺序。
 
@@ -281,7 +291,14 @@ REQUIRE_RELEASE_SIGNING=true
 
 上面的 `*.d7pay.example.com` 只是占位。运维必须替换为 D7pay 客户自有域名；`deploy-d7pay.sh` 会拒绝 `example.com` 和 `awekay.com`，防止把 D7pay 发布到我们的域名或占位域名。
 
-发布命令：
+发布命令优先使用 Makefile 入口：
+
+```bash
+cd /opt/cicd/k8s/pk_project_k8s
+make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+Jenkins 也可以直接调用底层脚本：
 
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
@@ -415,7 +432,13 @@ curl -I http://<d7pay-api-domain>/api/
 
 ## 回滚
 
-如果 D7pay 首次发布失败，优先只回滚 `pk-d7pay`，不要动现有 `pk`：
+如果 D7pay 首次发布失败，优先只回滚 `pk-d7pay`，不要动现有 `pk`。运维优先使用：
+
+```bash
+make d7pay-rollback D7PAY_ENV=/opt/cicd/secrets/d7pay.env CONFIRM_D7PAY_ROLLBACK=1
+```
+
+底层命令如下：
 
 ```bash
 export KUBECONFIG=/etc/kubernetes/admin.conf

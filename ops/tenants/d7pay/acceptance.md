@@ -38,7 +38,8 @@
 ## Jenkins / K8s 验收
 
 - Jenkins 使用 `ops/tenants/d7pay/jenkins.env.example` 中的变量合同发布。
-- Jenkins 调用 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`，不能直接复用硬编码 `pk` namespace 和默认 `build:prod` 的旧脚本。
+- 运维日常执行入口是 `ops/tenants/d7pay/README_OPERATIONS.md` 和根目录 Makefile 目标，长 runbook 只用于排障细节。
+- Jenkins 调用 `make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 或底层 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`，不能直接复用硬编码 `pk` namespace 和默认 `build:prod` 的旧脚本。
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。
@@ -48,8 +49,10 @@
 - D7pay NodePort 必须为 `apkdownload:31080`、`admin-h5:31081`、`merchant-h5:31082`、`api-public:31085`，不能复用 `pk` 的 `30080-30085`。
 - K8s 应对 `api/admin/merchant/apkdownload` 应用对应 patch，并完成 rollout。
 - `python3 ops/tenants/d7pay/verify_release_contract.py` 必须通过。
-- 首次部署前必须按 `ops/tenants/d7pay/current-deployment-ops-runbook.md` 检查当前线上状态、备份、配置 DNS/nginx 和验证 rollout。
-- 运维执行入口必须是 `ops/tenants/d7pay/current-deployment-ops-runbook.md`，不能只拿单个 YAML 或 patch 文件上线。
+- 首次部署前必须按 `make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 检查合同、域名、Secret、语法、YAML 和现有集群可读性。
+- 发布前必须按 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 生成 nginx 与 runtime ConfigMap 预览。
+- 发布后必须按 `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 验证 rollout 和四个客户域名。
+- 运维不能只拿单个 YAML 或 patch 文件上线。
 
 ## 数据验收
 
