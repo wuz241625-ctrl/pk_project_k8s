@@ -36,7 +36,7 @@ git switch -c d7pay
 - Create on test branch: `/Users/tear/pk_project_k8s/build.md`
 - Create on test branch: `/Users/tear/pk_project_k8s/err.md`
 
-- [ ] **Step 1: 从最后一个非 D7pay 提交创建 `test` 分支**
+- [x] **Step 1: 从最后一个非 D7pay 提交创建 `test` 分支**
 
 Run:
 
@@ -44,7 +44,7 @@ Run:
 git switch -c test 68a657d
 ```
 
-- [ ] **Step 2: 写入 test 分支说明**
+- [x] **Step 2: 写入 test 分支说明**
 
 说明 `test` 是当前服务器原 `pk` 测试环境发布源，不包含 D7pay 租户资源。
 
@@ -53,7 +53,7 @@ git switch -c test 68a657d
 **Files:**
 - Verify only.
 
-- [ ] **Step 1: 验证 d7pay 分支**
+- [x] **Step 1: 验证 d7pay 分支**
 
 Run:
 
@@ -64,7 +64,7 @@ make d7pay-preflight
 git diff --check
 ```
 
-- [ ] **Step 2: 验证 test 分支**
+- [x] **Step 2: 验证 test 分支**
 
 Run:
 
@@ -76,7 +76,7 @@ test ! -e apkdownload/public/files/android/d7pay
 git diff --check
 ```
 
-- [ ] **Step 3: 推送两个分支**
+- [x] **Step 3: 推送两个分支**
 
 Run:
 
