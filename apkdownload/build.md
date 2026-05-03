@@ -53,8 +53,7 @@ D7pay Merchant
 当前 D7pay APK 文件指向 arm64 瘦身包，避免超过 GitHub 普通单文件限制：
 
 ```text
-public/files/android/d7pay/d7pay_merchant_arm64_v0.1.7_202605031803.apk
-public/files/android/d7pay/d7pay_merchant_arm_v0.1.7_202605031803.apk
+public/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk
 ```
 
 该 APK 必须满足：

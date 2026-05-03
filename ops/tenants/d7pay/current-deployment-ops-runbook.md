@@ -41,7 +41,7 @@ D7pay 已从临时混合部署收口到独立租户合同：
 - D7pay NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`。
 - 宿主机 nginx 的 `admin.d7pay.net`、`merchant.d7pay.net`、`apkdownload.d7pay.net`、`api.d7pay.net` 已指向 D7pay 专属 NodePort。
 - `app.d7pay.net` 不作为 D7pay 交付入口，不应代理到旧 `app-h5`。
-- D7pay APK 当前文件名为 `d7pay_merchant_arm64_v0.1.7_202605031803.apk` 和 `d7pay_merchant_arm_v0.1.7_202605031803.apk`，内置 `API_BASE_URL=https://api.d7pay.net`，使用共享正式 release keystore 签名。
+- D7pay APK 当前文件名为 `d7pay_merchant_universal_v0.1.8_202605031855.apk`，内置 `API_BASE_URL=https://api.d7pay.net`，同时包含 `armeabi-v7a` 和 `arm64-v8a`，使用共享正式 release keystore 签名。
 - `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 已通过。
 
 注意：D7pay 后端上游 EasyPaisa/JazzCash 凭据当前沿用现有可用上游配置；如果客户提供独立上游凭据，只替换 `/opt/cicd/secrets/d7pay-runtime-secret.yaml` 并 rollout `api/admin/merchant`，不要改代码或复制 pk 数据。

@@ -4,7 +4,7 @@
 
 - admin 构建使用 `npm run d7pay:prod`，浏览器标题包含 `D7pay管理系统`。
 - merchant 构建使用 `npm run d7pay:prod`，登录页展示 `D7pay`。
-- apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_arm64_v0.1.7_202605031803.apk`。
+- apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_universal_v0.1.8_202605031855.apk`。
 - apkdownload 的 D7pay 发布只保留 `d7pay_merchant` 元信息和 `/files/android/d7pay` APK 目录，不能暴露 Ashrafi/Lakshmi 下载条目。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
 - Android package 必须为 `com.d7pay.merchant`。
@@ -18,7 +18,7 @@
 
 - `admin-h5` 使用 `NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod` 构建通过，产物标题包含 `D7pay管理系统`。
 - `merchant-h5` 使用 `NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod` 构建通过，产物标题包含 `D7payMerchant`。
-- `apkdownload` 使用 `npm run build:d7pay` 构建通过，产物包含 `/files/android/d7pay/d7pay_merchant_arm64_v0.1.7_202605031803.apk` 和 `/files/android/d7pay/d7pay_merchant_arm_v0.1.7_202605031803.apk`。
+- `apkdownload` 使用 `npm run build:d7pay` 构建通过，产物包含 `/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk`。
 - Flutter 使用 D7pay 构建参数构建 arm64 release APK 通过，`aapt dump badging` 验证 `application-label` 为 `D7pay Merchant`，`package` 为 `com.d7pay.merchant`。
 - Flutter D7pay launcher icon 资源已生成到 `ic_launcher_d7pay` 各 density 目录，`./gradlew :app:packageDebug -PappIcon='@mipmap/ic_launcher_d7pay'` 通过，packaged manifest 确认为 `@mipmap/ic_launcher_d7pay`。
 - Flutter `flutter test --no-test-assets test/login_page_test.dart test/payments_controller_test.dart` 通过。
@@ -34,8 +34,7 @@
 - `api/admin/merchant` 容器 `get_config()` 返回 `tenant_code=d7pay`、`mysql_database=pakistan_d7pay`。
 - `d7pay_app` 账号可连接 `pakistan_d7pay`，并只能作为 D7pay 应用账号使用。
 - `/fingerprint` 挂载到 `d7pay-fingerprint-pvc`，宿主机目录为 `/data/pk-d7pay/fingerprint`。
-- D7pay ARM64 APK 链接 `https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.7_202605031803.apk` 返回 `200`，APK 内置 `API_BASE_URL=https://api.d7pay.net`。
-- D7pay ARM APK 链接 `https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm_v0.1.7_202605031803.apk` 返回 `200`，APK 内置 `API_BASE_URL=https://api.d7pay.net`。
+- D7pay 合并 APK 链接 `https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk` 返回 `200`，APK 内置 `API_BASE_URL=https://api.d7pay.net`，并同时包含 `armeabi-v7a` 和 `arm64-v8a`。
 - `app.d7pay.net` 不作为 D7pay 交付入口，宿主机 nginx 不应把该域名代理到旧 `app-h5`。
 - D7pay 线上 `appInfo.json` 只包含 D7pay 下载项，不包含 `ashrafi_merchant` 或 `lakshmi`。
 - `18088880000 / 123456 / 当前 Google code` 调用 admin 登录接口返回 `code=20000`。
