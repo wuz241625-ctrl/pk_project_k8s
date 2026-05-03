@@ -80,6 +80,16 @@ async def apply_jazzcash_runtime_fields(payment_row, runtime_reader):
     ) else 0
     return payment_row
 
+
+async def reset_non_runtime_legacy_projection(redis, payment_id, channels, logger=None):
+    await redis.srem('payment_online_df', payment_id)
+    await redis.lrem('payment_active_df', 0, payment_id)
+    await redis.srem('payment_online_ds', payment_id)
+    for channel in channels:
+        await redis.lrem(f'payment_active_{channel}', 0, payment_id)
+        if logger:
+            logger.info(f"Removed payment_id from channel {channel}: {payment_id}")
+
 # 增加
 class addPartner(BaseHandler):
     @tornado.web.authenticated
@@ -5101,9 +5111,6 @@ class resettingPayment(BaseHandler):
         # if not await self.redis.set('login_off_realtime_freecharge_{id}'.format(id=data['id']), '1', 2*60):
         #     self.logger.info('管理员id:{id},收款资料重置添加redis失败:{data}'.format(id=user_id, data=json.dumps(data)))
         #     return await self.json_response(msg[10007])
-        await self.redis.srem('payment_online_df', data['id'])
-        await self.redis.lrem('payment_active_df', 0, data['id'])
-        await self.redis.srem('payment_online_ds', data['id'])
          # 获取通道信息
         payment = await self.get_result_by_condition('payment', ['channel', 'bank_type', 'bank_type_id'], {'id': data['id']})
         if payment is None or 'channel' not in payment:
@@ -5112,15 +5119,19 @@ class resettingPayment(BaseHandler):
 
         # 将所有通道存储到 self.qr_channels 列表中
         qr_channels = payment['channel'].split(',')
-        for channel in qr_channels:
-            await self.redis.lrem(f'payment_active_{channel}', 0, data['id'])
-            self.logger.info(f"Removed payment_id from channel {channel}: {data['id']}")
         if is_easypaisa_payment(payment):
             runtime_service = EasyPaisaAdminRuntimeService(self.redis)
             await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
         elif is_jazzcash_payment(payment):
             runtime_service = JazzCashAdminRuntimeService(self.redis)
             await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
+        else:
+            await reset_non_runtime_legacy_projection(
+                self.redis,
+                data['id'],
+                qr_channels,
+                logger=self.logger,
+            )
         result = dict(code=20000, msg='重置成功')
         return await self.json_response(result)
 
@@ -5133,7 +5144,11 @@ class batchDisablePayment(BaseHandler):
         if await self.is_null(data, ['id']):
             self.logger.info('管理员id:{id},收款资料批量禁用检查bank id为空:{data}'.format(id=user_id, data=json.dumps(data)))
             return await self.json_response(msg[10006])
-        payments = await self.get_results_by_condition('payment', ['id','status'], {'bank_type': data['id']})
+        payments = await self.get_results_by_condition(
+            'payment',
+            ['id', 'status', 'bank_type', 'bank_type_id', 'phone', 'channel'],
+            {'bank_type': data['id']},
+        )
         if not payments:
             self.logger.info('管理员id:{id},收款资料批量禁用查询payment没有bank_type为:{data}的'.format(id=user_id, data=json.dumps(data['id'])))
             return await self.json_response(data=msg[10004])
@@ -5157,6 +5172,24 @@ class batchDisablePayment(BaseHandler):
         sql_update = """update bank_type set status=0 where id = {id} """.format(
             id=data['id'])
         await self.execute(sql_update)
+        easypaisa_runtime_service = None
+        jazzcash_runtime_service = None
+        for payment in payments:
+            if is_easypaisa_payment(payment):
+                if easypaisa_runtime_service is None:
+                    easypaisa_runtime_service = EasyPaisaAdminRuntimeService(self.redis)
+                await easypaisa_runtime_service.force_reset(
+                    payment['id'],
+                    source="admin_batch_disable_payment",
+                    phone=payment.get('phone'),
+                )
+            elif is_jazzcash_payment(payment):
+                if jazzcash_runtime_service is None:
+                    jazzcash_runtime_service = JazzCashAdminRuntimeService(self.redis)
+                await jazzcash_runtime_service.force_reset(
+                    payment['id'],
+                    source="admin_batch_disable_payment",
+                )
         result = dict(code=20000, msg='批量禁用成功')
         return await self.json_response(result)
 

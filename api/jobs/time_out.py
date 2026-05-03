@@ -7,6 +7,7 @@ import logging
 import threading
 
 from config import get_config
+from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 from logging.handlers import TimedRotatingFileHandler
 
 LOG_FILE = "order_timeout.log"
@@ -43,6 +44,20 @@ class TimeOutGuard:
             return bool(self.redis.sismember(self.EASYPAISA_INDEX_DISPATCH_DS, str(payment_id)))
         if self._is_jazzcash(bank_type_id=bank_type_id, bank_type=bank_type):
             return bool(self.redis.sismember(self.JAZZCASH_INDEX_DISPATCH_DS, str(payment_id)))
+        return True
+
+    def requeue(self, *, payment_id, channel_code, bank_type_id=None, bank_type=None) -> bool:
+        if self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
+            return SyncEasyPaisaRuntimeService(self.redis).requeue_ds_if_online(
+                payment_id,
+                channels=[channel_code],
+                source="order_timeout_requeue",
+            )
+        if not self.check(payment_id=payment_id, bank_type_id=bank_type_id, bank_type=bank_type):
+            return False
+        list_name = 'payment_active_{channel_code}'.format(channel_code=channel_code)
+        self.redis.lrem(list_name, 0, payment_id)
+        self.redis.rpush(list_name, payment_id)
         return True
 
 
@@ -181,15 +196,14 @@ def order_timeout(conn, rds):
                     # 放入队列
                     list_name = 'payment_active_{channel_code}'.format(channel_code=i['channel_code'])
                     guard = TimeOutGuard(rds)
-                    if not guard.check(
+                    if not guard.requeue(
                         payment_id=payment_id,
+                        channel_code=i['channel_code'],
                         bank_type_id=i.get('bank_type_id'),
                         bank_type=i.get('bank_type'),
                     ):
                         logging.info(f"【码监控】: 码 {payment_id} 不在 runtime dispatch_ds 索引, 跳过 rpush {list_name}")
                     else:
-                        rds.lrem(list_name, 0, payment_id)
-                        rds.rpush(list_name, payment_id)  # 尾部插入
                         logging.info(f"【码监控】: 准备将码 {payment_id} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
                     key = 'msg_timeout_{partner_id}'.format(partner_id=partner_id)
                     rds.set(key, 1, 60)    # 保持60秒

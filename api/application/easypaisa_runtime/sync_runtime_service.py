@@ -94,6 +94,18 @@ class SyncEasyPaisaRuntimeService:
         self.redis.rpush(keyspace.LEGACY_PAYMENT_ACTIVE_DF, payment_id)
         return True
 
+    def pop_df_order_candidate(self, *, max_attempts: int = 50) -> Optional[str]:
+        for _ in range(max_attempts):
+            raw_payment_id = self.redis.lpop(keyspace.LEGACY_PAYMENT_ACTIVE_DF)
+            if raw_payment_id is None:
+                return None
+            payment_id = self._text(raw_payment_id)
+            if self.is_df_order_online(payment_id):
+                return payment_id
+            self.redis.srem(keyspace.LEGACY_PAYMENT_ONLINE_DF, payment_id)
+            self.redis.lrem(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, payment_id)
+        return None
+
     def write_snapshot(self, payment_id, patch: Dict[str, Any], source: str) -> Dict[str, Any]:
         snapshot = self.read_snapshot(payment_id) or {
             "schema_version": keyspace.SCHEMA_VERSION,
@@ -514,6 +526,27 @@ class SyncEasyPaisaRuntimeService:
 
     def schedule_collection(self, payment_id, *, next_at: int) -> None:
         self.redis.zadd(keyspace.SCHEDULE_COLLECTION, {str(payment_id): next_at})
+
+    def requeue_ds_if_online(self, payment_id, *, channels=None, source: str) -> bool:
+        current = self.read_snapshot(payment_id)
+        resolved_channels = keyspace.normalize_channels(
+            (current or {}).get("channels") if channels is None else channels
+        )
+        collect_enabled = bool((current or {}).get("collect_enabled")) if current and "collect_enabled" in current else True
+        ds_order_enabled = self._flag_from_snapshot(current or {}, "ds_order_enabled", "dispatch_ds", False)
+        if not current or not (current.get("online") and collect_enabled and ds_order_enabled):
+            for channel in resolved_channels:
+                self.redis.lrem(keyspace.legacy_payment_active_channel_key(channel), 0, payment_id)
+            return False
+
+        self.set_ds_order_dispatch(
+            payment_id,
+            enabled=True,
+            phone=current.get("phone"),
+            channels=resolved_channels,
+            source=source,
+        )
+        return True
 
     def force_offline(self, payment_id, *, phone: Optional[str], source: str, reason: str, channels=None) -> Dict[str, Any]:
         current = self.read_snapshot(payment_id) or {}

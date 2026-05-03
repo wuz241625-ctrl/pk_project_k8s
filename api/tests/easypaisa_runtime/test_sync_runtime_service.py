@@ -127,6 +127,12 @@ class FakeSyncRedis:
         bucket.append(str(value))
         return len(bucket)
 
+    def lpop(self, key):
+        bucket = self.lists.setdefault(key, [])
+        if not bucket:
+            return None
+        return bucket.pop(0).encode("utf-8")
+
     def lrange(self, key, start, stop):
         bucket = self.lists.get(key, [])
         if stop == -1:
@@ -194,6 +200,30 @@ class EasyPaisaSyncRuntimeServiceTests(unittest.TestCase):
         self.assertTrue(service.requeue_df_if_online(payment_id))
         self.assertEqual(self.redis.lists["payment_active_df"], ["533280"])
 
+    def test_pop_df_order_candidate_uses_runtime_snapshot_and_drops_stale_legacy_entries(self):
+        from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+
+        service = SyncEasyPaisaRuntimeService(self.redis, now_provider=lambda: self.now)
+        stale_id = 533279
+        active_id = 533280
+        self.redis.rpush(keyspace.LEGACY_PAYMENT_ACTIVE_DF, stale_id)
+        self.redis.rpush(keyspace.LEGACY_PAYMENT_ACTIVE_DF, active_id)
+        self.redis.sadd(keyspace.LEGACY_PAYMENT_ONLINE_DF, stale_id, active_id)
+        service.mark_active_successful(
+            active_id,
+            phone="923045536108",
+            selected_accno="88521643",
+            selected_iban="PK12HABB0000000088521643",
+            source="monitor",
+            collect_enabled=True,
+            df_order_enabled=True,
+            ds_order_enabled=False,
+        )
+
+        self.assertEqual(service.pop_df_order_candidate(), "533280")
+        self.assertFalse(self.redis.sismember(keyspace.LEGACY_PAYMENT_ONLINE_DF, stale_id))
+        self.assertEqual(self.redis.lists[keyspace.LEGACY_PAYMENT_ACTIVE_DF], [])
+
     def test_mark_active_successful_can_project_collection_channel_queue(self):
         from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 
@@ -224,6 +254,33 @@ class EasyPaisaSyncRuntimeServiceTests(unittest.TestCase):
         self.assertTrue(snapshot["dispatch_ds"])
         self.assertEqual(snapshot["channels"], ["1001"])
         self.assertTrue(self.redis.sismember("payment_online_ds", 533280))
+        self.assertEqual(self.redis.lists["payment_active_1001"], ["533280"])
+
+    def test_requeue_ds_if_online_routes_channel_queue_through_runtime_bridge(self):
+        from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+
+        service = SyncEasyPaisaRuntimeService(self.redis, now_provider=lambda: self.now)
+        payment_id = 533280
+        service.mark_active_successful(
+            payment_id,
+            phone="923045536108",
+            selected_accno="88521643",
+            selected_iban="PK12HABB0000000088521643",
+            source="test",
+            collect_enabled=True,
+            ds_order_enabled=True,
+            df_order_enabled=True,
+            channels=["1001"],
+        )
+        self.redis.lrem("payment_active_1001", 0, payment_id)
+
+        self.assertTrue(
+            service.requeue_ds_if_online(
+                payment_id,
+                channels=["1001"],
+                source="timeout_requeue",
+            )
+        )
         self.assertEqual(self.redis.lists["payment_active_1001"], ["533280"])
 
     def test_mark_active_successful_without_dispatch_ds_cleans_collection_channel_queue(self):

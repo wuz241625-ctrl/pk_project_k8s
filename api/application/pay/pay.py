@@ -30,6 +30,7 @@ from aiomysql import DictCursor
 from application.base import BaseHandler
 from application.easypaisa_runtime import keyspace as easypaisa_keyspace
 from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
+from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
 from application.jazzcash_runtime import keyspace as jazzcash_keyspace
 from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.message import msg, msg_en
@@ -130,6 +131,38 @@ async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=N
         runtime_reader,
         bank_type=(payment or {}).get('bank_type'),
     )
+
+
+async def _requeue_collection_payment_if_online(self, payment_id, channel_code, runtime_reader=None):
+    payment = await self.get_result_by_condition(
+        'payment',
+        ['bank_type', 'bank_type_id'],
+        {'id': payment_id},
+    )
+    if not payment:
+        return False
+    if _is_easypaisa_payment_type(
+        bank_type_id=payment.get('bank_type_id'),
+        bank_type=payment.get('bank_type'),
+    ):
+        runtime_service = EasyPaisaRuntimeService(self.redis)
+        return await runtime_service.requeue_ds_if_online(
+            payment_id,
+            channels=[channel_code],
+            source="pay_collection_requeue",
+        )
+    if not await _is_collection_payment_online(
+        self,
+        payment_id,
+        payment.get('bank_type_id'),
+        runtime_reader,
+        bank_type=payment.get('bank_type'),
+    ):
+        return False
+    list_name = 'payment_active_{channel_code}'.format(channel_code=channel_code)
+    await self.redis.lrem(list_name, 0, payment_id)
+    await self.redis.rpush(list_name, payment_id)
+    return True
 
 
 async def _has_collection_kickoff(self, payment_id):
@@ -1216,19 +1249,17 @@ class Pay(BaseHandler):
                     continue
 
                 list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, payment_id):
-                #     self.logger.warn(f"码 {payment_id} 不在通道中，不允许接单 code: {code}")
-                #     continue
-                position = await self.redis.lpos(list_name, payment_id)
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
-                    continue
-                else:
-                    # 元素存在
+                if not (
+                    _is_easypaisa_payment_type(bank_type_id=bank_id, bank_type=payment.get('bank_type'))
+                    or _is_jazzcash_payment_type(bank_type_id=bank_id, bank_type=payment.get('bank_type'))
+                ):
+                    position = await self.redis.lpos(list_name, payment_id)
+                    if position is None:
+                        self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
+                        continue
                     self.logger.info(f"码 {payment_id} 在 Redis 队列 '{list_name}, code: {code}' 中 (执行 lpos)。")
+                else:
+                    self.logger.info(f"runtime 码 {payment_id} 已通过 snapshot/index 派单校验，跳过 legacy 队列 lpos, code: {code}")
 
                 # 检查支付码是否在列表中
                 if int(payment_id) not in new_payment_list.keys():
@@ -2180,22 +2211,6 @@ class Pay(BaseHandler):
                     self.logger.error(f"Step 24.3: 检查 'payment_online_ds' 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
                     continue
 
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, i):
-                #     self.logger.warn(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                #     continue
-                position = await self.redis.lpos(list_name, i)
-
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                    continue
-                else:
-                    # 元素存在
-                    self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-
-                self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
                 # runtime 银行只看各自 runtime kickoff key，避免 legacy 脏 key 误拦截。
                 try:
                     kick_off = await _has_collection_kickoff(self, i)
@@ -2207,21 +2222,19 @@ class Pay(BaseHandler):
                     self.logger.error(f"Step 24.4: 检查代收 kickoff 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
                     continue
 
-                # 移除列表中的元素
                 try:
-                    result_lrem = await self.redis.lrem(list_name, 0, i)
-                    self.logger.info(f"Step 24.6: 从 {list_name} 中移除了 {i}, 操作结果: {result_lrem}, 订单 {code}, 金额 {amount}")
+                    requeued = await _requeue_collection_payment_if_online(
+                        self,
+                        i,
+                        data['channel_code'],
+                        runtime_reader,
+                    )
+                    if requeued:
+                        self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
+                    else:
+                        self.logger.warning(f"【码监控】: 码 {i} 当前不可派单，跳过重新入队 {list_name}")
                 except Exception as e:
-                    self.logger.error(f"Step 24.6: 从 {list_name} 中移除 {i} 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    continue
-
-                # 将元素重新推入列表
-                try:
-                    result_rpush = await self.redis.rpush(list_name, i)
-                    self.logger.info(f"Step 24.7: 已将 {i} 重新推入到 {list_name}, 操作结果: {result_rpush}, 订单 {code}, 金额 {amount}")
-                    self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
-                except Exception as e:
-                    self.logger.error(f"Step 24.7: 将 {i} 推入 {list_name} 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
+                    self.logger.error(f"Step 24.6: 将 {i} 通过 runtime 重新入队时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
                     continue
 
             # 记录结束状态
@@ -2429,20 +2442,17 @@ class Pay(BaseHandler):
 
             # 20250407 可用通道验证
             list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-            # 检查支付码是否在通道中
-            # if not await self.redis.lpos(list_name, payment_id):
-            #     self.logger.warn(f"码 {payment_id} 不在通道中，不允许接单 code: {code}")
-            #     continue
-
-            position = await self.redis.lpos(list_name, payment_id)
-            # 判断元素是否存在
-            if position is None:
-                # 元素不存在
-                self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
-                continue
-            else:
-                # 元素存在
+            if not (
+                _is_easypaisa_payment_type(bank_type_id=payment.get('bank_type_id'), bank_type=payment.get('bank_type'))
+                or _is_jazzcash_payment_type(bank_type_id=payment.get('bank_type_id'), bank_type=payment.get('bank_type'))
+            ):
+                position = await self.redis.lpos(list_name, payment_id)
+                if position is None:
+                    self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
+                    continue
                 self.logger.info(f"码 {payment_id} 在 Redis 队列 '{list_name}, code: {code}' 中 (执行 lpos)。")
+            else:
+                self.logger.info(f"runtime 码 {payment_id} 已通过 snapshot/index 派单校验，跳过 legacy 队列 lpos, code: {code}")
 
             
             # 码异常
@@ -2848,27 +2858,14 @@ class Pay(BaseHandler):
                         break
         # 能继续接单的重新加入队列
         for i in back_key:
-            if await _is_collection_payment_online_by_id(self, i, runtime_reader):
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, i):
-                #     self.logger.warn(f"【码监控】: 码 {payment_id} 不在通道中 {list_name}")
-                #     continue
-                position = await self.redis.lpos(list_name, i)
-
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                    continue
-                else:
-                    # 元素存在
-                    self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-
-                self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                if await _has_collection_kickoff(self, i):
-                    continue
-                await self.redis.lrem(list_name, 0, i)
-                await self.redis.rpush(list_name, i)
+            if await _has_collection_kickoff(self, i):
+                continue
+            if await _requeue_collection_payment_if_online(
+                self,
+                i,
+                data['channel_code'],
+                runtime_reader,
+            ):
                 self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
     
         return {"success": is_push, "upi": upi}

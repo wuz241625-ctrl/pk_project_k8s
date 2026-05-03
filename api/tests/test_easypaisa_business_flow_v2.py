@@ -704,6 +704,63 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
     def test_pre_login_clears_stale_runtime_session_when_snapshot_offline(self):
         asyncio.run(self._run_pre_login_clears_stale_runtime_session_case())
 
+    def test_get_session_data_prefers_runtime_session_over_prelogin_projection(self):
+        asyncio.run(self._run_get_session_data_prefers_runtime_session_case())
+
+    async def _run_get_session_data_prefers_runtime_session_case(self):
+        payment_id = 533280
+        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
+        await self.redis.setex(
+            redis_key,
+            300,
+            json.dumps(
+                {
+                    "id": payment_id,
+                    "phone": "923045536108",
+                    "bankname": "easypaisa",
+                    "status": LoginStatus.OTP_SENT,
+                }
+            ),
+        )
+        await self.redis.set(
+            keyspace.session_key(payment_id),
+            json.dumps(
+                {
+                    "id": payment_id,
+                    "phone": "923045536108",
+                    "bankname": "easypaisa",
+                    "status": LoginStatus.ACTIVE_SUCCESSFUL,
+                    "account_accno": "88521643",
+                }
+            ),
+        )
+
+        session = await self.easypaisa._get_session_data(redis_key)
+
+        self.assertEqual(session["status"], LoginStatus.ACTIVE_SUCCESSFUL)
+        self.assertEqual(session["account_accno"], "88521643")
+
+    def test_active_successful_persist_projects_job_from_runtime_service(self):
+        asyncio.run(self._run_active_successful_persist_projects_job_case())
+
+    async def _run_active_successful_persist_projects_job_case(self):
+        payment_id = 533280
+        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
+        session = self._session(LoginStatus.ACTIVE_SUCCESSFUL)
+        session["qr_channel"] = 1001
+        session["account_accno"] = "88521643"
+        session["account_iban"] = "PK12HABB0000000088521643"
+
+        await self.easypaisa._persist_session_data(redis_key, session)
+
+        job_raw = await self.redis.hget(keyspace.JOB_HASH, payment_id)
+        self.assertIsNotNone(job_raw)
+        job = json.loads(job_raw)
+        self.assertEqual(job["id"], payment_id)
+        self.assertEqual(job["status"], "grabstatement")
+        self.assertEqual(job["qr_channel"], 1001)
+        self.assertIsNotNone(await self.redis.zscore(keyspace.JOB_SET, payment_id))
+
     async def _run_pre_login_runtime_snapshot_case(self):
         self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
         self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)

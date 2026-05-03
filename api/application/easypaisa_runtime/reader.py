@@ -1,12 +1,10 @@
 from application.easypaisa_runtime import keyspace
-from application.easypaisa_runtime.flags import runtime_read_enabled
 from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
 
 
 class EasyPaisaRuntimeReader:
     def __init__(self, redis):
         self.redis = redis
-        self.enabled = runtime_read_enabled()
         self.runtime_service = EasyPaisaRuntimeService(redis)
 
     @staticmethod
@@ -47,25 +45,19 @@ class EasyPaisaRuntimeReader:
         )
 
     async def read_snapshot(self, payment_id):
-        if not self.enabled:
-            return None
         return await self.runtime_service.read_snapshot(payment_id)
 
     async def is_place_order_online(self, payment_id):
         snapshot = await self.read_snapshot(payment_id)
         if snapshot is not None:
             return self._snapshot_df_online(snapshot)
-        if self.enabled:
-            return False
-        return await self.redis.sismember(keyspace.LEGACY_PAYMENT_ONLINE_DF, payment_id)
+        return False
 
     async def is_collection_order_online(self, payment_id):
         snapshot = await self.read_snapshot(payment_id)
         if snapshot is not None:
             return self._snapshot_ds_online(snapshot)
-        if self.enabled:
-            return False
-        return await self.redis.sismember(keyspace.LEGACY_PAYMENT_ONLINE_DS, payment_id)
+        return False
 
     async def is_payment_online_df(self, payment_id, *, bank_type):
         if self._is_easypaisa(bank_type):
@@ -88,9 +80,7 @@ class EasyPaisaRuntimeReader:
         return await self.is_collection_order_online(payment_id)
 
     async def collection_online_payment_ids(self):
-        if self.enabled:
-            ids = await self.redis.smembers(keyspace.INDEX_DS_ORDER_ENABLED)
-            if not ids:
-                ids = await self.redis.smembers(keyspace.INDEX_DISPATCH_DS)
-            return self._normalize_values(ids)
-        return self._normalize_values(await self.redis.smembers(keyspace.LEGACY_PAYMENT_ONLINE_DS))
+        ids = await self.redis.smembers(keyspace.INDEX_DS_ORDER_ENABLED)
+        if not ids:
+            ids = await self.redis.smembers(keyspace.INDEX_DISPATCH_DS)
+        return self._normalize_values(ids)

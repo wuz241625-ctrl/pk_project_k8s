@@ -534,6 +534,27 @@ class EasyPaisaRuntimeService:
     async def schedule_collection(self, payment_id, *, next_at: int) -> None:
         await self.redis.zadd(keyspace.SCHEDULE_COLLECTION, {str(payment_id): next_at})
 
+    async def requeue_ds_if_online(self, payment_id, *, channels=None, source: str) -> bool:
+        current = await self.read_snapshot(payment_id)
+        resolved_channels = keyspace.normalize_channels(
+            (current or {}).get("channels") if channels is None else channels
+        )
+        collect_enabled = bool((current or {}).get("collect_enabled")) if current and "collect_enabled" in current else True
+        ds_order_enabled = self._flag_from_snapshot(current or {}, "ds_order_enabled", "dispatch_ds", False)
+        if not current or not (current.get("online") and collect_enabled and ds_order_enabled):
+            for channel in resolved_channels:
+                await self.redis.lrem(keyspace.legacy_payment_active_channel_key(channel), 0, payment_id)
+            return False
+
+        await self.set_ds_order_dispatch(
+            payment_id,
+            enabled=True,
+            phone=current.get("phone"),
+            channels=resolved_channels,
+            source=source,
+        )
+        return True
+
     async def force_offline(self, payment_id, *, phone=None, source: str, reason: str, channels=None) -> Dict[str, Any]:
         current = await self.read_snapshot(payment_id) or {}
         resolved_phone = phone or current.get("phone")
@@ -597,6 +618,70 @@ class EasyPaisaRuntimeService:
             source=source,
             reason=source,
         )
+
+    async def sync_collection_job_state(
+        self,
+        login_data: Dict[str, Any],
+        *,
+        source: str,
+        schedule_score: Optional[int] = None,
+        online_ttl: int = 660,
+        dispatch_ds: bool = True,
+        collect_enabled: Optional[bool] = None,
+        ds_order_enabled: Optional[bool] = None,
+        df_order_enabled: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        payment_id = login_data.get("real_payment_id") or login_data.get("id")
+        if payment_id in [None, ""]:
+            raise ValueError("sync_collection_job_state requires payment id")
+        score = self._now() if schedule_score is None else int(schedule_score)
+        existing_job = self._decode(await self.redis.hget(keyspace.JOB_HASH, payment_id)) or {}
+        resolved_collect_enabled = True if collect_enabled is None else bool(collect_enabled)
+        resolved_ds_order_enabled = bool(dispatch_ds) if ds_order_enabled is None else bool(ds_order_enabled)
+        resolved_df_order_enabled = True if df_order_enabled is None else bool(df_order_enabled)
+        if not resolved_collect_enabled:
+            resolved_ds_order_enabled = False
+            resolved_df_order_enabled = False
+
+        snapshot = await self.mark_active_successful(
+            payment_id,
+            phone=login_data.get("phone"),
+            selected_accno=(
+                login_data.get("account_accno")
+                or login_data.get("selected_accno")
+            ),
+            selected_iban=(
+                login_data.get("account_iban")
+                or login_data.get("IBAN")
+                or login_data.get("selected_iban")
+            ),
+            source=source,
+            online_ttl=online_ttl,
+            collect_enabled=resolved_collect_enabled,
+            ds_order_enabled=resolved_ds_order_enabled,
+            df_order_enabled=resolved_df_order_enabled,
+            channels=(
+                login_data.get("channels")
+                or login_data.get("qr_channel")
+                or login_data.get("channel")
+                or existing_job.get("channels")
+                or existing_job.get("qr_channel")
+                or existing_job.get("channel")
+            ),
+        )
+        if not resolved_collect_enabled:
+            await self.redis.hdel(keyspace.JOB_HASH, payment_id)
+            await self.redis.zrem(keyspace.JOB_SET, payment_id)
+            return snapshot
+
+        merged_job = dict(existing_job)
+        merged_job.update(login_data)
+        merged_job["id"] = payment_id
+        if login_data.get("real_payment_id") or existing_job.get("real_payment_id"):
+            merged_job["real_payment_id"] = login_data.get("real_payment_id") or existing_job.get("real_payment_id")
+        await self.redis.hset(keyspace.JOB_HASH, payment_id, json.dumps(merged_job, ensure_ascii=True))
+        await self.redis.zadd(keyspace.JOB_SET, {payment_id: score})
+        return snapshot
 
     async def set_kickoff(self, payment_id, *, phone=None, ttl: int, source: str, reason: str, channels=None) -> Dict[str, Any]:
         snapshot = await self.force_offline(
