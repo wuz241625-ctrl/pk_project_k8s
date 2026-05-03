@@ -119,7 +119,7 @@ class EasyPaisaRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await reader.is_place_order_online(533280))
         self.assertTrue(await reader.is_selling_order_online(533280))
 
-    async def test_reader_falls_back_to_legacy_when_runtime_flag_disabled(self):
+    async def test_reader_ignores_runtime_read_disable_flag_for_easypaisa(self):
         from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
 
         await self.redis.sadd("payment_online_df", 533280)
@@ -127,8 +127,8 @@ class EasyPaisaRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.dict(os.environ, {"EASYPAISA_RUNTIME_READ_ENABLED": "0"}):
             reader = EasyPaisaRuntimeReader(self.redis)
-            self.assertTrue(await reader.is_place_order_online(533280))
-            self.assertTrue(await reader.is_selling_order_online(533280))
+            self.assertFalse(await reader.is_place_order_online(533280))
+            self.assertFalse(await reader.is_selling_order_online(533280))
 
     async def test_reader_does_not_trust_legacy_when_runtime_enabled_and_snapshot_missing(self):
         from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader

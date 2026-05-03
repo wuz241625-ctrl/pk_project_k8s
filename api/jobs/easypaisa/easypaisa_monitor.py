@@ -452,8 +452,6 @@ class AutoPayoutMonitor:
         
         # Redis键名配置
         self.REDIS_KEYS = {
-            'easypaisa_online_df': 'payment_online_df',           # 在线账号集合（auto_payout.py使用）
-            'easypaisa_active_df': 'payment_active_df',           # 活跃账号列表（auto_payout.py使用）
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # 余额有序集合（auto_payout.py使用）
             'easypaisa_status_prefix': 'easypaisa_status:',         # 状态缓存前缀（仅自动代付监控系统使用）
             'easypaisa_monitor_report': 'easypaisa_monitor_report', # 监控报告（仅自动代付监控系统使用）
@@ -1882,10 +1880,7 @@ class AutoPayoutMonitor:
             hash_deleted = self.redis.hdel(self.hash_key, account_id)
             zset_deleted = self.redis.zrem(self.set_key, account_id)
             
-            # 2. 删除在线状态相关
-            self.redis.srem('payment_online_df', account_id)
-            
-            # 3. 删除EasyPaisa特定缓存
+            # 2. 删除EasyPaisa特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
             # balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
             # balance_deleted = self.redis.zrem(balance_sorted_set, account_id)
@@ -1897,13 +1892,10 @@ class AutoPayoutMonitor:
             # limits_deleted = self.redis.hdel(limits_hash_key, account_id)
             limits_deleted = 0  # 不删除限额数据
             
-            # 4. 删除登录状态键
+            # 3. 删除监控私有登录状态键
             self.redis.delete(f'login_on_{self.name}_{account_id}')
-            
-            # 5. 删除踢下线标记（如果有）
-            self.redis.delete(f'kick_off_{account_id}')
-            
-            # 🔥 6. 更新数据库payment表状态为下线
+
+            # 🔥 4. 更新数据库payment表状态为下线
             try:
                 self.update_payment_status_to_offline(account_id, reason)
             except Exception as db_e:
@@ -2285,21 +2277,15 @@ class AutoPayoutMonitor:
             cache_key_lock = f'{self.name}_operate_{user_id}'
             cache_key_login_on = f'login_on_{self.name}_{user_id}'
             cache_key_upi_active_payment = f'upi_active_payment:{user_id}'
-            cache_key_payment_online_ds = f'payment_online_ds'
-            cache_key_payment_online_df = f'payment_online_df'
-            cache_key_payment_active_qr_channel = f'payment_active_{qr_channel}'
-            cache_key_kick_off = f'kick_off_{user_id}'
             cache_key_device = f'{self.name}_device'
+            runtime_snapshot = self.runtime_service.read_snapshot(user_id)
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(self.hash_key, login_data['id'])}, ttl: {self.redis.ttl(self.hash_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_ds}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_ds, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_ds)}")  # EasyPaisa不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_df}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_df, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_df)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_active_qr_channel}, 成员: {login_data['id']}, 是否在list列表中 {login_data['id'] in self.read_redis_list(cache_key_payment_active_qr_channel)}, ttl: {self.redis.ttl(cache_key_payment_active_qr_channel)}")  # EasyPaisa不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_kick_off}, value: {self.redis.get(cache_key_kick_off)}, ttl: {self.redis.ttl(cache_key_kick_off)}")
+            self.logger.info(f"{login_data['id']}, read_cache() runtime snapshot: {runtime_snapshot}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
             tb_str = traceback.format_exc()

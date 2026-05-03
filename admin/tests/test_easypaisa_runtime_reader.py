@@ -226,7 +226,7 @@ class EasyPaisaAdminRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await reader.is_payment_online_ds(533280, bank_type=97))
         self.assertFalse(await reader.is_payment_online_status(533280, bank_type=97))
 
-    async def test_reader_returns_active_queue_length_from_list(self):
+    async def test_reader_active_queue_count_ignores_runtime_read_disable_flag(self):
         from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
 
         await self.redis.rpush("payment_active_df", 533280)
@@ -235,7 +235,7 @@ class EasyPaisaAdminRuntimeReaderTests(unittest.IsolatedAsyncioTestCase):
         with patch.dict(os.environ, {"EASYPAISA_RUNTIME_READ_ENABLED": "0"}):
             reader = EasyPaisaAdminRuntimeReader(self.redis)
 
-            self.assertEqual(await reader.active_df_count(), 2)
+            self.assertEqual(await reader.active_df_count(), 0)
 
 
 class EasyPaisaAdminRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):

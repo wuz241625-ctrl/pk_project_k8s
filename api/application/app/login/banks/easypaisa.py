@@ -796,15 +796,6 @@ class EasyPaisa:
             if self._is_payment_id_alias_entry(entry):
                 resolved_payment_id = self._normalize_payment_id(entry.get('target_payment_id'))
                 continue
-            if entry:
-                return {
-                    'requested_payment_id': requested_payment_id,
-                    'resolved_payment_id': resolved_payment_id,
-                    'requested_redis_key': requested_redis_key,
-                    'redis_key': resolved_redis_key,
-                    'session_data': entry,
-                    'is_aliased': requested_payment_id != resolved_payment_id,
-                }
             session_data = await self.runtime_service.read_session(resolved_payment_id)
             if session_data:
                 return {
@@ -813,6 +804,15 @@ class EasyPaisa:
                     'requested_redis_key': requested_redis_key,
                     'redis_key': resolved_redis_key,
                     'session_data': session_data,
+                    'is_aliased': requested_payment_id != resolved_payment_id,
+                }
+            if entry:
+                return {
+                    'requested_payment_id': requested_payment_id,
+                    'resolved_payment_id': resolved_payment_id,
+                    'requested_redis_key': requested_redis_key,
+                    'redis_key': resolved_redis_key,
+                    'session_data': entry,
                     'is_aliased': requested_payment_id != resolved_payment_id,
                 }
             break
@@ -841,10 +841,18 @@ class EasyPaisa:
                             bankname=entry.get('bankname') or self.name,
                             payment_id=target_payment_id,
                         )
+                        runtime_session = await self.runtime_service.read_session(target_payment_id)
+                        if runtime_session:
+                            return runtime_session
                         target_entry = await self._read_prelogin_entry(target_redis_key)
                         if target_entry and not self._is_payment_id_alias_entry(target_entry):
                             return target_entry
-                        return await self.runtime_service.read_session(target_payment_id)
+                        return None
+                payment_id = self._extract_payment_id_from_redis_key(redis_key)
+                if payment_id is not None:
+                    runtime_session = await self.runtime_service.read_session(payment_id)
+                    if runtime_session:
+                        return runtime_session
                 return entry
             payment_id = self._extract_payment_id_from_redis_key(redis_key)
             if payment_id is not None:
@@ -892,6 +900,7 @@ class EasyPaisa:
     async def _persist_session_data(self, redis_key, session_data):
         expire_time = self._session_ttl_for_status(session_data.get('status'))
         session_data['se_until'] = int(time.time() + expire_time)
+        await self._sync_runtime_state(redis_key, session_data, expire_time)
         await self.redis.setex(redis_key, expire_time, json.dumps(session_data))
         previous_payment_id = self._normalize_payment_id(session_data.get('previous_payment_id'))
         current_payment_id = self._normalize_payment_id(session_data.get('id'))
@@ -906,7 +915,6 @@ class EasyPaisa:
                 phone=session_data.get('phone'),
             )
             await self.redis.setex(alias_key, expire_time, json.dumps(alias_entry))
-        await self._sync_runtime_state(redis_key, session_data, expire_time)
         return session_data['se_until']
 
     @staticmethod
@@ -959,16 +967,18 @@ class EasyPaisa:
         snapshot_patch = self._runtime_snapshot_patch_from_session(session_data)
         status = session_data.get('status')
         if status == LoginStatus.ACTIVE_SUCCESSFUL:
-            await self.runtime_service.mark_active_successful(
-                payment_id,
-                selected_accno=snapshot_patch.get('selected_accno'),
-                selected_iban=snapshot_patch.get('selected_iban'),
+            job_data = dict(session_data)
+            job_data['id'] = payment_id
+            job_data.setdefault('real_payment_id', payment_id)
+            job_data['status'] = 'grabstatement'
+            await self.runtime_service.sync_collection_job_state(
+                job_data,
                 source='login_flow',
+                schedule_score=int(time.time()),
                 online_ttl=self.lock_time_login_duplicate_avoid,
                 collect_enabled=True,
                 ds_order_enabled=True,
                 df_order_enabled=True,
-                channels=snapshot_patch.get('channels'),
             )
             if snapshot_patch.get('account_options') is not None:
                 await self.runtime_service.write_snapshot(

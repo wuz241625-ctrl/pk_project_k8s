@@ -2153,3 +2153,46 @@ redis-cli SISMEMBER jazzcash_runtime:index:dispatch_df {payment_id}
 ```
 
 正确 active 状态不应再携带 `FP_COOLDOWN` 或 `FP_UPSTREAM_REJECTED`。
+
+## 2026-05-03 EasyPaisa 分层闭环仍有跨层读写
+
+### 现象
+
+收口 `hash_easypaisa/set_easypaisa` 后，继续检查发现：
+
+- 登录流 `_get_session_data()` 仍先读 `pre_login_easypaisa_*`，runtime session 不是第一真相源。
+- 登录成功只写 runtime snapshot/legacy，`hash_easypaisa/set_easypaisa` 仍依赖 Pakistanpay 扫 `pre_login` 后再生成。
+- EasyPaisa 自动代付直接 `lpop/rpush payment_active_df`。
+- EasyPaisa monitor/admin reset 仍直接清 `payment_online_*`、`payment_active_*`、`kick_off_*`。
+- 超时回队和代收 back_key 回队会直接写 `payment_active_{channel}`。
+- `EASYPAISA_RUNTIME_READ_ENABLED=0` 等开关还能让读面退回 legacy。
+
+### 根因
+
+runtime 与 legacy bridge 的职责边界没有完全落到服务 API 上。部分旧流程把 bridge 投影当调度源或登录源使用，导致上游进程可跨层读写下游兼容状态。
+
+### 修复
+
+- `EasyPaisaRuntimeService.sync_collection_job_state()` 统一生成 runtime snapshot/index 和 `hash_easypaisa/set_easypaisa` worker 投影。
+- 登录读面改为 runtime session 优先；`pre_login_easypaisa_*` 只保留 alias/兼容投影。
+- 登录 `activeSuccessful` 直接通过 runtime service 写 job 投影，不再必须等 Pakistanpay 扫 `pre_login`。
+- `SyncEasyPaisaRuntimeService.pop_df_order_candidate()` / `requeue_df_if_online()` / `requeue_ds_if_online()` 托管 DF/DS legacy 队列读写。
+- auto payout、monitor、admin reset、timeout、pay back_key 对 EasyPaisa 均改走 runtime service。
+- EasyPaisa runtime 读/写/job 开关固定为开启，不再支持环境变量关闭后回退 legacy。
+- 增加静态边界测试，禁止 EasyPaisa worker/monitor/auto payout/admin reset 直接读写 legacy bridge 投影。
+
+### 验收
+
+```bash
+cd api
+python3 -m unittest tests.test_easypaisa_layer_boundaries tests.easypaisa_runtime.test_runtime_service tests.easypaisa_runtime.test_sync_runtime_service tests.easypaisa_runtime.test_reader tests.test_easypaisa_business_flow_v2 tests.test_time_out_guard tests.test_easypaisa_timeout_guard -v
+python3 -m pytest tests/easypaisa_runtime/test_reader.py tests/easypaisa_runtime/test_runtime_service.py tests/easypaisa_runtime/test_sync_runtime_service.py tests/test_easypaisa_business_flow_v2.py -q
+python3 -m pytest tests/test_time_out_guard.py tests/test_easypaisa_timeout_guard.py tests/test_order_push_easypaisa_runtime_guard.py tests/test_app_my_easypaisa_runtime.py -q
+python3 -m py_compile jobs/pakistanpay_v2.py jobs/time_out.py application/pay/pay.py application/app/login/banks/easypaisa.py application/easypaisa_runtime/*.py ../admin/application/easypaisa_runtime/*.py ../admin/application/partner/partner.py jobs/easypaisa/auto_payout.py jobs/easypaisa/easypaisa_monitor.py
+cd ../admin
+python3 -m pytest tests/test_easypaisa_runtime_reader.py tests/test_admin_collection_control.py -q
+```
+
+### 追加复查
+
+边界测试加严为：`api/jobs/easypaisa/auto_payout.py` 与 `api/jobs/easypaisa/easypaisa_monitor.py` 不允许再出现 `payment_online_df/payment_online_ds/payment_active_df` 原始键名。首次加严后失败，命中两个 worker 中未使用的 legacy 键名配置与注释降级示例；已删除这些残留，确保 EasyPaisa worker 只通过 runtime service/keyspace 触达 bridge 投影。

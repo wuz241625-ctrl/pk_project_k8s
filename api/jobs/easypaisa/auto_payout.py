@@ -437,8 +437,6 @@ class EasyPaisaAutoPayout:
         
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
-            'easypaisa_online_df': 'payment_online_df',           # EasyPaisa在线代付账号集合（复用项目标准键名）
-            'easypaisa_active_df': 'payment_active_df',           # EasyPaisa活跃代付账号列表（复用项目标准键名）
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # EasyPaisa余额有序集合
             'easypaisa_balance_prefix': 'easypaisa_balance:',       # EasyPaisa余额缓存前缀（兼容性保留）
             'easypaisa_account_used_prefix': 'easypaisa_account_used:',  # 账号使用记录前缀（支持动态冷却期）
@@ -1958,11 +1956,7 @@ class EasyPaisaAutoPayout:
         return bool(snapshot.get("online") and collect_enabled and df_enabled)
 
     def return_df_account_to_active_queue(self, payment_id) -> bool:
-        if not self.is_df_order_online(payment_id):
-            return False
-        self.redis.lrem(self.REDIS_KEYS['easypaisa_active_df'], 0, payment_id)
-        self.redis.rpush(self.REDIS_KEYS['easypaisa_active_df'], payment_id)
-        return True
+        return self._runtime_service().requeue_df_if_online(payment_id)
     
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
@@ -1974,9 +1968,7 @@ class EasyPaisaAutoPayout:
             payment_info = self.get_phone_by_payment_id(payment_id)
             if not payment_info or not payment_info.get('phone'):
                 self.logger.warning(f"无法获取payment_id {payment_id} 的手机号信息，账号不可用")
-                # 无法获取手机号时，直接返回False，不使用降级方案
-                # redis_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                # return bool(redis_online)
+                # 无法获取手机号时直接返回，不读取 legacy 投影降级。
                 return False
             
             phone = payment_info['phone']
@@ -2160,9 +2152,8 @@ class EasyPaisaAutoPayout:
         参考order_push.py第58行：payment_id = rds.lpop(list_name)
         """
         try:
-            payment_id_bytes = self.redis.lpop(self.REDIS_KEYS['easypaisa_active_df'])
-            if payment_id_bytes:
-                payment_id = payment_id_bytes.decode()
+            payment_id = self._runtime_service().pop_df_order_candidate()
+            if payment_id:
                 
                 # 🔥 查询数据库获取手机号
                 payment_info = self.get_phone_by_payment_id(payment_id)

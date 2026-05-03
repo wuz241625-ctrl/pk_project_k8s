@@ -251,6 +251,33 @@ class EasyPaisaRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["channels"], ["1001"])
         self.assertEqual(self.redis.lists["payment_active_1001"], ["533280"])
 
+    async def test_requeue_ds_if_online_routes_channel_queue_through_runtime_bridge(self):
+        from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
+
+        service = EasyPaisaRuntimeService(self.redis, now_provider=lambda: self.now)
+        payment_id = 533280
+        await service.mark_active_successful(
+            payment_id,
+            phone="923045536108",
+            selected_accno="88521643",
+            selected_iban="PK12HABB0000000088521643",
+            source="test",
+            collect_enabled=True,
+            ds_order_enabled=True,
+            df_order_enabled=True,
+            channels=["1001"],
+        )
+        await self.redis.lrem("payment_active_1001", 0, payment_id)
+
+        self.assertTrue(
+            await service.requeue_ds_if_online(
+                payment_id,
+                channels=["1001"],
+                source="timeout_requeue",
+            )
+        )
+        self.assertEqual(self.redis.lists["payment_active_1001"], ["533280"])
+
     async def test_collect_enabled_keeps_jobs_when_ds_order_disabled(self):
         from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
 
@@ -648,6 +675,36 @@ class EasyPaisaRuntimeServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.redis.get(keyspace.health_pause_order_key(payment_id)))
         self.assertIsNone(await self.redis.hget(keyspace.JOB_HASH, payment_id))
         self.assertIsNone(await self.redis.zscore(keyspace.JOB_SET, payment_id))
+
+    async def test_sync_collection_job_state_updates_runtime_and_job_projection(self):
+        from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
+
+        service = EasyPaisaRuntimeService(self.redis, now_provider=lambda: self.now)
+
+        snapshot = await service.sync_collection_job_state(
+            {
+                "id": 533280,
+                "phone": "923045536108",
+                "status": "grabstatement",
+                "partner_id": 7,
+                "qr_channel": 1001,
+                "account_accno": "88521643",
+                "account_iban": "PK12HABB0000000088521643",
+            },
+            source="login_flow",
+            schedule_score=1_744_000_321,
+        )
+
+        self.assertTrue(snapshot["online"])
+        self.assertTrue(snapshot["collect_enabled"])
+        self.assertTrue(snapshot["ds_order_enabled"])
+        self.assertTrue(snapshot["df_order_enabled"])
+        self.assertEqual(snapshot["channels"], ["1001"])
+        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DISPATCH_DS, 533280))
+        self.assertTrue(await self.redis.sismember(keyspace.LEGACY_PAYMENT_ONLINE_DS, 533280))
+        self.assertEqual(self.redis.lists["payment_active_1001"], ["533280"])
+        self.assertEqual(await self.redis.zscore(keyspace.JOB_SET, 533280), float(1_744_000_321))
+        self.assertIsNotNone(await self.redis.hget(keyspace.JOB_HASH, 533280))
 
     async def test_store_account_selection_writes_account_fields(self):
         from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
