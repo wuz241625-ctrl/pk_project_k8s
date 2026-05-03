@@ -27,6 +27,23 @@ make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 
 运维不要从 `tenant.yaml`、`runtime-configmap.yaml` 或某个单独 patch 文件开始操作，因为这些文件只是发布合同的一部分，缺少当前线上状态、备份、域名、回滚和验收顺序。
 
+## 2026-05-03 当前收口结果
+
+检查时间：2026-05-03 17:08 Asia/Shanghai。
+
+D7pay 已从临时混合部署收口到独立租户合同：
+
+- 服务器仓库使用 `origin/d7pay`。
+- `api/admin/merchant` 容器 `RUN_ENV=PROD`，`TENANT_CODE=d7pay`，`MYSQL_DATABASE=pakistan_d7pay`，`MYSQL_USER=d7pay_app`。
+- `d7pay-runtime-config` 和 `d7pay-runtime-secret` 已存在于 `pk-d7pay`。
+- `d7pay-fingerprint-pvc` 绑定 `/data/pk-d7pay/fingerprint`，容器内挂载 `/fingerprint`。
+- `d7pay-apkdownload-pvc` 绑定 `/data/pk-d7pay/apkdownload/d7pay`。
+- D7pay NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`。
+- 宿主机 nginx 的 `admin.d7pay.net`、`merchant.d7pay.net`、`apkdownload.d7pay.net`、`api.d7pay.net` 已指向 D7pay 专属 NodePort。
+- `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 已通过。
+
+注意：D7pay 后端上游 EasyPaisa/JazzCash 凭据当前沿用现有可用上游配置；如果客户提供独立上游凭据，只替换 `/opt/cicd/secrets/d7pay-runtime-secret.yaml` 并 rollout `api/admin/merchant`，不要改代码或复制 pk 数据。
+
 ## 结论
 
 检查时间：2026-04-29 20:59 Asia/Shanghai，服务器时间 2026-04-29 12:59 UTC。

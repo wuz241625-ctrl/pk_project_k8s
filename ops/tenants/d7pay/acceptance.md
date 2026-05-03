@@ -25,6 +25,19 @@
 - Flutter `flutter analyze lib/app/brand.dart lib/app/app.dart lib/features/login/presentation/login_page.dart lib/features/payments/presentation/home_page.dart` 通过。
 - 本地无 `android/key.properties` 时，带 `ORG_GRADLE_PROJECT_requireReleaseSigning=true` 的 release 构建必须失败并提示缺少签名文件，证明 Jenkins 正式包不会静默回退 debug 签名。
 
+## 2026-05-03 线上验收记录
+
+- `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 通过。
+- `admin.d7pay.net` 返回 `D7pay管理系统`。
+- `merchant.d7pay.net` 返回 `D7payMerchant`。
+- `apkdownload.d7pay.net` 返回 `D7pay Merchant`。
+- `api/admin/merchant` 容器 `get_config()` 返回 `tenant_code=d7pay`、`mysql_database=pakistan_d7pay`。
+- `d7pay_app` 账号可连接 `pakistan_d7pay`，并只能作为 D7pay 应用账号使用。
+- `/fingerprint` 挂载到 `d7pay-fingerprint-pvc`，宿主机目录为 `/data/pk-d7pay/fingerprint`。
+- D7pay APK 链接 `https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk` 返回 `200`。
+- `appInfo.json` 只包含 `d7pay_merchant`，不包含 `ashrafi_merchant` 或 `lakshmi`。
+- `18088880000 / 123456 / 当前 Google code` 调用 admin 登录接口返回 `code=20000`。
+
 ## 隔离验收
 
 - 现有 `pk` namespace 保持运行，不删除、不缩容、不把 D7pay 域名指向 `pk`。

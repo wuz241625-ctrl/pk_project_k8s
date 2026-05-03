@@ -1,5 +1,128 @@
 # D7pay 运维排错
 
+## RUN_ENV 是 PROD 但仍读到旧库或旧域名
+
+现象：
+
+```text
+printenv RUN_ENV
+PROD
+```
+
+但容器内 `get_config()` 仍显示 `mysql_database=pakistan` 或 `ospay_api_host` 是旧域名。
+
+原因：`RUN_ENV=PROD` 只决定使用 `product` 配置分支；如果镜像里的 `config.py` 是硬编码版本，K8s 注入 `MYSQL_DATABASE`、`API_OSPAY_API_HOST` 也不会生效。
+
+处理：
+
+```bash
+cd /opt/cicd/k8s/pk_project_k8s
+git checkout d7pay
+git pull --ff-only origin d7pay
+make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过 `d7pay-runtime-config`、`d7pay-runtime-secret` 注入真实配置。
+
+验收：
+
+```bash
+kubectl -n pk-d7pay exec deploy/api-deploy -- printenv RUN_ENV MYSQL_DATABASE TENANT_CODE
+kubectl -n pk-d7pay exec deploy/api-deploy -- python -c 'from config import get_config; c=get_config(); print(c.get("tenant_code"), c.get("mysql_database"), c.get("ospay_api_host"))'
+```
+
+期望看到：
+
+```text
+PROD
+pakistan_d7pay
+d7pay
+d7pay pakistan_d7pay https://api.d7pay.net/api
+```
+
+## 同实例迁库时报 `GTID_PURGED` 冲突
+
+现象：
+
+```text
+ERROR 3546 (HY000): @@GLOBAL.GTID_PURGED cannot be changed
+mysqldump: Got errno 11 on write
+```
+
+原因：从同一个 MySQL 实例的 `pakistan` 导入到 `pakistan_d7pay` 时，普通 `mysqldump` 会带 `GTID_PURGED`，和目标实例已有 `GTID_EXECUTED` 重叠。
+
+处理：同实例内复制库必须关闭 GTID purge。
+
+```bash
+kubectl -n pk-d7pay exec mysql-0 -- sh -lc \
+  'MYSQL_PWD=Pass_1234 mysqldump --set-gtid-purged=OFF --default-character-set=utf8mb4 --single-transaction --quick -uroot pakistan | MYSQL_PWD=Pass_1234 mysql --default-character-set=utf8mb4 -uroot pakistan_d7pay'
+```
+
+## D7pay admin/merchant 前端返回 500
+
+现象：
+
+```text
+https://admin.d7pay.net 500 Internal Server Error
+https://merchant.d7pay.net 500 Internal Server Error
+```
+
+原因：D7pay 前端构建产物在 `/usr/share/nginx/html/d7pay/`，但 H5 nginx ConfigMap 如果仍指向 `/usr/share/nginx/html/prod/`，`try_files` 会内部跳转到不存在的 `/index.html`，最终返回 500。
+
+处理：
+
+```bash
+kubectl apply -f ops/tenants/d7pay/k8s/h5-configmaps.yaml
+kubectl -n pk-d7pay rollout restart deployment/admin-h5-deploy deployment/merchant-h5-deploy
+```
+
+ConfigMap 中 admin/merchant 的 `root` 必须是：
+
+```nginx
+root /usr/share/nginx/html/d7pay/;
+```
+
+## apkdownload 启动报 `Resource busy`
+
+现象：
+
+```text
+rm: can't remove '/usr/share/nginx/html/files/android/d7pay': Resource busy
+CrashLoopBackOff
+```
+
+原因：D7pay APK 目录通过 PVC 挂载到 `/usr/share/nginx/html/files/android/d7pay`，启动脚本不能再执行 `rm -rf /usr/share/nginx/html/*` 删除挂载点。
+
+处理：D7pay 发布脚本会把清理命令替换成保留 `files` 目录，只删除非挂载的静态产物；发布后只保留 `d7pay_merchant` 元信息和 `/files/android/d7pay` APK 目录。
+
+验收：
+
+```bash
+curl -k https://apkdownload.d7pay.net/files/android/appInfo.json
+curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk
+```
+
+`appInfo.json` 不能出现 `ashrafi_merchant` 或 `lakshmi`。
+
+## nginx 备份文件放在 `sites-enabled` 触发重复域名
+
+现象：
+
+```text
+nginx: [warn] conflicting server name "admin.d7pay.net" on 0.0.0.0:443, ignored
+```
+
+原因：把备份文件放在 `/etc/nginx/sites-enabled/` 下会被 nginx 一起 include，导致重复 server block。
+
+处理：备份必须放到非启用目录，例如：
+
+```bash
+mkdir -p /root/backup/nginx
+mv /etc/nginx/sites-enabled/d7pay.before-* /root/backup/nginx/
+nginx -t
+systemctl reload nginx
+```
+
 ## 域名被拒绝
 
 现象：
