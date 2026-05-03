@@ -21,6 +21,7 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 
 - `KUBE_NAMESPACE=pk-d7pay`
 - `RUN_ENV=PROD`
+- `D7PAY_GIT_BRANCH=d7pay`
 - `API_DOMAIN`、`ADMIN_DOMAIN`、`MERCHANT_DOMAIN`、`APKDOWNLOAD_DOMAIN` 都是客户域名
 - `D7PAY_RUNTIME_SECRET_YAML` 指向真实 Secret YAML
 
@@ -31,7 +32,8 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
 git status --short
-git pull --ff-only origin main
+git checkout d7pay
+git pull --ff-only origin d7pay
 make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env

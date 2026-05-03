@@ -564,3 +564,52 @@ SQL
 
 - `/order/getorderds` 返回 `200`，响应体里 `******` 数量为 `0`。
 - `/count/getcount` 和 `/count/getcountonew` 返回 `200`，统计字段不再被星号屏蔽。
+
+## 2026-05-03 D7pay admin 登录后停在登录页并报 `Maximum call stack size exceeded`
+
+### 现象
+
+- `POST /prod-api/login/singin`、`/login/getuserinfo`、`/login/getroutes` 都返回 `200`。
+- 浏览器仍停在 `/#/login?redirect=%2F`，控制台报 `RangeError: Maximum call stack size exceeded`。
+
+### 根因
+
+这是权限数据问题，不是 H5 代码问题。旧样本库里 `permissions.id=0,name=统计` 是后台首页根路由权限，超管 `roles.id=1.permissions` 也包含 `0`。
+
+D7pay 初始化后把这条数据变成了 `id=202,name=统计`，而超管权限串没有 `202`；登录后 `getroutes` 缺少“统计”，前端根路由 `/` 没有被加入，跳转到 `/Dstj` 时触发路由守卫异常。
+
+同时旧样本中 `订单管理/资金流水/商户管理/码商管理/权限管理/系统设置/活动中心` 这些根菜单使用 `id=pid`，不要擅自改成 `pid=0`。
+
+### 处理
+
+只修 D7pay 权限数据：
+
+```sql
+SET SESSION sql_mode = CONCAT(@@SESSION.sql_mode, ',NO_AUTO_VALUE_ON_ZERO');
+UPDATE permissions SET id=0, pid=0, name='统计', path='', type=0, status=1 WHERE id=202;
+UPDATE permissions SET pid=id WHERE id IN (8,13,16,19,25,28,96);
+UPDATE roles
+SET permissions = CONCAT('0,', TRIM(BOTH ',' FROM REPLACE(CONCAT(',', permissions, ','), ',0,', ',')))
+WHERE id=1;
+```
+
+处理前先备份：
+
+```bash
+mysqldump --default-character-set=utf8mb4 -uroot -pPass_1234 pakistan | gzip > /data/pk-d7pay/mysql-backups/pakistan_before_restore_permission_id0_YYYYmmddTHHMMSSZ.sql.gz
+```
+
+### 验收
+
+```bash
+select id,pid,name from permissions where id in (0,202) or name='统计' order by id;
+select id,pid,name from permissions where id in (8,13,16,19,25,28,96) order by id;
+select id,name,left(permissions,20),find_in_set(0,permissions) from roles where id=1;
+```
+
+期望：
+
+- 只有 `id=0,pid=0,name=统计`，没有 `id=202`。
+- `8,13,16,19,25,28,96` 均为 `id=pid`。
+- `roles.id=1.permissions` 以 `0,` 开头，`find_in_set(0,permissions)=1`。
+- 浏览器使用 `18088880000 / 123456 / 当前 Google code` 登录后进入 `/#/Dstj`，控制台无栈溢出。

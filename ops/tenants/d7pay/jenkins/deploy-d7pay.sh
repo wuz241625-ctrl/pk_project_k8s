@@ -16,6 +16,7 @@ TENANT_DIR="${PROJECT_DIR}/ops/tenants/d7pay"
 KUBE_NAMESPACE="${KUBE_NAMESPACE:-pk-d7pay}"
 KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"
 IMAGE_TAG="${IMAGE_TAG:-d7pay-$(date +%Y%m%d%H%M%S)}"
+D7PAY_GIT_BRANCH="${D7PAY_GIT_BRANCH:-d7pay}"
 
 export KUBECONFIG
 
@@ -88,7 +89,21 @@ sync_code() {
     exit 1
   fi
   git fetch origin
-  git pull --ff-only origin main
+  git checkout "${D7PAY_GIT_BRANCH}"
+  git pull --ff-only origin "${D7PAY_GIT_BRANCH}"
+}
+
+prepare_python_runtime_config() {
+  local component="$1"
+  local build_dir="$2"
+  local component_dir="${build_dir}/${component}"
+
+  if [ ! -f "${component_dir}/config.example.py" ]; then
+    echo "${component} 缺少 config.example.py，拒绝构建 D7pay 镜像" >&2
+    exit 1
+  fi
+
+  cp "${component_dir}/config.example.py" "${component_dir}/config.py"
 }
 
 apply_tenant_resources() {
@@ -116,6 +131,7 @@ build_python_service() {
 
   rm -rf "${build_dir:?}/${component}"
   cp -r "${PROJECT_DIR}/${component}" "${build_dir}/${component}"
+  prepare_python_runtime_config "${component}" "${build_dir}"
   docker build -t "${image}" "${build_dir}"
   docker push "${image}"
   patch_namespace_and_image "${source_yaml}" "${tmp_yaml}" "${image}"
