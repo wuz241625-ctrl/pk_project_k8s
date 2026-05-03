@@ -60,6 +60,7 @@ def main():
         "admin-h5/src/assets/brand/d7pay-logo-mark.png",
         "merchant-h5/src/assets/brand/d7pay-logo-mark.png",
         "apkdownload/src/assets/logo/d7pay-logo-192x192.png",
+        "apkdownload/public/files/android/appInfo.d7pay.json",
         "Makefile",
         "build.md",
         "err.md",
@@ -154,6 +155,8 @@ def main():
     require(deploy_script, "prepare_python_runtime_config", "deploy-d7pay.sh")
     require(deploy_script, "cp \"${component_dir}/config.example.py\" \"${component_dir}/config.py\"", "deploy-d7pay.sh")
     require(deploy_script, "find /usr/share/nginx/html -mindepth 1 -maxdepth 1 ! -name files", "deploy-d7pay.sh")
+    require(deploy_script, "appInfo.d7pay.json", "deploy-d7pay.sh")
+    require(deploy_script, "! -name d7pay ! -name appInfo.json", "deploy-d7pay.sh")
     forbid(deploy_script, "git reset --hard", "deploy-d7pay.sh")
     forbid(deploy_script, "git clean -fd", "deploy-d7pay.sh")
 

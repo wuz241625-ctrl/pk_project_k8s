@@ -1,0 +1,14 @@
+{
+  "d7pay_merchant": {
+    "name": "D7pay Merchant",
+    "version": "0.1.6",
+    "filename": "d7pay_merchant_arm64_v0.1.6_202604292006.apk",
+    "path": "/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk",
+    "size": "40 MB",
+    "updateTime": "Apr 29, 2026, 20:06",
+    "compatibility": "Android 8+ ARM64",
+    "language": "EN",
+    "developer": "D7pay",
+    "introduction": "D7pay merchant app for wallet onboarding, fingerprint activation, and payment account management."
+  }
+}

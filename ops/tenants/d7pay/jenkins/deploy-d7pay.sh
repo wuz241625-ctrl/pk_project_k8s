@@ -182,6 +182,10 @@ build_apkdownload() {
 
   rm -rf "${build_dir:?}/${component}"
   cp -r "${PROJECT_DIR}/${component}" "${build_dir}/${component}"
+  if [ -f "${build_dir}/${component}/public/files/android/appInfo.d7pay.json" ]; then
+    cp "${build_dir}/${component}/public/files/android/appInfo.d7pay.json" \
+      "${build_dir}/${component}/public/files/android/appInfo.json"
+  fi
   python3 - "${build_dir}/start.sh" <<'PY'
 import pathlib
 import sys
@@ -192,6 +196,12 @@ text = text.replace("pnpm build", "pnpm run build:d7pay")
 text = text.replace(
     "rm -rf /usr/share/nginx/html/*",
     "find /usr/share/nginx/html -mindepth 1 -maxdepth 1 ! -name files -exec rm -rf {} +",
+)
+text = text.replace(
+    "cp -r dist/* /usr/share/nginx/html/",
+    "cp -r dist/* /usr/share/nginx/html/\n"
+    "find /usr/share/nginx/html/files/android -mindepth 1 -maxdepth 1 "
+    "! -name d7pay ! -name appInfo.json -exec rm -rf {} +",
 )
 path.write_text(text, encoding="utf-8")
 PY

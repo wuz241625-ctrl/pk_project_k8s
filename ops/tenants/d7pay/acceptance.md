@@ -5,6 +5,7 @@
 - admin 构建使用 `npm run d7pay:prod`，浏览器标题包含 `D7pay管理系统`。
 - merchant 构建使用 `npm run d7pay:prod`，登录页展示 `D7pay`。
 - apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_arm64_v0.1.6_202604292006.apk`。
+- apkdownload 的 D7pay 发布只保留 `d7pay_merchant` 元信息和 `/files/android/d7pay` APK 目录，不能暴露 Ashrafi/Lakshmi 下载条目。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
 - Android package 必须为 `com.d7pay.merchant`。
 - Android launcher icon 必须使用 D7pay 专属 `@mipmap/ic_launcher_d7pay`，不能覆盖默认 Ashrafi `ic_launcher`。
