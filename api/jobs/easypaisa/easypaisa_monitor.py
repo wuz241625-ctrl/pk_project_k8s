@@ -1688,7 +1688,7 @@ class AutoPayoutMonitor:
             self.logger.info("=" * 50)
             self.logger.info(f"开始检查{self.hash_key}中已登录成功的EasyPaisa账号状态")
             
-            # 1. 获取已登录账号（从hash_easypaisa中获取状态为loginSuccessful的账号）
+            # 1. 获取已登录账号（从 JOB_HASH 中获取状态为 loginSuccessful 的账号）
             accounts = await self.get_online_easypaisa_accounts()
             if not accounts:
                 self.logger.warning(f"{self.hash_key}中没有已登录成功的EasyPaisa账号需要检查")

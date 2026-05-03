@@ -1030,23 +1030,13 @@ class BankLogin:
         self.logger.info(f"{login_data['id']}, source: {source} 开始读取业务缓存")
         try:
             cache_key_lock = f'{self.name}_operate_{login_data['id']}'
-            cache_key_login_on = f'login_on_{self.name}_{login_data['id']}'
             cache_key_upi_active_payment = f'upi_active_payment:{login_data['id']}'
-            cache_key_payment_online_ds = f'payment_online_ds'
-            cache_key_payment_online_df = f'payment_online_df'
-            cache_key_payment_active_qr_channel = f'payment_active_{login_data['qr_channel']}'
-            cache_key_kick_off = f'kick_off_{login_data['id']}'
             cache_key_device = f'{self.name}_device'
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(self.hash_key, login_data['id'])}, ttl: {self.redis.ttl(self.hash_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_ds}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_ds, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_ds)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_df}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_df, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_df)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_active_qr_channel}, 成员: {login_data['id']}, 是否在list列表中 {login_data['id'] in self.read_redis_list(cache_key_payment_active_qr_channel)}, ttl: {self.redis.ttl(cache_key_payment_active_qr_channel)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_kick_off}, value: {self.redis.get(cache_key_kick_off)}, ttl: {self.redis.ttl(cache_key_kick_off)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
             tb_str = traceback.format_exc()

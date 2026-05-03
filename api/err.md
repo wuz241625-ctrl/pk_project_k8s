@@ -2,6 +2,44 @@
 
 ## 常见问题
 
+### 0.19 Pakistanpay worker 调试日志重新读取 EasyPaisa legacy 投影
+
+现象：
+
+- 排查 EasyPaisa worker 时，日志里继续读取 `login_on_easypaisa_*`、`payment_online_ds`、`payment_online_df`、`payment_active_{channel}`、`kick_off_*`。
+- 这些读取容易让后续排障把 legacy bridge 投影误认为登录或调度真相源。
+
+根因：
+
+- `jobs/pakistanpay_v2.py` 的 `read_cache()` 早期用于打印所有旧 Redis 状态。
+- EasyPaisa runtime 收口后，这些 key 已降级为 runtime bridge 的兼容投影，Pakistanpay worker 只应该读取 `hash_easypaisa` / `set_easypaisa` 任务投影和 worker 私有缓存。
+
+处理：
+
+- `read_cache()` 删除 legacy bridge 投影读取，只保留：
+  - `self.set_key`
+  - `self.hash_key`
+  - worker 操作锁
+  - `upi_active_payment:*`
+  - worker device hash
+- 新增 `test_pakistanpay_read_cache_does_not_read_legacy_bridge_projection` 防止回退。
+- 新增 `tests.test_easypaisa_layer_boundaries`，要求 `hash_easypaisa` / `set_easypaisa` raw 字符串只在 EasyPaisa runtime keyspace 中声明。
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m unittest \
+  tests.test_easypaisa_layer_boundaries \
+  tests.easypaisa_runtime.test_sync_runtime_service.EasyPaisaJobsRuntimeIntegrationTests.test_pakistanpay_read_cache_does_not_read_legacy_bridge_projection -v
+```
+
+结论：
+
+- SQL 是配置源，runtime session 是登录源，runtime snapshot/index 是调度源。
+- `hash_easypaisa` / `set_easypaisa` 是 runtime 给 worker 的投影。
+- legacy bridge 只做旧系统兼容，不再作为 worker 调试事实。
+
 ### 0.18 JazzCashMerchant v1.6 `loginStep2` 和代付 `500` 语义误用
 
 现象：

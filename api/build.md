@@ -271,6 +271,29 @@ python3.12 -m unittest discover -s tests -p 'test_app_my_easypaisa_runtime.py' -
   - `hash_easypaisa`
   - `set_easypaisa`
 
+本轮 EasyPaisa 分层边界补充验证命令：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m py_compile jobs/pakistanpay_v2.py application/easypaisa_runtime/*.py ../admin/application/easypaisa_runtime/*.py
+python3 -m unittest \
+  tests.test_easypaisa_layer_boundaries \
+  tests.easypaisa_runtime.test_sync_runtime_service.EasyPaisaJobsRuntimeIntegrationTests.test_pakistanpay_read_cache_does_not_read_legacy_bridge_projection \
+  tests.test_order_push_easypaisa_runtime_guard -v
+python3 -m pytest \
+  tests/easypaisa_runtime/test_reader.py \
+  tests/easypaisa_runtime/test_runtime_service.py \
+  tests/easypaisa_runtime/test_sync_runtime_service.py \
+  tests/test_easypaisa_business_flow_v2.py -q
+```
+
+验收重点：
+
+- Pakistanpay worker `read_cache()` 不再读取 EasyPaisa legacy bridge 投影。
+- `hash_easypaisa` / `set_easypaisa` raw 字符串只在 EasyPaisa runtime keyspace 中声明。
+- admin reset 清理 job 投影时通过 `keyspace.JOB_HASH` / `keyspace.JOB_SET`，不散落 raw key。
+- SQL 配置、runtime session、runtime snapshot/index、worker 投影、legacy bridge 的边界和 `api/README.md` 保持一致。
+
 本轮 EasyPaisa `payment_active_1001` 闭环补充验证命令：
 
 ```bash

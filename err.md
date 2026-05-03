@@ -10,6 +10,18 @@
 ops/tenants/d7pay/err.md
 ```
 
+## API / EasyPaisa 运行态问题
+
+查看：
+
+```text
+api/err.md
+```
+
+本轮 EasyPaisa 分层真相源边界排错项：
+
+- `api/err.md` 的 `0.19 Pakistanpay worker 调试日志重新读取 EasyPaisa legacy 投影`
+
 常用检查：
 
 ```bash

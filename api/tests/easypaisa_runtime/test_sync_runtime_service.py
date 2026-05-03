@@ -1274,6 +1274,63 @@ class EasyPaisaJobsRuntimeIntegrationTests(unittest.TestCase):
         self.worker.runtime_service = MagicMock()
         self.worker.payment_runtime_policy = MagicMock(return_value="dispatch_on")
 
+    def test_pakistanpay_read_cache_does_not_read_legacy_bridge_projection(self):
+        class GuardedRedis(FakeSyncRedis):
+            FORBIDDEN_PREFIXES = (
+                "login_on_easypaisa_",
+                "payment_active_",
+                "kick_off_",
+            )
+            FORBIDDEN_KEYS = {
+                "payment_online_ds",
+                "payment_online_df",
+            }
+
+            def _guard(self, key):
+                text = key.decode("utf-8") if isinstance(key, bytes) else str(key)
+                if text in self.FORBIDDEN_KEYS or text.startswith(self.FORBIDDEN_PREFIXES):
+                    raise AssertionError(f"禁止 Pakistanpay worker 读取 legacy bridge 投影: {text}")
+
+            def get(self, key):
+                self._guard(key)
+                return super().get(key)
+
+            def hget(self, key, field):
+                self._guard(key)
+                return super().hget(key, field)
+
+            def zscore(self, key, member):
+                self._guard(key)
+                return super().zscore(key, member)
+
+            def ttl(self, key):
+                self._guard(key)
+                return super().ttl(key)
+
+            def sismember(self, key, value):
+                self._guard(key)
+                return super().sismember(key, value)
+
+            def lrange(self, key, start, stop):
+                self._guard(key)
+                return super().lrange(key, start, stop)
+
+        self.worker.redis = GuardedRedis()
+        self.worker.logger = MagicMock()
+        self.worker.name = "easypaisa"
+        self.worker.hash_key = keyspace.JOB_HASH
+        self.worker.set_key = keyspace.JOB_SET
+
+        self.worker.read_cache(
+            "unit-test",
+            {
+                "id": 533280,
+                "qr_channel": "1001",
+            },
+        )
+
+        self.worker.logger.error.assert_not_called()
+
     def test_pakistanpay_on_off_routes_through_runtime_service(self):
         login_data = {
             "id": 533280,

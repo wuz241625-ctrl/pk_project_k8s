@@ -446,8 +446,8 @@ class EasyPaisaAdminRuntimeService:
         # clear pre_login / kickoff / job hash+set / manual_off / schedule_collection
         await self.redis.delete(f"pre_login_easypaisa_{payment_id}")
         await self.redis.delete(f"easypaisa_runtime:kickoff:{payment_id}")
-        await self.redis.hdel("hash_easypaisa", str(payment_id))
-        await self.redis.zrem("set_easypaisa", payment_id)
+        await self.redis.hdel(keyspace.JOB_HASH, str(payment_id))
+        await self.redis.zrem(keyspace.JOB_SET, payment_id)
         await self.redis.delete(keyspace.manual_off_collection_key(payment_id))
         await self.redis.delete(keyspace.health_pause_order_key(payment_id))
         await self.redis.zrem(keyspace.SCHEDULE_COLLECTION, payment_id)

@@ -61,6 +61,15 @@ EasyPaisa 当前运行态已经统一到 `application/easypaisa_runtime/`：
 
 这些 key 仍会存在，但只允许作为 runtime 派生投影，不允许再被当成 EasyPaisa 主真相源。
 
+分层边界：
+
+- SQL 是配置唯一源，`payment.status`、`certified`、`manual_status`、`channel` 等字段只能从 SQL 判断。
+- `easypaisa_runtime:session:{payment_id}` 是登录真相源，登录流程不得用 legacy 在线 key 反推登录态。
+- `easypaisa_runtime:snapshot:{payment_id}` 与 `easypaisa_runtime:index:*` 是运行调度真相源。
+- `hash_easypaisa` / `set_easypaisa` 是 runtime 给 Pakistanpay worker 的任务投影，生产代码应通过 `keyspace.JOB_HASH` / `keyspace.JOB_SET` 引用。
+- Pakistanpay worker 的调试读取只允许看 worker 投影和 worker 私有缓存，不允许读取 `login_on_easypaisa_*`、`payment_online_*`、`payment_active_*`、`kick_off_*`。
+- legacy key 只能由 runtime service/legacy bridge 生成或清理，不能作为 EasyPaisa 接单、登录或排障事实。
+
 其中：
 
 - `dispatch_ds=true` 时
