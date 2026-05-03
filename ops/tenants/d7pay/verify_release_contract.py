@@ -150,6 +150,7 @@ def main():
     require(deploy_script, "pnpm run build:d7pay", "deploy-d7pay.sh")
     require(deploy_script, 'D7PAY_GIT_BRANCH="${D7PAY_GIT_BRANCH:-d7pay}"', "deploy-d7pay.sh")
     require(deploy_script, "git pull --ff-only origin \"${D7PAY_GIT_BRANCH}\"", "deploy-d7pay.sh")
+    require(deploy_script, "find ops/tenants/d7pay -type d -name __pycache__", "deploy-d7pay.sh")
     require(deploy_script, "prepare_python_runtime_config", "deploy-d7pay.sh")
     require(deploy_script, "cp \"${component_dir}/config.example.py\" \"${component_dir}/config.py\"", "deploy-d7pay.sh")
     forbid(deploy_script, "git reset --hard", "deploy-d7pay.sh")

@@ -83,6 +83,7 @@ render_runtime_configmap() {
 
 sync_code() {
   cd "${PROJECT_DIR}"
+  find ops/tenants/d7pay -type d -name __pycache__ -prune -exec rm -rf {} +
   if [ -n "$(git status --short)" ]; then
     echo "服务器仓库存在未提交或未备份的改动，拒绝自动覆盖。请先备份或清理后再发布。" >&2
     git status --short >&2
