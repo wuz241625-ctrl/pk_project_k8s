@@ -279,12 +279,18 @@ python3 -m py_compile jobs/pakistanpay_v2.py application/easypaisa_runtime/*.py 
 python3 -m unittest \
   tests.test_easypaisa_layer_boundaries \
   tests.easypaisa_runtime.test_sync_runtime_service.EasyPaisaJobsRuntimeIntegrationTests.test_pakistanpay_read_cache_does_not_read_legacy_bridge_projection \
-  tests.test_order_push_easypaisa_runtime_guard -v
+  tests.test_order_push_easypaisa_runtime_guard \
+  tests.test_easypaisa_timeout_guard -v
 python3 -m pytest \
   tests/easypaisa_runtime/test_reader.py \
   tests/easypaisa_runtime/test_runtime_service.py \
   tests/easypaisa_runtime/test_sync_runtime_service.py \
   tests/test_easypaisa_business_flow_v2.py -q
+python3 -m pytest \
+  tests/test_websocket_monitor_ep_dispatch.py \
+  tests/test_time_out_guard.py \
+  tests/test_easypaisa_timeout_guard.py \
+  tests/test_app_my_easypaisa_runtime.py -q
 ```
 
 验收重点：

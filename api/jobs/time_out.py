@@ -24,6 +24,7 @@ conf = get_config()
 class TimeOutGuard:
     """runtime 银行回压校验器；EP/JazzCash 必须以各自 runtime 派单索引为准。"""
     EASYPAISA_INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
+    INDEX_DISPATCH_DS = EASYPAISA_INDEX_DISPATCH_DS
     JAZZCASH_INDEX_DISPATCH_DS = "jazzcash_runtime:index:dispatch_ds"
 
     def __init__(self, redis_client):

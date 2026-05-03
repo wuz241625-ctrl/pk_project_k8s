@@ -110,8 +110,9 @@ Actual:
 - `python3 -m py_compile jobs/pakistanpay_v2.py application/easypaisa_runtime/*.py ../admin/application/easypaisa_runtime/*.py` exit 0。
 - `python3 -m unittest tests.test_easypaisa_layer_boundaries ... tests.test_order_push_easypaisa_runtime_guard -v`：8 tests OK。
 - `python3 -m pytest tests/easypaisa_runtime/test_reader.py tests/easypaisa_runtime/test_runtime_service.py tests/easypaisa_runtime/test_sync_runtime_service.py tests/test_easypaisa_business_flow_v2.py -q`：138 passed，4 warnings。
+- 补充审计发现 `TimeOutGuard.INDEX_DISPATCH_DS` 兼容别名缺失；补回别名后，`tests/test_websocket_monitor_ep_dispatch.py tests/test_time_out_guard.py tests/test_easypaisa_timeout_guard.py tests/test_app_my_easypaisa_runtime.py -q`：20 passed。
 
-- [ ] **Step 3: 提交并推送**
+- [x] **Step 3: 提交并推送**
 
 Run:
 
