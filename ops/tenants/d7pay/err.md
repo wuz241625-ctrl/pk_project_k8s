@@ -99,10 +99,26 @@ CrashLoopBackOff
 
 ```bash
 curl -k https://apkdownload.d7pay.net/files/android/appInfo.json
-curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202604292006.apk
+curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202605031740.apk
 ```
 
 `appInfo.json` 不能出现 `ashrafi_merchant` 或 `lakshmi`。
+
+## apkdownload 公网还下载到旧 APK
+
+现象：宿主机 `/data/pk-d7pay/apkdownload/d7pay/` 和容器挂载目录里的 APK 已经更新，但 `https://apkdownload.d7pay.net/files/android/d7pay/<旧文件名>.apk` 仍返回旧哈希。
+
+原因：`apkdownload.d7pay.net` 经过 Cloudflare，旧文件名可能被缓存。不要继续复用同一个 APK 文件名覆盖发布。
+
+处理：生成新的 APK 文件名，更新 `apkdownload/public/files/android/appInfo.d7pay.json` 的 `filename` 和 `path`，把新文件同步到 PVC，再验证新 URL。旧文件可以从 origin 删除，避免绕过 `appInfo.json` 下载到旧包。
+
+## app.d7pay.net 显示 Ashrafi
+
+现象：访问 `app.d7pay.net` 看到 Ashrafi 的 H5 title 或 manifest。
+
+原因：该域名不是 D7pay Android App 的交付入口，曾被手工代理到旧 `app-h5` NodePort。
+
+处理：从宿主机 nginx 的 D7pay server block 中移除 `app.d7pay.net`，并删除或禁用对应 443 server；D7pay App 只通过 `apkdownload.d7pay.net` 下载 APK，运行时请求 `https://api.d7pay.net`。
 
 ## nginx 备份文件放在 `sites-enabled` 触发重复域名
 
