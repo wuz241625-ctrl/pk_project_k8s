@@ -99,10 +99,11 @@ CrashLoopBackOff
 
 ```bash
 curl -k https://apkdownload.d7pay.net/files/android/appInfo.json
-curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.6_202605031740.apk
+curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm64_v0.1.7_202605031803.apk
+curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_arm_v0.1.7_202605031803.apk
 ```
 
-`appInfo.json` 不能出现 `ashrafi_merchant` 或 `lakshmi`。
+D7pay 线上 `appInfo.json` 不能出现 `ashrafi_merchant` 或 `lakshmi`。
 
 ## apkdownload 公网还下载到旧 APK
 
