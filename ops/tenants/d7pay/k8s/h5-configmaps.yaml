@@ -11,7 +11,7 @@ data:
         listen 80;
         server_name _;
 
-        root /usr/share/nginx/html/prod/;
+        root /usr/share/nginx/html/d7pay/;
         index index.html index.htm;
 
         error_page 404 /404.html;
@@ -72,7 +72,7 @@ data:
         listen 80;
         server_name _;
 
-        root /usr/share/nginx/html/prod/;
+        root /usr/share/nginx/html/d7pay/;
         index index.html index.htm;
 
         location / {

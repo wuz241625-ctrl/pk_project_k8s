@@ -153,6 +153,7 @@ def main():
     require(deploy_script, "find ops/tenants/d7pay -type d -name __pycache__", "deploy-d7pay.sh")
     require(deploy_script, "prepare_python_runtime_config", "deploy-d7pay.sh")
     require(deploy_script, "cp \"${component_dir}/config.example.py\" \"${component_dir}/config.py\"", "deploy-d7pay.sh")
+    require(deploy_script, "find /usr/share/nginx/html -mindepth 1 -maxdepth 1 ! -name files", "deploy-d7pay.sh")
     forbid(deploy_script, "git reset --hard", "deploy-d7pay.sh")
     forbid(deploy_script, "git clean -fd", "deploy-d7pay.sh")
 
@@ -193,6 +194,7 @@ def main():
 
     h5_configmaps = read("ops/tenants/d7pay/k8s/h5-configmaps.yaml")
     require(h5_configmaps, "namespace: pk-d7pay", "h5-configmaps.yaml")
+    require(h5_configmaps, "root /usr/share/nginx/html/d7pay/;", "h5-configmaps.yaml")
     require(h5_configmaps, "proxy_pass http://admin:6000/", "h5-configmaps.yaml")
     require(h5_configmaps, "proxy_pass http://merchant:8000/", "h5-configmaps.yaml")
     require(h5_configmaps, "name: download-nginx-conf", "h5-configmaps.yaml")

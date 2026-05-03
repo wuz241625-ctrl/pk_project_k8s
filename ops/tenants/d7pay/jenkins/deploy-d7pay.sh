@@ -189,6 +189,10 @@ import sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 text = text.replace("pnpm build", "pnpm run build:d7pay")
+text = text.replace(
+    "rm -rf /usr/share/nginx/html/*",
+    "find /usr/share/nginx/html -mindepth 1 -maxdepth 1 ! -name files -exec rm -rf {} +",
+)
 path.write_text(text, encoding="utf-8")
 PY
   docker build -t "${image}" "${build_dir}"
