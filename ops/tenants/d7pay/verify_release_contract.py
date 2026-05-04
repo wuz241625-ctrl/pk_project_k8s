@@ -31,6 +31,8 @@ def main():
     tenant = read("ops/tenants/d7pay/tenant.yaml")
     require(tenant, "namespace: pk-d7pay", "tenant.yaml")
     require(tenant, "mysql_database: pakistan_d7pay", "tenant.yaml")
+    require(tenant, "business_timezone: UTC", "tenant.yaml")
+    require(tenant, "display_timezone: Asia/Karachi", "tenant.yaml")
     require(tenant, "package_name: com.d7pay.merchant", "tenant.yaml")
     require(tenant, 'icon_resource: "@mipmap/ic_launcher_d7pay"', "tenant.yaml")
     require(tenant, "signing_policy: shared_release_keystore", "tenant.yaml")
@@ -76,6 +78,12 @@ def main():
         "ops/tenants/d7pay/scripts/healthcheck.sh",
         "ops/tenants/d7pay/scripts/rollback.sh",
         "ops/tenants/d7pay/tests/test_config_only_release.py",
+        "api/application/timezone.py",
+        "admin/application/timezone.py",
+        "merchant/application/timezone.py",
+        "api/tests/test_timezone_policy.py",
+        "admin/tests/test_timezone_policy.py",
+        "merchant/tests/test_timezone_policy.py",
     ):
         require_file(asset)
 
@@ -227,9 +235,30 @@ def main():
 
     configmap = read("ops/tenants/d7pay/k8s/runtime-configmap.yaml")
     require(configmap, "RUN_ENV: PROD", "runtime-configmap.yaml")
+    require(configmap, "BUSINESS_TIMEZONE: UTC", "runtime-configmap.yaml")
+    require(configmap, "APP_DISPLAY_TIMEZONE: Asia/Karachi", "runtime-configmap.yaml")
     require(configmap, "MYSQL_DATABASE: pakistan_d7pay", "runtime-configmap.yaml")
     require(configmap, "API_OSPAY_API_HOST: http://api.d7pay.example.com/api", "runtime-configmap.yaml")
     forbid(configmap, "awekay.com", "runtime-configmap.yaml")
+    forbid(configmap, "MYSQL_DEFAULT_TIME_ZONE", "runtime-configmap.yaml")
+    forbid(configmap, "TZ: Asia/Karachi", "runtime-configmap.yaml")
+
+    for service in ("api", "admin", "merchant"):
+        config_example = read(f"{service}/config.example.py")
+        require(config_example, 'business_timezone=_env("BUSINESS_TIMEZONE", "UTC")', f"{service}/config.example.py")
+        require(config_example, 'display_timezone=_env("APP_DISPLAY_TIMEZONE", "Asia/Karachi")', f"{service}/config.example.py")
+
+    for forbidden_timezone_manifest in (
+        "ops/tenants/d7pay/k8s/mysql-timezone-configmaps.yaml",
+        "ops/tenants/d7pay/k8s/mysql-timezone.patch.yaml",
+        "ops/tenants/d7pay/k8s/mysql-slave-timezone.patch.yaml",
+        "ops/tenants/d7pay/k8s/redis-timezone.patch.yaml",
+        "ops/tenants/d7pay/k8s/admin-h5-timezone.patch.yaml",
+        "ops/tenants/d7pay/k8s/merchant-h5-timezone.patch.yaml",
+        "ops/tenants/d7pay/k8s/apkdownload-timezone.patch.yaml",
+    ):
+        if (ROOT / forbidden_timezone_manifest).exists():
+            raise AssertionError(f"D7pay 不允许通过 K8s patch 修改系统时区: {forbidden_timezone_manifest}")
 
     services = read("ops/tenants/d7pay/k8s/services.yaml")
     require(services, "namespace: pk-d7pay", "services.yaml")

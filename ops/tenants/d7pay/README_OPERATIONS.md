@@ -88,6 +88,19 @@ systemctl reload nginx
 - admin、merchant、apkdownload、api 四个客户域名都能访问。
 - admin、merchant、App 展示 D7pay 品牌。
 - API、数据库、Redis、指纹目录和 APK 目录都只属于 D7pay。
+- D7pay 业务时间保持 UTC：不修改 MySQL、Redis、Pod 系统时区；`d7pay-runtime-config` 必须包含 `BUSINESS_TIMEZONE=UTC` 和 `APP_DISPLAY_TIMEZONE=Asia/Karachi`。
+- 面向客户展示、报表边界和上游接口参数由应用层转换为巴基斯坦时间。
+
+时区验收命令：
+
+```bash
+kubectl -n pk-d7pay get cm d7pay-runtime-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
+kubectl -n pk-d7pay exec statefulset/mysql -- mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -NBe 'select @@global.time_zone,@@session.time_zone,@@system_time_zone,now(),utc_timestamp();'
+kubectl -n pk-d7pay exec deploy/api-deploy -- python - <<'PY'
+from application.timezone import get_business_timezone_name, get_display_timezone_name, format_for_display
+print(get_business_timezone_name(), get_display_timezone_name(), format_for_display())
+PY
+```
 
 ## 回滚
 

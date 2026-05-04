@@ -5,6 +5,7 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 DEPLOY_SCRIPT = ROOT / "ops/tenants/d7pay/jenkins/deploy-d7pay.sh"
 APPLY_CONFIG_SCRIPT = ROOT / "ops/tenants/d7pay/scripts/apply-config.sh"
+D7PAY_K8S_DIR = ROOT / "ops/tenants/d7pay/k8s"
 
 
 FORBIDDEN_BUILD_MARKERS = (
@@ -39,6 +40,28 @@ class D7payConfigOnlyReleaseTest(unittest.TestCase):
         self.assertIn("data-volumes.yaml", text)
         for marker in FORBIDDEN_BUILD_MARKERS:
             self.assertNotIn(marker, text)
+
+    def test_d7pay_runtime_keeps_business_time_utc_and_displays_pakistan_time(self):
+        configmap = (D7PAY_K8S_DIR / "runtime-configmap.yaml").read_text(encoding="utf-8")
+
+        self.assertIn("BUSINESS_TIMEZONE: UTC", configmap)
+        self.assertIn("APP_DISPLAY_TIMEZONE: Asia/Karachi", configmap)
+        self.assertNotIn("MYSQL_DEFAULT_TIME_ZONE", configmap)
+        self.assertNotIn("TZ: Asia/Karachi", configmap)
+
+    def test_d7pay_does_not_patch_mysql_or_redis_system_timezone(self):
+        forbidden_manifests = (
+            "mysql-timezone-configmaps.yaml",
+            "mysql-timezone.patch.yaml",
+            "mysql-slave-timezone.patch.yaml",
+            "redis-timezone.patch.yaml",
+            "admin-h5-timezone.patch.yaml",
+            "merchant-h5-timezone.patch.yaml",
+            "apkdownload-timezone.patch.yaml",
+        )
+
+        for filename in forbidden_manifests:
+            self.assertFalse((D7PAY_K8S_DIR / filename).exists(), filename)
 
 
 if __name__ == "__main__":

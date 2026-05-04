@@ -29,7 +29,7 @@ make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 
 ## 2026-05-03 当前收口结果
 
-检查时间：2026-05-03 17:48 Asia/Shanghai。
+检查时间：2026-05-03 09:48 UTC。
 
 D7pay 已从临时混合部署收口到独立租户合同：
 
@@ -49,7 +49,7 @@ D7pay 已从临时混合部署收口到独立租户合同：
 
 ## 结论
 
-检查时间：2026-04-29 20:59 Asia/Shanghai，服务器时间 2026-04-29 12:59 UTC。
+检查时间：2026-04-29 12:59 UTC。
 
 当前服务器只部署了原 `pk` 实例，尚未部署 D7pay 专属实例。运维不能直接把客户域名指到现有 `pk` 服务，否则会混用 Ashrafi 的运行环境、数据、下载页和域名配置。
 
@@ -501,6 +501,8 @@ curl -I http://<d7pay-admin-domain>/
 curl -I http://<d7pay-merchant-domain>/
 curl -I http://<d7pay-apkdownload-domain>/
 curl -I http://<d7pay-api-domain>/api/
+kubectl -n pk-d7pay get cm d7pay-runtime-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
+kubectl -n pk-d7pay exec statefulset/mysql -- mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -NBe 'select @@global.time_zone,@@session.time_zone,@@system_time_zone,now(),utc_timestamp();'
 ```
 
 业务验收按 `ops/tenants/d7pay/acceptance.md` 执行。

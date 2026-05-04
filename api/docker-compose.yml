@@ -8,7 +8,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: qwer4321
       MYSQL_AUTHENTICATION_PLUGIN: caching_sha2_password
-      TZ: Asia/Kolkata
+      TZ: UTC
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-authentication-plugin=caching_sha2_password
     volumes:
       - mysql-data-volume:/var/lib/mysql

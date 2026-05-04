@@ -14,6 +14,8 @@ kubernetes:
   namespace: pk-d7pay
   image_tag_policy: pinned
   mysql_database: pakistan_d7pay
+  business_timezone: UTC
+  display_timezone: Asia/Karachi
   redis_instance: redis-d7pay
   fingerprint_mount: /fingerprint
   fingerprint_host_path: /data/pk-d7pay/fingerprint

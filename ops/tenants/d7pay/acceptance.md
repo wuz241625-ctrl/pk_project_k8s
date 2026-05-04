@@ -52,6 +52,8 @@
 - K8s namespace 使用 `pk-d7pay`。
 - MySQL database 使用 `pakistan_d7pay`。
 - Redis 使用独立实例 `redis-d7pay`。
+- 业务存储时区保持 UTC，不能通过 K8s patch 或 MySQL `default-time-zone` 改成巴基斯坦时区。
+- 应用层展示时区使用 `APP_DISPLAY_TIMEZONE=Asia/Karachi`，上游查询参数和客户可见时间由应用层转换。
 - API 容器内指纹目录使用唯一真相源 `/fingerprint`，宿主机目录使用 `/data/pk-d7pay/fingerprint`。
 - APK 下载目录宿主机使用 `/data/pk-d7pay/apkdownload/d7pay`，容器挂载到 `/usr/share/nginx/html/files/android/d7pay`。
 - 客户不拿 SSH、K8s、MySQL、Redis、源码仓库权限。
@@ -71,6 +73,9 @@
 - D7pay NodePort 必须为 `apkdownload:31080`、`admin-h5:31081`、`merchant-h5:31082`、`api-public:31085`，不能复用 `pk` 的 `30080-30085`。
 - K8s 应对 `api/admin/merchant/apkdownload` 应用对应 patch，并完成 rollout。
 - `python3 ops/tenants/d7pay/verify_release_contract.py` 必须通过。
+- `PYTHONPATH=api python3 -m unittest api.tests.test_timezone_policy` 必须通过。
+- `PYTHONPATH=admin python3 -m unittest admin.tests.test_timezone_policy` 必须通过。
+- `PYTHONPATH=merchant python3 -m unittest merchant.tests.test_timezone_policy` 必须通过。
 - 首次部署前必须按 `make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 检查合同、域名、Secret、语法、YAML 和现有集群可读性。
 - 发布前必须按 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 生成 nginx 与 runtime ConfigMap 预览。
 - 发布后必须按 `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 验证 rollout 和四个客户域名。

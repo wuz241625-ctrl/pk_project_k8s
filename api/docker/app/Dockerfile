@@ -1,7 +1,7 @@
 FROM python:3.12
 
-# Set the timezone
-ENV TZ=Asia/Kolkata
+# 业务运行时保持 UTC，展示层按租户配置转换。
+ENV TZ=UTC
 ENV PATH=/usr/local/lib/python3.12/site-packages:$PATH
 RUN mkdir -p /usr/src/app
 WORKDIR /usr/src/app

@@ -27,6 +27,8 @@ def _base_config():
         mysql_user=_env("MYSQL_USER", "d7pay_app"),
         mysql_password=_env("MYSQL_PASSWORD", "8e8PRyJD0CPJmjNeKZMpTJBP__bEKSLQteO_miYo"),
         mysql_database=_env("MYSQL_DATABASE", "pakistan_d7pay"),
+        business_timezone=_env("BUSINESS_TIMEZONE", "UTC"),
+        display_timezone=_env("APP_DISPLAY_TIMEZONE", "Asia/Karachi"),
         debug=_env_bool("DEBUG", False),
         api_url=_env("ADMIN_API_URL", "http://api:9000"),
         cookie_key=_env("ADMIN_COOKIE_KEY", "0hcZJEjUBe0p0RZJpwAJj7sYggzgwR0Gft6_KdxooLq5B7FPgkvIbbr31mug6f4R"),

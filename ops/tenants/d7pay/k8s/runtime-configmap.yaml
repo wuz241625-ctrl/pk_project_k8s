@@ -8,6 +8,8 @@ metadata:
 data:
   TENANT_CODE: d7pay
   RUN_ENV: PROD
+  BUSINESS_TIMEZONE: UTC
+  APP_DISPLAY_TIMEZONE: Asia/Karachi
   REDIS_HOST: redis
   MYSQL_HOST: mysql
   MYSQL_DATABASE: pakistan_d7pay

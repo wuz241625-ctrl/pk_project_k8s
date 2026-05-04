@@ -1,5 +1,45 @@
 # D7pay 运维排错
 
+## 时区误改成巴基斯坦系统时区
+
+现象：
+
+- MySQL `now()` 比 `utc_timestamp()` 大 5 小时。
+- D7pay Pod 或 Redis 容器内 `date` 显示 `PKT`。
+- `d7pay-runtime-config` 出现 `TZ=Asia/Karachi` 或 `MYSQL_DEFAULT_TIME_ZONE`。
+
+原因：
+
+- D7pay 的正确策略是业务存储保持 UTC，应用层展示和上游参数转换为 `Asia/Karachi`。
+- MySQL、Redis、容器系统时区改成巴基斯坦时间会让写库、流水、定时任务和跨服务排障混用时间基准。
+
+处理：
+
+```bash
+make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+kubectl -n pk-d7pay rollout restart deployment/api-deploy deployment/admin-deploy deployment/merchant-deploy
+kubectl -n pk-d7pay rollout status deployment/api-deploy --timeout=180s
+kubectl -n pk-d7pay rollout status deployment/admin-deploy --timeout=180s
+kubectl -n pk-d7pay rollout status deployment/merchant-deploy --timeout=180s
+```
+
+验收：
+
+```bash
+kubectl -n pk-d7pay get cm d7pay-runtime-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
+kubectl -n pk-d7pay exec statefulset/mysql -- mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -NBe 'select @@global.time_zone,@@session.time_zone,@@system_time_zone,now(),utc_timestamp();'
+kubectl -n pk-d7pay exec deploy/api-deploy -- python - <<'PY'
+from application.timezone import get_business_timezone_name, get_display_timezone_name, format_for_display
+print(get_business_timezone_name(), get_display_timezone_name(), format_for_display())
+PY
+```
+
+期望：
+
+- ConfigMap 只有 `BUSINESS_TIMEZONE=UTC` 和 `APP_DISPLAY_TIMEZONE=Asia/Karachi`，没有 `TZ=Asia/Karachi`、没有 `MYSQL_DEFAULT_TIME_ZONE`。
+- MySQL `now()` 与 `utc_timestamp()` 一致或只有秒级执行差。
+- 应用输出 `UTC Asia/Karachi <巴基斯坦展示时间>`。
+
 ## EasyPaisa Secret 已换但后台记录查询仍走旧上游
 
 现象：

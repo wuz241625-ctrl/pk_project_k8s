@@ -34,6 +34,8 @@ def _base_config():
         mysql_user=_env("MYSQL_USER", "d7pay_app"),
         mysql_password=_env("MYSQL_PASSWORD", "8e8PRyJD0CPJmjNeKZMpTJBP__bEKSLQteO_miYo"),
         mysql_database=_env("MYSQL_DATABASE", "pakistan_d7pay"),
+        business_timezone=_env("BUSINESS_TIMEZONE", "UTC"),
+        display_timezone=_env("APP_DISPLAY_TIMEZONE", "Asia/Karachi"),
         debug=_env_bool("DEBUG", False),
         autoreload=_env_bool("AUTORELOAD", False),
         pay_url=_env("API_PAY_URL", "https://api.d7pay.net/api/order/"),
