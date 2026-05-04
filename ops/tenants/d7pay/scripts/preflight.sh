@@ -17,8 +17,12 @@ print_section "本地合同检查"
 python3 -m py_compile \
   ops/tenants/d7pay/verify_release_contract.py \
   ops/tenants/d7pay/assets/generate_logo_assets.py \
-  ops/tenants/d7pay/scripts/render_runtime_config.py
+  ops/tenants/d7pay/scripts/render_runtime_config.py \
+  ops/tenants/d7pay/tests/test_deploy_targets.py
 python3 ops/tenants/d7pay/verify_release_contract.py
+
+print_section "单服务发布目标测试"
+python3 -m unittest ops.tenants.d7pay.tests.test_deploy_targets
 
 print_section "Shell 脚本语法检查"
 for script in \

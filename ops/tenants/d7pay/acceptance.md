@@ -55,6 +55,11 @@
 - Jenkins 使用 `ops/tenants/d7pay/jenkins.env.example` 中的变量合同发布。
 - 运维日常执行入口是 `ops/tenants/d7pay/README_OPERATIONS.md` 和根目录 Makefile 目标，长 runbook 只用于排障细节。
 - Jenkins 调用 `make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 或底层 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`，不能直接复用硬编码 `pk` namespace 和默认 `build:prod` 的旧脚本。
+- `make d7pay-deploy` 必须保持全量发布语义，只用于首次上线或租户整体版本发布。
+- 维护期必须支持 `make d7pay-deploy-api/admin/merchant/admin-h5/merchant-h5/apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 单服务发布。
+- Jenkins 参数化维护入口必须支持 `make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+- 底层 `D7PAY_DEPLOY_TARGETS=api,admin-h5` 必须只构建和 rollout 指定目标，不能滚动未选中的 deployment。
+- 非法 `D7PAY_DEPLOY_TARGETS` 必须失败并打印支持目标列表，不能静默退回全量或跳过发布。
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。

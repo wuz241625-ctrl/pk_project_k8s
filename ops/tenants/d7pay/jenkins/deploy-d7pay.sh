@@ -20,33 +20,66 @@ D7PAY_GIT_BRANCH="${D7PAY_GIT_BRANCH:-d7pay}"
 
 export KUBECONFIG
 
-require_env() {
-  local name="$1"
-  if [ -z "${!name:-}" ]; then
-    echo "缺少环境变量: ${name}" >&2
-    exit 1
-  fi
-}
+ALL_D7PAY_DEPLOY_TARGETS=(api admin merchant admin-h5 merchant-h5 apkdownload)
+SELECTED_DEPLOY_TARGETS=()
 
-require_customer_domain() {
-  local name="$1"
-  local value="${!name:-}"
-  require_env "${name}"
-  reject_reserved_domain_value "${name}"
-}
-
-reject_reserved_domain_value() {
-  local name="$1"
-  local value="${!name:-}"
-  if [ -z "${value}" ]; then
-    return 0
-  fi
-  case "${value}" in
-    *awekay.com*|*example.com*|*.example)
-      echo "${name} 必须替换为 D7pay 客户自有域名，当前值不能用于发布: ${value}" >&2
-      exit 1
+is_supported_deploy_target() {
+  local target="$1"
+  case "${target}" in
+    api|admin|merchant|admin-h5|merchant-h5|apkdownload)
+      return 0
+      ;;
+    *)
+      return 1
       ;;
   esac
+}
+
+append_deploy_target() {
+  local target="$1"
+  local existing
+  if [ "${#SELECTED_DEPLOY_TARGETS[@]}" -gt 0 ]; then
+    for existing in "${SELECTED_DEPLOY_TARGETS[@]}"; do
+      if [ "${existing}" = "${target}" ]; then
+        return 0
+      fi
+    done
+  fi
+  SELECTED_DEPLOY_TARGETS+=("${target}")
+}
+
+set_full_deploy_targets() {
+  SELECTED_DEPLOY_TARGETS=("${ALL_D7PAY_DEPLOY_TARGETS[@]}")
+}
+
+set_deploy_targets() {
+  local raw="${1:-all}"
+  local target
+
+  raw="${raw//,/ }"
+  SELECTED_DEPLOY_TARGETS=()
+
+  for target in ${raw}; do
+    if [ "${target}" = "all" ] || [ "${target}" = "full" ]; then
+      set_full_deploy_targets
+      return 0
+    fi
+    if ! is_supported_deploy_target "${target}"; then
+      echo "不支持的 D7pay 发布目标: ${target}" >&2
+      echo "支持的目标: ${ALL_D7PAY_DEPLOY_TARGETS[*]} all full" >&2
+      return 1
+    fi
+    append_deploy_target "${target}"
+  done
+
+  if [ "${#SELECTED_DEPLOY_TARGETS[@]}" -eq 0 ]; then
+    set_full_deploy_targets
+  fi
+}
+
+describe_deploy_targets() {
+  local IFS=","
+  echo "${SELECTED_DEPLOY_TARGETS[*]}"
 }
 
 patch_namespace_and_image() {
@@ -214,6 +247,43 @@ PY
   kubectl rollout status "deployment/${deployment}" -n "${KUBE_NAMESPACE}" --timeout=180s
 }
 
+deploy_target() {
+  local target="$1"
+  case "${target}" in
+    api)
+      build_python_service api api-deploy
+      ;;
+    admin)
+      build_python_service admin admin-deploy
+      ;;
+    merchant)
+      build_python_service merchant merchant-deploy
+      ;;
+    admin-h5)
+      build_h5_service admin-h5 admin-h5-deploy "${ADMIN_H5_BUILD_SCRIPT:-d7pay:prod}"
+      ;;
+    merchant-h5)
+      build_h5_service merchant-h5 merchant-h5-deploy "${MERCHANT_H5_BUILD_SCRIPT:-d7pay:prod}"
+      ;;
+    apkdownload)
+      build_apkdownload
+      ;;
+    *)
+      echo "不支持的 D7pay 发布目标: ${target}" >&2
+      return 1
+      ;;
+  esac
+}
+
+deploy_selected_targets() {
+  local target
+  print_section "D7pay 发布目标"
+  echo "$(describe_deploy_targets)"
+  for target in "${SELECTED_DEPLOY_TARGETS[@]}"; do
+    deploy_target "${target}"
+  done
+}
+
 main() {
   require_env MYSQL_PASSWORD
   require_env API_KEY_ORDER
@@ -228,17 +298,15 @@ main() {
   reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST
   reject_reserved_domain_value APP_API_BASE_URL
   require_d7pay_namespace_guard
+  set_deploy_targets "${D7PAY_DEPLOY_TARGETS:-all}"
 
   sync_code
   python3 "${TENANT_DIR}/verify_release_contract.py"
   apply_tenant_resources
 
-  build_python_service api api-deploy
-  build_python_service admin admin-deploy
-  build_python_service merchant merchant-deploy
-  build_h5_service admin-h5 admin-h5-deploy "${ADMIN_H5_BUILD_SCRIPT:-d7pay:prod}"
-  build_h5_service merchant-h5 merchant-h5-deploy "${MERCHANT_H5_BUILD_SCRIPT:-d7pay:prod}"
-  build_apkdownload
+  deploy_selected_targets
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  main "$@"
+fi

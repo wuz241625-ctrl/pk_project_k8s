@@ -311,18 +311,35 @@ REQUIRE_RELEASE_SIGNING=true
 
 上面的 `*.d7pay.example.com` 只是占位。运维必须替换为 D7pay 客户自有域名；`deploy-d7pay.sh` 会拒绝 `example.com` 和 `awekay.com`，防止把 D7pay 发布到我们的域名或占位域名。
 
-发布命令优先使用 Makefile 入口：
+首次上线或租户整体版本发布优先使用 Makefile 全量入口：
 
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
 make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-Jenkins 也可以直接调用底层脚本：
+上线后的维护发布只滚动改动服务：
+
+```bash
+make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+Jenkins 参数化维护入口：
+
+```bash
+make d7pay-deploy-service SERVICE=admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+Jenkins 也可以直接调用底层脚本并显式指定多个目标：
 
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
-bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
+D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
 ```
 
 该脚本会应用：
@@ -334,6 +351,8 @@ bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
 - 真实 Secret
 - `data-volumes.yaml`
 - `api/admin/merchant/apkdownload` patch
+
+全量入口默认发布 `api/admin/merchant/admin-h5/merchant-h5/apkdownload`。单服务入口仍会应用公共资源，但只构建和 rollout 指定 deployment。
 
 D7pay 对外 NodePort：
 

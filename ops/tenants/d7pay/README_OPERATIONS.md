@@ -27,7 +27,7 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 
 `D7PAY_ENV` 不执行 shell 变量展开，不能写 `${API_DOMAIN}`；所有 URL 都要写完整值。
 
-## 日常发布
+## 首次全量发布
 
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
@@ -40,11 +40,38 @@ make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
+`make d7pay-deploy` 是全量入口，只用于首次上线、租户整体版本发布或需要六个服务同时滚动的场景。
+
 `make d7pay-render-config` 会生成：
 
 - `/tmp/d7pay-rendered/runtime-configmap.yaml`
 - `/tmp/d7pay-rendered/nginx-d7pay.conf`
 - `/tmp/d7pay-rendered/env-summary.txt`
+
+## 维护期单服务发布
+
+上线后只改哪个服务就发布哪个服务：
+
+```bash
+make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+Jenkins 参数化维护入口：
+
+```bash
+make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+单服务发布仍会同步 `d7pay` 分支、检查合同并 apply 公共租户资源，但只构建和 rollout 指定 deployment。多个服务可以显式指定：
+
+```bash
+D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
+```
 
 nginx 配置上线前先执行：
 

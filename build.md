@@ -4,11 +4,30 @@
 
 ## D7pay 运维构建与发布
 
+首次上线或租户整体版本发布使用全量入口：
+
 ```bash
 make d7pay-preflight
 make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+上线后的日常维护使用单服务入口，避免无关服务滚动：
+
+```bash
+make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+Jenkins 参数化维护入口：
+
+```bash
+make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
 D7pay 详细说明见 `ops/tenants/d7pay/build.md` 和 `ops/tenants/d7pay/README_OPERATIONS.md`。

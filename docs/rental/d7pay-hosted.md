@@ -71,7 +71,7 @@ D7pay 不能使用我们的 `awekay.com` 域名。文档和 `jenkins.env.example
 
 现有 `pk` 部署继续作为当前业务环境保留。D7pay 首次上线是新增 `pk-d7pay` 隔离实例，不替换 `pk`，不复用 `pk` 的 `30080-30085` NodePort，不复用 `pakistan` 数据库，不覆盖现有 nginx server block。
 
-发布顺序：
+首次全量发布顺序：
 
 1. 运维准备私有 `D7PAY_ENV` 文件，并执行 `make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
 2. 执行 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env`，生成 nginx 和 runtime ConfigMap 预览。
@@ -84,6 +84,18 @@ D7pay 不能使用我们的 `awekay.com` 域名。文档和 `jenkins.env.example
 9. 应用 `ops/tenants/d7pay/k8s/h5-configmaps.yaml` 和 `services.yaml`，创建 D7pay 专属 H5 nginx 配置和 NodePort。
 10. 对 `api/admin/merchant/apkdownload` 应用 `*-deployment-env.patch.yaml`。
 11. 等待所有 deployment rollout 成功，再执行 `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+
+维护期发布顺序：
+
+1. 只改后端 API 时执行 `make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+2. 只改 admin 后端时执行 `make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+3. 只改 merchant 后端时执行 `make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+4. 只改 admin 前端时执行 `make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+5. 只改 merchant 前端时执行 `make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+6. 只改下载页或 APK 元信息时执行 `make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+7. Jenkins 参数化发布使用 `make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+
+维护期单服务发布仍会同步代码、检查合同并 apply 公共租户资源，但只构建和 rollout 指定 deployment，避免无关服务被滚动。
 
 ## 上线前必须完成
 
