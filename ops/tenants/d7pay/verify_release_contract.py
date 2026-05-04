@@ -260,8 +260,12 @@ def main():
 
     for service in ("api", "admin", "merchant"):
         config_example = read(f"{service}/config.example.py")
-        require(config_example, 'tenant_code=_env("TENANT_CODE", "local")', f"{service}/config.example.py")
-        require(config_example, 'mysql_database=_env("MYSQL_DATABASE", "pakistan")', f"{service}/config.example.py")
+        require(config_example, 'tenant_code=_env("TENANT_CODE", "d7pay")', f"{service}/config.example.py")
+        require(config_example, 'mysql_database=_env("MYSQL_DATABASE", "pakistan_d7pay")', f"{service}/config.example.py")
+        require(config_example, "def get_config():", f"{service}/config.example.py")
+        require(config_example, "return _base_config()", f"{service}/config.example.py")
+        forbid(config_example, "DEV", f"{service}/config.example.py")
+        forbid(config_example, "product = _base_config()", f"{service}/config.example.py")
 
     api_config = read("api/config.example.py")
     require(api_config, 'ospay_api_host=_env("API_OSPAY_API_HOST"', "api/config.example.py")
