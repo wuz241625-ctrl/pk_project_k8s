@@ -3,7 +3,7 @@ SHELL := /bin/bash
 D7PAY_DIR := ops/tenants/d7pay
 D7PAY_DEPLOY_SERVICES := api admin merchant admin-h5 merchant-h5 apkdownload
 
-.PHONY: d7pay-preflight d7pay-render-config d7pay-deploy d7pay-deploy-service d7pay-healthcheck d7pay-rollback
+.PHONY: d7pay-preflight d7pay-render-config d7pay-build-app d7pay-deploy d7pay-deploy-service d7pay-healthcheck d7pay-rollback
 .PHONY: $(addprefix d7pay-deploy-,$(D7PAY_DEPLOY_SERVICES))
 
 d7pay-preflight:
@@ -11,6 +11,9 @@ d7pay-preflight:
 
 d7pay-render-config:
 	@bash $(D7PAY_DIR)/scripts/render-config.sh
+
+d7pay-build-app:
+	@bash $(D7PAY_DIR)/scripts/build-flutter-app.sh
 
 d7pay-deploy:
 	@bash $(D7PAY_DIR)/jenkins/deploy-d7pay.sh

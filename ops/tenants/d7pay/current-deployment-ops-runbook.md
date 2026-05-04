@@ -354,6 +354,66 @@ D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
 
 全量入口默认发布 `api/admin/merchant/admin-h5/merchant-h5/apkdownload`。单服务入口仍会应用公共资源，但只构建和 rollout 指定 deployment。
 
+### 6.1 发布 Flutter App
+
+Flutter App 不属于 K8s deployment。它的发布路径是 `Flutter 工程 -> APK 制品 -> apkdownload 静态文件 -> apkdownload 单服务发布`。
+
+正式构建前确认：
+
+```bash
+test -d /Users/tear/pk_project/ashrafi_merchant_flutter
+test -f /Users/tear/pk_project/ashrafi_merchant_flutter/android/key.properties
+grep '^APP_API_BASE_URL=' /opt/cicd/secrets/d7pay.env
+grep '^REQUIRE_RELEASE_SIGNING=true' /opt/cicd/secrets/d7pay.env
+```
+
+构建并更新下载页元信息：
+
+```bash
+cd /opt/cicd/k8s/pk_project_k8s
+make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env \
+  FLUTTER_APP_DIR=/Users/tear/pk_project/ashrafi_merchant_flutter
+```
+
+该命令会读取 Flutter `pubspec.yaml` 的版本号，生成：
+
+```text
+apkdownload/public/files/android/d7pay/d7pay_merchant_universal_v<version>_<timestamp>.apk
+apkdownload/public/files/android/appInfo.d7pay.json
+```
+
+提交推送：
+
+```bash
+git add apkdownload/public/files/android/appInfo.d7pay.json apkdownload/public/files/android/d7pay/
+git commit -m "chore: publish d7pay merchant apk"
+git push origin d7pay
+```
+
+线上只发布 `apkdownload`：
+
+```bash
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+验收：
+
+```bash
+aapt dump badging apkdownload/public/files/android/d7pay/<apk-name>.apk | grep -E "package:|application-label|native-code"
+apksigner verify --verbose --print-certs apkdownload/public/files/android/d7pay/<apk-name>.apk
+curl -k https://apkdownload.d7pay.net/files/android/appInfo.json
+curl -k -I https://apkdownload.d7pay.net/files/android/d7pay/<apk-name>.apk
+```
+
+必须看到：
+
+- `package: name='com.d7pay.merchant'`
+- `application-label:'D7pay Merchant'`
+- `native-code` 包含 `armeabi-v7a` 和 `arm64-v8a`
+- 证书不是 `CN=Android Debug`
+- `appInfo.json` 只包含 D7pay 下载项
+
 D7pay 对外 NodePort：
 
 ```text

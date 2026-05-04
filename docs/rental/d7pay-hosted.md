@@ -97,6 +97,15 @@ D7pay 不能使用我们的 `awekay.com` 域名。文档和 `jenkins.env.example
 
 维护期单服务发布仍会同步代码、检查合同并 apply 公共租户资源，但只构建和 rollout 指定 deployment，避免无关服务被滚动。
 
+Flutter App 发布顺序：
+
+1. 在 Jenkins 或构建机准备 Flutter 工程 `/Users/tear/pk_project/ashrafi_merchant_flutter`，并挂载正式 `android/key.properties`。
+2. 确认 `/opt/cicd/secrets/d7pay.env` 里 `APP_API_BASE_URL=https://api.d7pay.net`、`APP_APPLICATION_ID=com.d7pay.merchant`、`APP_ICON=@mipmap/ic_launcher_d7pay`、`REQUIRE_RELEASE_SIGNING=true`。
+3. 执行 `make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env FLUTTER_APP_DIR=/Users/tear/pk_project/ashrafi_merchant_flutter`。
+4. 提交并推送生成的 `apkdownload/public/files/android/appInfo.d7pay.json` 和 `apkdownload/public/files/android/d7pay/<apk-name>.apk`。
+5. 执行 `make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
+6. 用 `aapt dump badging`、`apksigner verify` 和 `curl` 验证包名、展示名、正式签名、ARM/ARM64 合并包和下载链接。
+
 ## 上线前必须完成
 
 1. 为 D7pay 客户自有的 admin、merchant、api、apkdownload 域名配置 DNS 和 nginx；`*.d7pay.example.com` 只是文档占位。

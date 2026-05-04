@@ -68,6 +68,7 @@ def main():
         "ops/tenants/d7pay/build.md",
         "ops/tenants/d7pay/err.md",
         "ops/tenants/d7pay/scripts/common.sh",
+        "ops/tenants/d7pay/scripts/build-flutter-app.sh",
         "ops/tenants/d7pay/scripts/preflight.sh",
         "ops/tenants/d7pay/scripts/render_runtime_config.py",
         "ops/tenants/d7pay/scripts/render-config.sh",
@@ -109,16 +110,20 @@ def main():
     require(jenkins, "API_WEBSOCKET_ALLOW_HOST=api.d7pay.example.com", "jenkins.env.example")
     require(jenkins, "APP_API_BASE_URL=http://api.d7pay.example.com", "jenkins.env.example")
     require(jenkins, "deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", "jenkins.env.example")
+    require(jenkins, "FLUTTER_APP_DIR=", "jenkins.env.example")
+    require(jenkins, "FLUTTER_BIN=", "jenkins.env.example")
     forbid(jenkins.replace("deploy-d7pay.sh 会拒绝 example.com 和 awekay.com", ""), "awekay.com", "jenkins.env.example")
 
     handoff = read("docs/rental/d7pay-hosted.md")
     require(handoff, "APP_ICON=@mipmap/ic_launcher_d7pay", "d7pay-hosted.md")
     require(handoff, "ops/tenants/d7pay/README_OPERATIONS.md", "d7pay-hosted.md")
     require(handoff, "make d7pay-preflight", "d7pay-hosted.md")
+    require(handoff, "make d7pay-build-app", "d7pay-hosted.md")
     require(handoff, "make d7pay-deploy-service SERVICE=api", "d7pay-hosted.md")
     ops_runbook = read("ops/tenants/d7pay/current-deployment-ops-runbook.md")
     require(ops_runbook, "APP_ICON=@mipmap/ic_launcher_d7pay", "current-deployment-ops-runbook.md")
     require(ops_runbook, "ops/tenants/d7pay/README_OPERATIONS.md", "current-deployment-ops-runbook.md")
+    require(ops_runbook, "make d7pay-build-app", "current-deployment-ops-runbook.md")
     require(ops_runbook, "make d7pay-deploy", "current-deployment-ops-runbook.md")
     require(ops_runbook, "make d7pay-deploy-service SERVICE=admin-h5", "current-deployment-ops-runbook.md")
     require(ops_runbook, "D7PAY_DEPLOY_TARGETS=api,admin-h5", "current-deployment-ops-runbook.md")
@@ -126,6 +131,7 @@ def main():
     operations_readme = read("ops/tenants/d7pay/README_OPERATIONS.md")
     require(operations_readme, "make d7pay-preflight", "README_OPERATIONS.md")
     require(operations_readme, "make d7pay-render-config", "README_OPERATIONS.md")
+    require(operations_readme, "make d7pay-build-app", "README_OPERATIONS.md")
     require(operations_readme, "make d7pay-deploy", "README_OPERATIONS.md")
     require(operations_readme, "make d7pay-deploy-api", "README_OPERATIONS.md")
     require(operations_readme, "make d7pay-deploy-service SERVICE=api", "README_OPERATIONS.md")
@@ -137,6 +143,7 @@ def main():
     for target in (
         "d7pay-preflight",
         "d7pay-render-config",
+        "d7pay-build-app",
         "d7pay-deploy",
         "d7pay-deploy-service",
         "d7pay-deploy-api",
@@ -156,6 +163,13 @@ def main():
     require(common_script, "require_d7pay_namespace_guard", "common.sh")
     require(common_script, "reject_reserved_domain_value", "common.sh")
     require(common_script, "存在未展开的变量引用", "common.sh")
+
+    app_build_script = read("ops/tenants/d7pay/scripts/build-flutter-app.sh")
+    require(app_build_script, "ORG_GRADLE_PROJECT_appApplicationId", "build-flutter-app.sh")
+    require(app_build_script, "ORG_GRADLE_PROJECT_requireReleaseSigning", "build-flutter-app.sh")
+    require(app_build_script, "APP_API_BASE_URL", "build-flutter-app.sh")
+    require(app_build_script, "appInfo.d7pay.json", "build-flutter-app.sh")
+    require(app_build_script, "make d7pay-deploy-apkdownload", "build-flutter-app.sh")
 
     deploy_script = read("ops/tenants/d7pay/jenkins/deploy-d7pay.sh")
     require(deploy_script, "KUBE_NAMESPACE", "deploy-d7pay.sh")
@@ -187,6 +201,7 @@ def main():
     preflight_script = read("ops/tenants/d7pay/scripts/preflight.sh")
     require(preflight_script, "verify_release_contract.py", "preflight.sh")
     require(preflight_script, "ops.tenants.d7pay.tests.test_deploy_targets", "preflight.sh")
+    require(preflight_script, "build-flutter-app.sh", "preflight.sh")
     require(preflight_script, "D7PAY_RUNTIME_SECRET_YAML", "preflight.sh")
     require(preflight_script, "replace-in-jenkins", "preflight.sh")
 

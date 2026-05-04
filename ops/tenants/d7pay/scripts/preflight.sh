@@ -28,6 +28,7 @@ print_section "Shell 脚本语法检查"
 for script in \
   ops/tenants/d7pay/jenkins/deploy-d7pay.sh \
   ops/tenants/d7pay/scripts/common.sh \
+  ops/tenants/d7pay/scripts/build-flutter-app.sh \
   ops/tenants/d7pay/scripts/preflight.sh \
   ops/tenants/d7pay/scripts/render-config.sh \
   ops/tenants/d7pay/scripts/healthcheck.sh \

@@ -30,6 +30,17 @@ Jenkins 参数化维护入口：
 make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
+Flutter App 发布不是单独的 K8s deployment，而是先生成 apkdownload 静态制品，再发布 `apkdownload`：
+
+```bash
+make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env \
+  FLUTTER_APP_DIR=/Users/tear/pk_project/ashrafi_merchant_flutter
+git add apkdownload/public/files/android/appInfo.d7pay.json apkdownload/public/files/android/d7pay/
+git commit -m "chore: publish d7pay merchant apk"
+git push origin d7pay
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
 D7pay 详细说明见 `ops/tenants/d7pay/build.md` 和 `ops/tenants/d7pay/README_OPERATIONS.md`。
 
 ## 常用子项目命令

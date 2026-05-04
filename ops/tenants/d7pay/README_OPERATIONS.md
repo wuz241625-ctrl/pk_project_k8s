@@ -73,6 +73,22 @@ make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
 ```
 
+## Flutter App 发布
+
+App 发布不走 `d7pay-deploy` 全量入口。App 是 `apkdownload` 的静态制品，流程是先构建 APK，再只发布 `apkdownload`：
+
+```bash
+make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env \
+  FLUTTER_APP_DIR=/Users/tear/pk_project/ashrafi_merchant_flutter
+git add apkdownload/public/files/android/appInfo.d7pay.json apkdownload/public/files/android/d7pay/
+git commit -m "chore: publish d7pay merchant apk"
+git push origin d7pay
+make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+正式发布前必须确认 Flutter 工程存在 `android/key.properties`，并且 `D7PAY_ENV` 里 `REQUIRE_RELEASE_SIGNING=true`、`APP_API_BASE_URL=https://api.d7pay.net`。不能用 debug 签名包交付客户。
+
 nginx 配置上线前先执行：
 
 ```bash
