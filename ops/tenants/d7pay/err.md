@@ -1,5 +1,67 @@
 # D7pay 运维排错
 
+## EasyPaisa Secret 已换但后台记录查询仍走旧上游
+
+现象：
+
+- `api` 容器内 `get_config()` 已显示新的 `easypaisa_user_id` / `easypaisa_secret_key` 指纹。
+- `admin` 的 EasyPaisa/JazzCash 记录查询仍可能使用代码默认值里的旧上游凭据。
+
+原因：
+
+- `admin/application/record/easypaisa.py` 和 `admin/application/record/jazzcash.py` 早期使用 `getattr(conf, ...)`。
+- D7pay 的 `admin/config.example.py` 返回的是 `dict`，`getattr(dict, ...)` 永远取不到 env 注入字段，会回落到旧默认值。
+
+处理：
+
+- `admin/config.example.py` 必须暴露 `EASYPAISA_*`、`JAZZCASH_*`。
+- 记录查询模块必须通过兼容 dict/object 的 `conf_get()` 读取上游配置。
+- 修改后重发 `admin-d7pay`。
+
+验收：
+
+```bash
+PYTHONPATH=admin python3 -m unittest admin.tests.test_record_upstream_config -v
+python3 -m py_compile admin/config.example.py admin/application/record/upstream_config.py admin/application/record/easypaisa.py admin/application/record/jazzcash.py
+kubectl -n pk-d7pay exec deploy/admin-deploy -- python -c 'from config import get_config; c=get_config(); print(c.get("tenant_code"), c.get("mysql_database"), "easypaisa_user_id" in c)'
+```
+
+期望：
+
+- 单测通过。
+- `admin` 容器输出 `d7pay pakistan_d7pay True`。
+
+## Redis `MISCONF` 导致 API 重启后 CrashLoopBackOff
+
+现象：
+
+```text
+redis.exceptions.ResponseError: MISCONF Redis is configured to save RDB snapshots, but it's currently unable to persist to disk
+Failed opening the temp RDB file temp-*.rdb (in server root dir /data) for saving: Permission denied
+```
+
+原因：
+
+- `pk-d7pay` Redis 进程 UID/GID 是 `999:999`。
+- PVC 挂载到容器内 `/data`，但目录 owner 不是 `999:999`，Redis 后台保存 RDB 时无法创建临时文件。
+- `stop-writes-on-bgsave-error=yes` 时，Redis 会拒绝写命令，API 启动初始化写 Redis 后退出。
+
+处理：
+
+```bash
+kubectl -n pk-d7pay exec deploy/redis -- sh -lc 'chown -R 999:999 /data && redis-cli BGSAVE'
+kubectl -n pk-d7pay exec deploy/redis -- sh -lc 'redis-cli INFO persistence | grep rdb_last_bgsave_status'
+kubectl -n pk-d7pay rollout restart deployment/api-deploy
+kubectl -n pk-d7pay rollout status deployment/api-deploy --timeout=180s
+```
+
+期望：
+
+```text
+rdb_last_bgsave_status:ok
+deployment "api-deploy" successfully rolled out
+```
+
 ## RUN_ENV 是 PROD 但仍读到旧库或旧域名
 
 现象：

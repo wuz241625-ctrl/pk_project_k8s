@@ -22,6 +22,7 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 
 from application.base import BaseHandler
 from application.message import msg
+from application.record.upstream_config import conf_get
 
 # 添加配置路径
 parent_directory = os.path.dirname(__file__)  # application/record
@@ -36,9 +37,9 @@ from config import get_config
 conf = get_config()
 
 # JazzCash API 配置参数
-JAZZCASH_API_URL = getattr(conf, 'jazzcash_api_url', 'http://34.150.42.92:84')
-JAZZCASH_USER_ID = getattr(conf, 'jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
-JAZZCASH_SECRET_KEY = getattr(conf, 'jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
+JAZZCASH_API_URL = conf_get(conf, 'jazzcash_api_url', 'http://34.150.42.92:84')
+JAZZCASH_USER_ID = conf_get(conf, 'jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
+JAZZCASH_SECRET_KEY = conf_get(conf, 'jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
 
 # 银行名称常量
 BANK_NAME_JAZZCASH = 'JAZZCASH'

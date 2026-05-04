@@ -35,6 +35,18 @@ def _base_config():
         SQL_TIMEOUT=_env_int("SQL_TIMEOUT", 3000),
         GROUP_ID=_env_int("GROUP_ID", 0),
         robotApi=_env("ADMIN_ROBOT_API", "https://robot.example.com"),
+        easypaisa_api_url=_env("EASYPAISA_API_URL", "http://34.150.42.92:83"),
+        easypaisa_user_id=_env("EASYPAISA_USER_ID", "change-me-easypaisa-user"),
+        easypaisa_secret_key=_env(
+            "EASYPAISA_SECRET_KEY",
+            "change-me-easypaisa-secret",
+        ),
+        jazzcash_api_url=_env("JAZZCASH_API_URL", "http://34.150.42.92:84"),
+        jazzcash_user_id=_env("JAZZCASH_USER_ID", "change-me-jazzcash-user"),
+        jazzcash_secret_key=_env(
+            "JAZZCASH_SECRET_KEY",
+            "change-me-jazzcash-secret",
+        ),
     )
 
 
