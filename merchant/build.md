@@ -59,13 +59,22 @@ python main.py --port=8000 --logfile=merchant_8000.log
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/merchant-deploy -- printenv RUN_ENV
 ```
 
-## D7pay Jenkins/K8s 发布配置
+## D7pay 后端发布说明
 
-D7pay 不提交真实 `merchant/config.py`。Jenkins 应使用 `merchant/config.example.py` 作为模板，并通过 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入：
+D7pay 商户后端发布边界必须分清：
+
+- D7pay Makefile 只做配置检查、配置渲染、配置应用和线上健康检查。
+- `merchant` 镜像构建、镜像推送、Deployment 镜像更新、rollout 继续走现有后端发布脚本。
+- D7pay 脚本不会改写 `merchant/Dockerfile`，也不会替你执行 Dockerfile 里的打包命令，所以不会和现有 Dockerfile 冲突。
+
+发布前先检查并纠偏公共配置：
 
 ```bash
-kubectl patch deployment merchant-deploy -n pk-d7pay --type=strategic --patch-file ops/tenants/d7pay/k8s/merchant-deployment-env.patch.yaml
+cd /Users/tear/pk_project_k8s && make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+cd /Users/tear/pk_project_k8s && make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
+
+然后再执行你现有的 `merchant` 镜像构建和发布脚本。该脚本需要保证镜像内的 `merchant/config.py` 来自 `merchant/config.example.py`，运行时配置从 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入。
 
 验收重点：
 
@@ -73,3 +82,12 @@ kubectl patch deployment merchant-deploy -n pk-d7pay --type=strategic --patch-fi
 - `TENANT_CODE=d7pay`
 - `MYSQL_DATABASE=pakistan_d7pay`
 - `MERCHANT_API_URL=http://api:9000`
+
+发布后验收：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n pk-d7pay exec deploy/merchant-deploy -- printenv RUN_ENV TENANT_CODE MYSQL_DATABASE MERCHANT_API_URL
+cd /Users/tear/pk_project_k8s && make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+正确结果必须是 `RUN_ENV=PROD`、`TENANT_CODE=d7pay`、库名为 `pakistan_d7pay`，且 `MERCHANT_API_URL=http://api:9000`。

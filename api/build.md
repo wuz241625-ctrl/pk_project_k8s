@@ -45,19 +45,24 @@ python3.12 -m pytest tests/test_router_easypay_cleanup.py tests/test_easypay_soa
 KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/api-deploy -- printenv RUN_ENV
 ```
 
-## D7pay Jenkins/K8s 发布配置
+## D7pay 后端发布说明
 
-D7pay 不提交真实 `api/config.py`。Jenkins 应使用 `api/config.example.py` 作为模板，并通过 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入：
+D7pay 后端发布边界必须分清：
+
+- D7pay Makefile 只做配置检查、配置渲染、配置应用和线上健康检查。
+- API 镜像构建、镜像推送、Deployment 镜像更新、rollout 继续走现有后端发布脚本。
+- D7pay 脚本不会改写 `api/Dockerfile`，也不会替你执行 Dockerfile 里的打包命令，所以不会和现有 Dockerfile 冲突。
+
+发布前先检查并纠偏公共配置：
 
 ```bash
-API_DOMAIN=<d7pay-api-domain> \
-ADMIN_DOMAIN=<d7pay-admin-domain> \
-MERCHANT_DOMAIN=<d7pay-merchant-domain> \
-APKDOWNLOAD_DOMAIN=<d7pay-apkdownload-domain> \
-bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
+cd /Users/tear/pk_project_k8s && make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+cd /Users/tear/pk_project_k8s && make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-`runtime-configmap.yaml` 中的 `api.d7pay.example.com` 只是占位。正式发布必须由 Jenkins 注入 D7pay 客户自有域名，不能使用 `awekay.com`。
+然后再执行你现有的 API 镜像构建和发布脚本。该脚本需要保证镜像内的 `api/config.py` 来自 `api/config.example.py`，运行时配置从 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入。
+
+`runtime-configmap.yaml` 中的 `api.d7pay.example.com` 只是占位。正式发布必须由 `/opt/cicd/secrets/d7pay.env` 注入 D7pay 客户自有域名，不能使用 `awekay.com` 或 `example.com`。
 
 验收重点：
 
@@ -66,6 +71,15 @@ bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
 - `MYSQL_DATABASE=pakistan_d7pay`
 - `API_OSPAY_API_HOST=http://<d7pay-api-domain>/api`
 - `/fingerprint` 挂载到 `d7pay-fingerprint-pvc`
+
+发布后验收：
+
+```bash
+KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n pk-d7pay exec deploy/api-deploy -- printenv RUN_ENV TENANT_CODE MYSQL_DATABASE API_OSPAY_API_HOST
+cd /Users/tear/pk_project_k8s && make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+正确结果必须是 `RUN_ENV=PROD`、`TENANT_CODE=d7pay`、库名为 `pakistan_d7pay`，且 `API_OSPAY_API_HOST` 指向 D7pay 自己的 API 域名。
 
 远端 API 发布脚本 `/opt/cicd/k8s/sh/deploy-api.sh` 需要固定 kubeconfig，否则在非交互 SSH 环境可能读到错误的默认上下文并返回登录页 HTML。脚本头部应保留：
 
