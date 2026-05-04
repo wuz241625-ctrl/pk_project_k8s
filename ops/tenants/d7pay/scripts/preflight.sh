@@ -18,16 +18,17 @@ python3 -m py_compile \
   ops/tenants/d7pay/verify_release_contract.py \
   ops/tenants/d7pay/assets/generate_logo_assets.py \
   ops/tenants/d7pay/scripts/render_runtime_config.py \
-  ops/tenants/d7pay/tests/test_deploy_targets.py
+  ops/tenants/d7pay/tests/test_config_only_release.py
 python3 ops/tenants/d7pay/verify_release_contract.py
 
-print_section "单服务发布目标测试"
-python3 -m unittest ops.tenants.d7pay.tests.test_deploy_targets
+print_section "配置-only 发布边界测试"
+python3 -m unittest ops.tenants.d7pay.tests.test_config_only_release
 
 print_section "Shell 脚本语法检查"
 for script in \
   ops/tenants/d7pay/jenkins/deploy-d7pay.sh \
   ops/tenants/d7pay/scripts/common.sh \
+  ops/tenants/d7pay/scripts/apply-config.sh \
   ops/tenants/d7pay/scripts/build-flutter-app.sh \
   ops/tenants/d7pay/scripts/preflight.sh \
   ops/tenants/d7pay/scripts/render-config.sh \

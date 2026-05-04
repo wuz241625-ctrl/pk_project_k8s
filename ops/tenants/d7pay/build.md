@@ -1,4 +1,4 @@
-# D7pay 运维构建与发布
+# D7pay 配置检查与配置修复
 
 ## 本地合同检查
 
@@ -6,41 +6,38 @@
 make d7pay-preflight
 ```
 
-## 首次全量发布
+## 发布前配置检查
 
-首次上线或租户整体版本发布使用全量入口，会构建并滚动 `api/admin/merchant/admin-h5/merchant-h5/apkdownload`：
+D7pay 侧不再负责构建镜像、推送镜像、改写打包文件或滚动 deployment。每次发布前建议先做配置检查：
 
 ```bash
 make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+## 配置不对时自动改回来
+
+如果 D7pay 的 namespace、ConfigMap、Secret、Service、PVC 被改乱，执行配置应用入口。它只应用配置，不构建、不推送、不滚动业务 deployment：
+
+```bash
+make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+```
+
+兼容旧入口也只会应用配置：
+
+```bash
 make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-## 维护期单服务发布
+## 你的发布脚本负责的构建模式
 
-上线后只改哪个服务就发布哪个服务；脚本仍会同步代码、检查合同并 apply 公共租户资源，但只构建和 rollout 指定 deployment：
+现有 Dockerfile/发布脚本继续负责应用打包、镜像构建、推送和 rollout。D7pay 只规定这些构建模式：
 
-```bash
-make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-Jenkins 参数化维护入口：
-
-```bash
-make d7pay-deploy-service SERVICE=admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-底层也支持一次发布多个明确目标：
-
-```bash
-D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
-```
+- `api/admin/merchant`：镜像内运行配置必须来自 `config.example.py` + K8s `d7pay-runtime-config` / `d7pay-runtime-secret`
+- `admin-h5`：使用 `pnpm run d7pay:prod`
+- `merchant-h5`：使用 `pnpm run d7pay:prod`
+- `apkdownload`：使用 `pnpm run build:d7pay`，并发布 D7pay 专属 `appInfo.d7pay.json`
+- Flutter：正式包使用 `com.d7pay.merchant`、`D7pay Merchant`、`@mipmap/ic_launcher_d7pay`、`APP_API_BASE_URL=https://api.d7pay.net`
 
 ## Flutter App 发布
 
@@ -79,7 +76,7 @@ git push origin d7pay
 最后只发布下载页：
 
 ```bash
-make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+# 由现有发布脚本发布 apkdownload
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 

@@ -5,11 +5,15 @@
 - admin 构建使用 `npm run d7pay:prod`，浏览器标题包含 `D7pay管理系统`。
 - merchant 构建使用 `npm run d7pay:prod`，登录页展示 `D7pay`。
 - apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_universal_v0.1.8_202605031855.apk`。
+- D7pay 运维脚本只负责配置检查、配置渲染、配置应用和健康检查，不负责构建镜像、推送镜像、改写打包文件或滚动业务 deployment。
+- `ops/tenants/d7pay/jenkins/deploy-d7pay.sh` 只能作为兼容包装器调用 `apply-config.sh`。
+- `ops/tenants/d7pay/scripts/apply-config.sh` 只能应用 namespace、runtime ConfigMap、H5 nginx ConfigMap、Service、真实 Secret 和 PVC。
+- D7pay 脚本不得出现 `docker build`、`docker push`、打包文件改写、前端打包命令替换或 image patch 逻辑。
 - apkdownload 的 D7pay 发布只保留 `d7pay_merchant` 元信息和 `/files/android/d7pay` APK 目录，不能暴露 Ashrafi/Lakshmi 下载条目。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
 - Android package 必须为 `com.d7pay.merchant`。
 - Android launcher icon 必须使用 D7pay 专属 `@mipmap/ic_launcher_d7pay`，不能覆盖默认 Ashrafi `ic_launcher`。
-- App 发布必须走 `make d7pay-build-app` 生成正式签名合并 APK，提交 `appInfo.d7pay.json` 和 `apkdownload/public/files/android/d7pay/` 后，再执行 `make d7pay-deploy-apkdownload`。
+- App 发布必须走 `make d7pay-build-app` 生成正式签名合并 APK，提交 `appInfo.d7pay.json` 和 `apkdownload/public/files/android/d7pay/` 后，再由现有发布脚本发布 `apkdownload`。
 - App 发布不能触发 `api/admin/merchant/admin-h5/merchant-h5` 滚动。
 - D7pay logo 使用 per-size image_gen 源图集合：Android `192/144/96/72/48`、后台 `128`、下载页 `192`、favicon `256/64/48/32/16` 均有独立源图，生成脚本只做精确导出和 ICO 封装，不从单一主图裁切。
 - admin、merchant 的 D7pay 构建必须使用 `d7pay-favicon.ico` 和 D7pay 侧边栏 logo。
@@ -56,12 +60,8 @@
 
 - Jenkins 使用 `ops/tenants/d7pay/jenkins.env.example` 中的变量合同发布。
 - 运维日常执行入口是 `ops/tenants/d7pay/README_OPERATIONS.md` 和根目录 Makefile 目标，长 runbook 只用于排障细节。
-- Jenkins 调用 `make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 或底层 `ops/tenants/d7pay/jenkins/deploy-d7pay.sh`，不能直接复用硬编码 `pk` namespace 和默认 `build:prod` 的旧脚本。
-- `make d7pay-deploy` 必须保持全量发布语义，只用于首次上线或租户整体版本发布。
-- 维护期必须支持 `make d7pay-deploy-api/admin/merchant/admin-h5/merchant-h5/apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 单服务发布。
-- Jenkins 参数化维护入口必须支持 `make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env`。
-- 底层 `D7PAY_DEPLOY_TARGETS=api,admin-h5` 必须只构建和 rollout 指定目标，不能滚动未选中的 deployment。
-- 非法 `D7PAY_DEPLOY_TARGETS` 必须失败并打印支持目标列表，不能静默退回全量或跳过发布。
+- Jenkins 发布前可调用 `make d7pay-preflight` 和 `make d7pay-apply-config` 修复 D7pay 公共配置。
+- 应用构建、镜像推送和 deployment rollout 必须走现有发布脚本，不能由 D7pay 运维脚本接管。
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。

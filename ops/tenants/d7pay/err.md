@@ -19,10 +19,13 @@ PROD
 cd /opt/cicd/k8s/pk_project_k8s
 git checkout d7pay
 git pull --ff-only origin d7pay
-make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+# 然后用现有发布脚本重发对应服务
 ```
 
 D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过 `d7pay-runtime-config`、`d7pay-runtime-secret` 注入真实配置。
+
+当前职责边界：D7pay 运维脚本只负责检查和应用 ConfigMap/Secret/PVC 等公共配置；镜像构建和滚动发布由现有发布脚本负责。如果容器仍读旧配置，先执行配置应用入口修复 K8s 配置，再用现有发布脚本重发对应服务。
 
 验收：
 

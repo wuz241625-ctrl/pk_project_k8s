@@ -27,7 +27,7 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 
 `D7PAY_ENV` 不执行 shell 变量展开，不能写 `${API_DOMAIN}`；所有 URL 都要写完整值。
 
-## 首次全量发布
+## 发布前检查配置
 
 ```bash
 cd /opt/cicd/k8s/pk_project_k8s
@@ -36,11 +36,9 @@ git checkout d7pay
 git pull --ff-only origin d7pay
 make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-`make d7pay-deploy` 是全量入口，只用于首次上线、租户整体版本发布或需要六个服务同时滚动的场景。
+D7pay 侧只负责配置检查、配置渲染、配置应用和健康检查。应用打包、镜像构建、推送和 rollout 继续走现有发布脚本，不走 D7pay Makefile。
 
 `make d7pay-render-config` 会生成：
 
@@ -48,30 +46,17 @@ make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 - `/tmp/d7pay-rendered/nginx-d7pay.conf`
 - `/tmp/d7pay-rendered/env-summary.txt`
 
-## 维护期单服务发布
+## 配置不对时自动改回来
 
-上线后只改哪个服务就发布哪个服务：
-
-```bash
-make d7pay-deploy-api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-admin D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-merchant D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-admin-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-merchant-h5 D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-Jenkins 参数化维护入口：
+如果 D7pay 的 K8s 公共配置被改乱，执行：
 
 ```bash
-make d7pay-deploy-service SERVICE=api D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-单服务发布仍会同步 `d7pay` 分支、检查合同并 apply 公共租户资源，但只构建和 rollout 指定 deployment。多个服务可以显式指定：
+它只会应用 namespace、runtime ConfigMap、H5 nginx ConfigMap、Service、真实 Secret 和 PVC，不会构建镜像、不会推送镜像、不会改写打包文件、不会滚动业务 deployment。
 
-```bash
-D7PAY_DEPLOY_TARGETS=api,admin-h5 bash ops/tenants/d7pay/jenkins/deploy-d7pay.sh
-```
+旧的 `make d7pay-deploy` 现在只是兼容入口，也只会应用配置。服务发布请继续走现有发布脚本。
 
 ## Flutter App 发布
 
@@ -83,7 +68,7 @@ make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env \
 git add apkdownload/public/files/android/appInfo.d7pay.json apkdownload/public/files/android/d7pay/
 git commit -m "chore: publish d7pay merchant apk"
 git push origin d7pay
-make d7pay-deploy-apkdownload D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+# 后续由现有发布脚本发布 apkdownload
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
