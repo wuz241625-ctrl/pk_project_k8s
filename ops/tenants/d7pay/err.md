@@ -16,7 +16,9 @@
 处理：
 
 ```bash
-make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+grep -nE '^(PROJECT_DIR|BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE)=' /opt/cicd/secrets/d7pay.env
+cd /opt/cicd/k8s_d7pay/pk_project_k8s
+bash ops/tenants/d7pay/scripts/apply-config.sh
 kubectl -n pk-d7pay rollout restart deployment/api-deploy deployment/admin-deploy deployment/merchant-deploy
 kubectl -n pk-d7pay rollout status deployment/api-deploy --timeout=180s
 kubectl -n pk-d7pay rollout status deployment/admin-deploy --timeout=180s
@@ -118,10 +120,11 @@ PROD
 处理：
 
 ```bash
-cd /opt/cicd/k8s/pk_project_k8s
+cd /opt/cicd/k8s_d7pay/pk_project_k8s
 git checkout d7pay
 git pull --ff-only origin d7pay
-make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
+grep -nE '^(PROJECT_DIR|KUBE_NAMESPACE|BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE)=' /opt/cicd/secrets/d7pay.env
+bash ops/tenants/d7pay/scripts/apply-config.sh
 # 然后用现有发布脚本重发对应服务
 ```
 

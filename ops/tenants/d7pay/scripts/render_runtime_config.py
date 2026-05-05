@@ -22,11 +22,20 @@ def reject_reserved(name, value, allow_placeholder):
         raise SystemExit(f"{name} 必须替换为 D7pay 客户自有域名，当前值不能用于发布: {value}")
 
 
+def require_business_timezone():
+    value = os.environ.get("BUSINESS_TIMEZONE", "UTC")
+    if value != "UTC":
+        raise SystemExit(f"BUSINESS_TIMEZONE 必须保持 UTC，当前值不能用于 D7pay 发布: {value}")
+    return value
+
+
 def render(source_path, allow_placeholder=False):
     api_domain = require_env("API_DOMAIN")
     reject_reserved("API_DOMAIN", api_domain, allow_placeholder)
     api_scheme = os.environ.get("API_PUBLIC_SCHEME", "http")
     values = {
+        "BUSINESS_TIMEZONE": require_business_timezone(),
+        "APP_DISPLAY_TIMEZONE": os.environ.get("APP_DISPLAY_TIMEZONE", "Asia/Karachi"),
         "API_PAY_URL": f"{api_scheme}://{api_domain}/api/order/",
         "API_OSPAY_API_HOST": f"{api_scheme}://{api_domain}/api",
         "API_WEBSOCKET_ALLOW_HOST": os.environ.get("API_WEBSOCKET_ALLOW_HOST", api_domain),

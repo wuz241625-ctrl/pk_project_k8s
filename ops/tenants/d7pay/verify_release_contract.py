@@ -108,6 +108,8 @@ def main():
     jenkins = read("ops/tenants/d7pay/jenkins.env.example")
     require(jenkins, "KUBE_NAMESPACE=pk-d7pay", "jenkins.env.example")
     require(jenkins, "RUN_ENV=PROD", "jenkins.env.example")
+    require(jenkins, "BUSINESS_TIMEZONE=UTC", "jenkins.env.example")
+    require(jenkins, "APP_DISPLAY_TIMEZONE=Asia/Karachi", "jenkins.env.example")
     require(jenkins, "APP_APPLICATION_ID=com.d7pay.merchant", "jenkins.env.example")
     require(jenkins, "APP_ICON=@mipmap/ic_launcher_d7pay", "jenkins.env.example")
     require(jenkins, "APP_SIGNING_MODE=shared_release_keystore", "jenkins.env.example")
@@ -121,6 +123,8 @@ def main():
     require(jenkins, "D7pay 配置检查脚本会拒绝 example.com 和 awekay.com", "jenkins.env.example")
     require(jenkins, "FLUTTER_APP_DIR=", "jenkins.env.example")
     require(jenkins, "FLUTTER_BIN=", "jenkins.env.example")
+    require(jenkins, "PROJECT_DIR=/opt/cicd/k8s_d7pay/pk_project_k8s", "jenkins.env.example")
+    forbid(jenkins, "PROJECT_DIR=/opt/cicd/k8s/pk_project_k8s", "jenkins.env.example")
     forbid(jenkins.replace("D7pay 配置检查脚本会拒绝 example.com 和 awekay.com", ""), "awekay.com", "jenkins.env.example")
 
     handoff = read("docs/rental/d7pay-hosted.md")
@@ -137,12 +141,11 @@ def main():
     require(ops_runbook, "现有发布脚本", "current-deployment-ops-runbook.md")
 
     operations_readme = read("ops/tenants/d7pay/README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-preflight", "README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-render-config", "README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-apply-config", "README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-build-app", "README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-healthcheck", "README_OPERATIONS.md")
-    require(operations_readme, "make d7pay-rollback", "README_OPERATIONS.md")
+    require(operations_readme, "当前线上发布只走 Jenkins", "README_OPERATIONS.md")
+    require(operations_readme, "PROJECT_DIR=/opt/cicd/k8s_d7pay/pk_project_k8s", "README_OPERATIONS.md")
+    require(operations_readme, "BUSINESS_TIMEZONE=UTC", "README_OPERATIONS.md")
+    require(operations_readme, "APP_DISPLAY_TIMEZONE=Asia/Karachi", "README_OPERATIONS.md")
+    require(operations_readme, "bash ops/tenants/d7pay/scripts/apply-config.sh", "README_OPERATIONS.md")
     require(operations_readme, "现有发布脚本", "README_OPERATIONS.md")
     require(operations_readme, "不能把 D7pay 指到 `awekay.com`", "README_OPERATIONS.md")
 
@@ -181,6 +184,7 @@ def main():
 
     apply_config_script = read("ops/tenants/d7pay/scripts/apply-config.sh")
     require(apply_config_script, "load_default_env_file", "apply-config.sh")
+    require(apply_config_script, 'PROJECT_DIR="${PROJECT_DIR:-${D7PAY_ROOT}}"', "apply-config.sh")
     require(apply_config_script, "require_customer_domain API_DOMAIN", "apply-config.sh")
     require(apply_config_script, "D7PAY_RUNTIME_SECRET_YAML", "apply-config.sh")
     require(apply_config_script, "runtime-configmap.yaml", "apply-config.sh")
@@ -222,6 +226,7 @@ def main():
     require(render_script, "runtime-configmap.yaml", "render-config.sh")
 
     render_runtime_config = read("ops/tenants/d7pay/scripts/render_runtime_config.py")
+    require(render_runtime_config, "BUSINESS_TIMEZONE 必须保持 UTC", "render_runtime_config.py")
     require(render_runtime_config, "API_PUBLIC_SCHEME", "render_runtime_config.py")
     require(render_runtime_config, "API_OSPAY_API_HOST", "render_runtime_config.py")
 

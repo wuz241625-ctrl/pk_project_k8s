@@ -62,6 +62,6 @@
 - Modify: `ops/tenants/d7pay/err.md`
 - Modify: `err.md`
 
-- [x] 文档写清 D7pay 时区标准和线上验证命令。
+- [x] 文档写清 D7pay 时区标准、`d7pay.env` 入口和线上验证命令。
 - [x] 运行 preflight、合同测试、应用层时区测试、静态搜索和 git diff 检查。
 - [ ] 验收通过后提交并推送 `d7pay` 分支。

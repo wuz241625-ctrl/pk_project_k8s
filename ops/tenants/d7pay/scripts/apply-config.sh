@@ -8,7 +8,7 @@ source "${SCRIPT_DIR}/common.sh"
 
 load_default_env_file
 
-PROJECT_DIR="${PROJECT_DIR:-/opt/cicd/k8s/pk_project_k8s}"
+PROJECT_DIR="${PROJECT_DIR:-${D7PAY_ROOT}}"
 TENANT_DIR="${PROJECT_DIR}/ops/tenants/d7pay"
 KUBE_NAMESPACE="${KUBE_NAMESPACE:-pk-d7pay}"
 KUBECONFIG="${KUBECONFIG:-/etc/kubernetes/admin.conf}"

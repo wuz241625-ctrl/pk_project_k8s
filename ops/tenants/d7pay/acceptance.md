@@ -62,7 +62,8 @@
 
 - Jenkins 使用 `ops/tenants/d7pay/jenkins.env.example` 中的变量合同发布。
 - 运维日常执行入口是 `ops/tenants/d7pay/README_OPERATIONS.md` 和根目录 Makefile 目标，长 runbook 只用于排障细节。
-- Jenkins 发布前可调用 `make d7pay-preflight` 和 `make d7pay-apply-config` 修复 D7pay 公共配置。
+- Jenkins 发布前必须读取 `/opt/cicd/secrets/d7pay.env`，且其中 `PROJECT_DIR=/opt/cicd/k8s_d7pay/pk_project_k8s`。
+- D7pay 公共配置可以由 Jenkins 配置步骤应用；线上不能用 Makefile 代替 Jenkins 发布 `api/admin/merchant`。
 - 应用构建、镜像推送和 deployment rollout 必须走现有发布脚本，不能由 D7pay 运维脚本接管。
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
