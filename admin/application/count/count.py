@@ -204,6 +204,25 @@ class getCountOneW(BaseHandler):
             await self.redis.set(key,json.dumps(data[0],cls=RewriteJsonEncoder),ex=((8-(date_end-date_start).days)*24*60*60))
             return data[0]
 
+def normalize_balance_count(count):
+    balance_keys = [
+        'balance_p',
+        'balance_p_frozen',
+        'balance_p_deposit',
+        'balance_m',
+        'balance_m_frozen',
+        'balance_p_inside',
+        'balance_p_frozen_inside',
+        'balance_p_outside',
+        'balance_p_frozen_outside',
+    ]
+    for key in balance_keys:
+        if count.get(key) is None:
+            count[key] = Decimal('0')
+    count['balance'] = Decimal(count['balance_p']) + Decimal(count['balance_m'])
+    return count
+
+
 # 商户码商余额
 class getBalance(BaseHandler):
     async def post(self):
@@ -228,7 +247,7 @@ class getBalance(BaseHandler):
         # count['balance'] = count['balance_p'] + count['balance_m'] 报错
         self.logger.info(f" balance_m: {count['balance_p']}")
         self.logger.info(f" balance_m: {count['balance_m']}")
-        count['balance'] = Decimal(count['balance_p']) + Decimal(count['balance_m'])
+        count = normalize_balance_count(count)
         result = dict(code=20000, data=data_r, count=count, msg='获取成功')
         return await self.json_response(result)
 
