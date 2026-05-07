@@ -319,6 +319,29 @@ API_WEBSOCKET_ALLOW_HOST=api.customer-domain.com
 APP_API_BASE_URL=http://api.customer-domain.com
 ```
 
+## JCB 业务版本没有按 v1.6 启动
+
+现象：
+
+- API 日志出现 `Unsupported JazzCash API version`。
+- JCB 上号、代收或代付没有走 `application.jazzcash_gateway` 的 FormBody 封装。
+
+原因：`d7pay-config` 缺少 `JAZZCASH_API_VERSION`，或 Jenkins 渲染配置时没有带入该字段。
+
+处理：
+
+```bash
+kubectl get configmap d7pay-config -n pk-d7pay -o yaml | grep JAZZCASH_API_VERSION
+```
+
+期望为：
+
+```text
+JAZZCASH_API_VERSION: v1.6
+```
+
+如果缺失，重新用 D7pay 配置渲染脚本生成配置，然后按现有 Jenkins 发布 API。
+
 ## healthcheck 返回 000 或 5xx
 
 原因通常是 DNS 未解析、nginx 未 reload、NodePort 未通或 deployment 未完成 rollout。

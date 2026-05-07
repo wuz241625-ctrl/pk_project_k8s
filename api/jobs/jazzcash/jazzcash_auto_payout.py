@@ -33,6 +33,7 @@ sys.path.append(root_dir)
 
 from config import get_config
 from application.websocket import callback
+from application.jazzcash_gateway import build_form_body
 
 # ========== 日志系统 ==========
 # 程序名称（用于日志）
@@ -544,8 +545,8 @@ class JazzCashAutoPayout:
 
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
-            'jazzcash_online_df': 'payment_online_df',           # JazzCash在线代付账号集合（复用项目标准键名）
-            'jazzcash_active_df': 'payment_active_df',           # JazzCash活跃代付账号列表（复用项目标准键名）
+            'retired_jazzcash_online_df': 'payment_online_df',   # 旧在线集合，仅用于清理残留
+            'retired_jazzcash_active_df': 'payment_active_df',   # 旧活跃列表，仅用于清理残留
             'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',  # JazzCash余额有序集合
             'jazzcash_balance_prefix': 'jazzcash_balance:',       # JazzCash余额缓存前缀（兼容性保留）
             'jazzcash_account_used_prefix': 'jazzcash_account_used:',  # 账号使用记录前缀（支持动态冷却期）
@@ -567,6 +568,7 @@ class JazzCashAutoPayout:
         self._verify_operation_logs_table()
 
         # 兼容 success_df 函数需要的属性
+        self._mysql_payout_account_cursor = []
         self.qr_id = None  # 当前处理的 payment_id，在调用 success_df 前需要设置
 
     def get_log_stats(self):
@@ -922,11 +924,9 @@ class JazzCashAutoPayout:
             cur.execute(sql_update, (earn_merchant, order_code))
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
 
-            # 9. 重新接单（复制success_df逻辑）
-            if self.qr_id and self.redis.sismember('payment_online_df', self.qr_id):
-                self.redis.lrem('payment_active_df', 0, self.qr_id)
-                self.redis.rpush('payment_active_df', self.qr_id)
-                self.logger.info(f"代付账户{self.qr_id}重新进入活跃轮询队列")
+            # 9. 代付资格继续由 payment.payout_status 控制，不再回写旧 Redis 活跃队列
+            if self.qr_id:
+                self.logger.info(f"代付账户{self.qr_id}成功后保持 MySQL payout_status 最终态，不回写旧活跃队列")
 
             # 10. Redis通知
             self.redis.publish('order_df_notify', order_code)
@@ -2058,64 +2058,26 @@ class JazzCashAutoPayout:
 
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
-        防护机制1: 检查账号在线状态 - API优先，Redis同步
-        现在使用 payment_id 作为参数，内部查询手机号调用 API
+        防护机制1: 检查账号代付接单资格。
+
+        JazzCash 代付接单资格只读 MySQL payout_status，不再读取或降级到旧
+        payment_online_df Redis 集合。上游 isLogined 只能作为健康观测，不能覆盖
+        MySQL final state。
         """
         try:
-            # 通过payment_id查询手机号
             payment_info = self.get_phone_by_payment_id(payment_id)
             if not payment_info or not payment_info.get('phone'):
-                self.logger.warning(f"无法获取payment_id {payment_id} 的手机号信息，账号不可用")
-                # 无法获取手机号时，直接返回False，不使用降级方案
-                # redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                # return bool(redis_online)
+                self.logger.warning(f"payment_id {payment_id} 不满足 MySQL payout_status=1，账号不可代付")
                 return False
 
-            phone = payment_info['phone']
-            self.logger.debug(f"payment_id {payment_id} 对应手机号: {phone}")
-
-            # 策略1: 先通过API实时验证账号状态（使用手机号）
-            api_result = await self._check_account_online_via_api(phone)
-
-            if api_result is not None:
-                # API检查成功，根据结果同步Redis状态（使用payment_id作为键）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-
-                if api_result:
-                    # API显示在线
-                    if not redis_online:
-                        # 🔥 修改逻辑：API在线但Redis中不存在，认为账号不在线，跳过处理
-                        # Redis中不存在，添加到Redis（使用payment_id）
-                        # self.redis.sadd(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                        # self.logger.info(f"账号payment_id:{payment_id} phone:{phone} API检查在线，已添加到Redis")
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但Redis中不存在，认为不在线，跳过处理")
-                        return False  # 返回False表示账号不可用
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，Redis状态一致")
-                else:
-                    # API显示离线
-                    if redis_online:
-                        # Redis中存在，从Redis移除（使用payment_id）
-                        self.redis.srem(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从Redis移除")
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，Redis状态一致")
-
-                return api_result
-            else:
-                # API检查失败，降级使用Redis状态（使用payment_id）
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用Redis状态: {redis_online}")
-                return bool(redis_online)
+            self.logger.debug(
+                f"payment_id {payment_id} 满足 MySQL payout_status=1，phone={payment_info['phone']}"
+            )
+            return True
 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}在线状态失败: {e}")
-            # 异常时也降级使用Redis状态
-            try:
-                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-                return bool(redis_online)
-            except:
-                return False
+            return False
 
     async def _check_account_online_via_api(self, account_id: str) -> Optional[bool]:
         """
@@ -2216,15 +2178,16 @@ class JazzCashAutoPayout:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, partner_id, status, certified,
-                               account_accno
+                        SELECT phone, account, name, bank_type, bank_type_id, partner_id,
+                               wallet_status, payout_status
                         FROM payment
-                        WHERE id = %s AND status = 1 AND certified = 1
-                          AND bank_type = 98
+                        WHERE id = %s
+                          AND payout_status = 1
+                          AND (bank_type = 98 OR bank_type_id = 98)
                     """
                     self.logger.info(f"[AutoPayout] 执行SQL查询: payment_id={payment_id}")
                     self.logger.info(f"[AutoPayout] SQL语句: {sql.strip()}")
-                    self.logger.info(f"[AutoPayout] 查询条件: status=1 AND certified=1 AND bank_type=98 (只查询JazzCash可用账号)")
+                    self.logger.info(f"[AutoPayout] 查询条件: payout_status=1 AND bank_type=98 (只查询JazzCash可代付账号)")
 
                     query_start = time.time()
                     cur.execute(sql, payment_id)
@@ -2239,20 +2202,25 @@ class JazzCashAutoPayout:
                         self.logger.info(f"   姓名: {result['name']}")
                         self.logger.info(f"   银行类型: {result['bank_type']}")
                         self.logger.info(f"   合作伙伴ID: {result['partner_id']}")
-                        self.logger.info(f"   状态: {result['status']} (认证: {result['certified']})")
+                        self.logger.info(f"   wallet_status: {result['wallet_status']}")
+                        self.logger.info(f"   payout_status: {result['payout_status']}")
                         self.logger.info(f"   [AutoPayout] 账号符合使用条件，可用于自动代付")
                         return result
                     else:
                         self.logger.warning(f"[AutoPayout] payment_id {payment_id} 查询无结果")
 
                         # 检查是否存在但状态不符合条件
-                        check_sql = "SELECT status, certified FROM payment WHERE id = %s"
+                        check_sql = "SELECT wallet_status, payout_status FROM payment WHERE id = %s"
                         self.logger.info(f"[AutoPayout] 检查payment_id是否存在但状态不合规...")
                         cur.execute(check_sql, payment_id)
                         check_result = cur.fetchone()
                         if check_result:
-                            self.logger.warning(f"[AutoPayout] payment_id {payment_id} 存在但不可用: status={check_result['status']}, certified={check_result['certified']}")
-                            self.logger.warning(f"[AutoPayout] 需要状态: status=1, certified=1")
+                            self.logger.warning(
+                                f"[AutoPayout] payment_id {payment_id} 存在但不可代付: "
+                                f"wallet_status={check_result['wallet_status']}, "
+                                f"payout_status={check_result['payout_status']}"
+                            )
+                            self.logger.warning("[AutoPayout] 代付接单资格只看 payout_status=1")
                         else:
                             self.logger.warning(f"[AutoPayout] payment_id {payment_id} 在数据库中不存在")
                         return None
@@ -2268,61 +2236,70 @@ class JazzCashAutoPayout:
             self.logger.error(f"[AutoPayout] 详细错误信息: {traceback.format_exc()}")
             return None
 
-    def get_account_from_active_list(self) -> Optional[Dict]:
-        """
-        防护机制2: 从活跃列表轮询获取账号，返回包含payment_id和phone的字典
-        参考order_push.py第58行：payment_id = rds.lpop(list_name)
-        """
+    def get_payout_final_state_accounts(self, limit=20) -> List[Dict]:
+        """从 MySQL payout_status=1 读取 JazzCash 代付候选账号。"""
         try:
-            payment_id_bytes = self.redis.lpop(self.REDIS_KEYS['jazzcash_active_df'])
-            if payment_id_bytes:
-                payment_id = payment_id_bytes.decode()
-
-                # 🔥 查询数据库获取手机号
-                payment_info = self.get_phone_by_payment_id(payment_id)
-                if payment_info and payment_info.get('phone'):
-                    account_info = {
-                        'payment_id': payment_id,          # 数字ID：532128
-                        'phone': payment_info['phone'],    # 手机号：03499681697
-                        'account': payment_info.get('account', ''),
-                        'name': payment_info.get('name', ''),
-                        'bank_type': payment_info.get('bank_type', ''),
-                        'partner_id': payment_info.get('partner_id'),
-                        'account_accno': payment_info.get('account_accno'),  # 🔥 修改：账号号码（必送）
-                    }
-                    self.logger.debug(f"从活跃列表获取账号: payment_id={payment_id}, phone={payment_info['phone']}")
-                    return account_info
-                else:
-                    self.logger.error(f"无法获取payment_id {payment_id} 的手机号信息")
-                    return None
-            return None
+            connection = pymysql.connect(
+                host=conf['mysql_host'],
+                user=conf['mysql_user'],
+                password=conf['mysql_password'],
+                db=conf['mysql_database'],
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+            try:
+                with connection.cursor() as cur:
+                    sql = """
+                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id,
+                               wallet_status, payout_status
+                        FROM payment
+                        WHERE payout_status = 1
+                          AND (bank_type = 98 OR bank_type_id = 98)
+                        ORDER BY id
+                        LIMIT %s
+                    """
+                    cur.execute(sql, (limit,))
+                    rows = cur.fetchall() or []
+                    return [
+                        {
+                            'payment_id': str(row['id']),
+                            'phone': row['phone'],
+                            'account': row.get('account', ''),
+                            'name': row.get('name', ''),
+                            'bank_type': row.get('bank_type', ''),
+                            'partner_id': row.get('partner_id'),
+                        }
+                        for row in rows
+                        if row.get('phone')
+                    ]
+            finally:
+                connection.close()
         except Exception as e:
-            self.logger.error(f"从活跃列表获取账号失败: {e}")
+            self.logger.error(f"从 MySQL payout_status 获取JazzCash代付账号失败: {e}")
+            return []
+
+    def get_account_from_active_list(self) -> Optional[Dict]:
+        """兼容旧调用名：实际从 MySQL payout_status=1 候选池取账号。"""
+        if not self._mysql_payout_account_cursor:
+            self._mysql_payout_account_cursor = self.get_payout_final_state_accounts(limit=20)
+        if not self._mysql_payout_account_cursor:
             return None
+        return self._mysql_payout_account_cursor.pop(0)
 
     def return_account_to_active_list(self, account_info):
-        """
-        防护机制3: 将账号重新加入活跃列表
-        参考order_push.py第88-90行的逻辑
-        """
+        """兼容旧调用名：MySQL final state 下不再回写旧活跃队列。"""
         try:
-            # 支持传入字典或payment_id字符串
             if isinstance(account_info, dict):
                 payment_id = account_info['payment_id']
                 phone = account_info.get('phone', 'UNKNOWN')
             else:
                 payment_id = str(account_info)
                 phone = 'UNKNOWN'
-
-            # 只有在线的账号才重新加入活跃列表（使用payment_id检查）
-            is_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
-            if is_online:
-                # 先删除可能的重复项，再加入列表末尾
-                self.redis.lrem(self.REDIS_KEYS['jazzcash_active_df'], 0, payment_id)
-                self.redis.rpush(self.REDIS_KEYS['jazzcash_active_df'], payment_id)
-                self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 重新加入活跃列表")
+            self.logger.debug(
+                f"账号payment_id:{payment_id} phone:{phone} 不回写旧活跃队列，代付资格继续由 MySQL payout_status 控制"
+            )
         except Exception as e:
-            self.logger.error(f"账号重新加入活跃列表失败: {e}, account_info: {account_info}")
+            self.logger.error(f"账号兼容回队处理失败: {e}, account_info: {account_info}")
 
     # async def check_account_concurrent_orders(self, payment_id: str) -> bool:
     #     """
@@ -2652,7 +2629,6 @@ class JazzCashAutoPayout:
                         'partner_id': payment_info.get('partner_id'),  # 🔥 添加partner_id
                         'account': payment_info.get('account'),  # 🔥 添加account账号
                         'name': payment_info.get('name'),  # 🔥 添加姓名
-                        'account_accno': payment_info.get('account_accno'),  # 🔥 修改：账号号码（必送）
                         'balance': Decimal(str(balance)),
                         'priority': int(balance)
                     }
@@ -3256,27 +3232,6 @@ class JazzCashAutoPayout:
                 "payload": payload_data
             }
 
-            # 构造FormBody格式（按照EasyPaisa文档）- 安全序列化
-            try:
-                data_b64 = base64.b64encode(json.dumps(inner_payload).encode()).decode()
-            except TypeError as e:
-                # 如果有Decimal类型导致序列化失败，使用安全转换
-                self.logger.warning(f"余额查询JSON序列化失败，使用安全转换: {e}")
-
-                def safe_convert(obj):
-                    if isinstance(obj, Decimal):
-                        return float(obj)
-                    elif isinstance(obj, dict):
-                        return {k: safe_convert(v) for k, v in obj.items()}
-                    elif isinstance(obj, (list, tuple)):
-                        return [safe_convert(item) for item in obj]
-                    else:
-                        return obj
-
-                safe_payload = safe_convert(inner_payload)
-                data_b64 = base64.b64encode(json.dumps(safe_payload).encode()).decode()
-
-            # 计算MD5签名（使用全局配置）
             secret_key = JAZZCASH_SECRET_KEY
             user_id = JAZZCASH_USER_ID
             api_url = JAZZCASH_API_URL
@@ -3287,14 +3242,13 @@ class JazzCashAutoPayout:
                     'error': 'JazzCash API配置不完整'
                 }
 
-            sign_string = data_b64 + secret_key
-            sign = hashlib.md5(sign_string.encode()).hexdigest()
-
-            form_data = {
-                'user_id': user_id,
-                'data': data_b64,
-                'sign': sign
-            }
+            form_data = build_form_body(
+                inner_payload.get('action'),
+                inner_payload.get('payload', {}),
+                user_id,
+                secret_key,
+                request_id=inner_payload.get('id'),
+            )
 
             self.logger.info(f"🔄 为账号{payment_id}({phone})重新获取余额")
 
@@ -4298,11 +4252,11 @@ class JazzCashAutoPayout:
                         return transfer_result  # 直接返回驳回结果，包含 reject=True
 
                     # ✅ code=402 (转账失败) 特殊处理：放回订单池重试
-                    if error_code == 402:
+                    if error_code in [402, 423, 503]:
                         return {
                             'success': False,
                             'treat_as_success': True,  # 放回订单池
-                            'message': f"EasyPaisa转账失败(code=402-Connection Failed)，放回订单池重试: {message}",
+                            'message': f"JazzCash转账失败/忙/网络异常，放回订单池重试: {message}",
                             'account_used': account_id,
                             'payment_id': selected_account['payment_id'],
                             'partner_id': selected_account.get('partner_id')
@@ -4663,7 +4617,7 @@ class JazzCashAutoPayout:
                     return {
                         'success': True,
                         'transaction_id': transaction_id,
-                        'message': f'EasyPaisa转账成功: {msg}',
+                        'message': f'JazzCash转账成功: {msg}',
                         'payer_phone': phone_number  # 新增：付款手机号，用于更新orders_df.utr字段
                     }
                 elif code == 402:
@@ -4727,7 +4681,7 @@ class JazzCashAutoPayout:
 
                     return {
                         'success': False,
-                        'message': f'EasyPaisa转账失败: {msg}',
+                        'message': f'JazzCash转账失败: {msg}',
                         'can_retry': True,
                         'code': code
                     }
@@ -4754,7 +4708,7 @@ class JazzCashAutoPayout:
 
                     return {
                         'success': False,
-                        'message': f'EasyPaisa账号异常或冷却期: {msg}',
+                        'message': f'JazzCash账号异常或冷却期: {msg}',
                         'account_invalid': True
                     }
                 elif code == 423:
@@ -4768,7 +4722,7 @@ class JazzCashAutoPayout:
 
                     return {
                         'success': False,
-                        'message': f'EasyPaisa服务器忙碌: {msg}',
+                        'message': f'JazzCash服务器忙碌: {msg}',
                         'can_retry': True,
                         'code': code
                     }
@@ -4783,23 +4737,37 @@ class JazzCashAutoPayout:
 
                     return {
                         'success': False,
-                        'message': f'EasyPaisa参数错误: {msg}',
+                        'message': f'JazzCash参数错误: {msg}',
                         'can_retry': False,
                         'code': code
                     }
-                elif code in [500, 503]:
-                    # Error - 服务器严重错误 (500: 业务错误, 503: 服务不可用)
-                    self.logger.error(f"服务器严重错误: {msg}")
+                elif code == 500:
+                    # Error - 结果不确定，不自动驳回或成功，进入待人工确认
+                    self.logger.error(f"出款异常待人工确认: {msg}")
 
-                    # 记录完整的交易记录（服务器严重错误）
                     self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
-                                                "server_error", error_message=msg, start_time=start_time,
-                                                before_balance=before_balance, process_details=process_details)  # 服务器错误时只有转账前余额
+                                                "manual_confirm", error_message=msg, start_time=start_time,
+                                                before_balance=before_balance, process_details=process_details)
 
                     return {
                         'success': False,
-                        'message': f'EasyPaisa服务器错误: {msg}',
+                        'message': f'JazzCash出款异常待人工确认: {msg}',
+                        'manual_confirm': True,
                         'can_retry': False,
+                        'code': code
+                    }
+                elif code == 503:
+                    # NetworkError - 网络问题，可重试
+                    self.logger.warning(f"网络异常，可重试: {msg}")
+
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
+                                                "network_retry", error_message=msg, start_time=start_time,
+                                                before_balance=before_balance, process_details=process_details)
+
+                    return {
+                        'success': False,
+                        'message': f'JazzCash网络异常可重试: {msg}',
+                        'can_retry': True,
                         'code': code
                     }
                 else:
@@ -4869,40 +4837,13 @@ class JazzCashAutoPayout:
                 self.logger.error("JazzCash API配置缺失")
                 return None
 
-            # 1. 准备payload - 安全序列化，处理可能的Decimal类型
-            try:
-                payload_json = json.dumps(inner_payload, separators=(',', ':'))
-            except TypeError as e:
-                # 如果有Decimal类型导致序列化失败，使用安全转换
-                self.logger.warning(f"JSON序列化失败，使用安全转换: {e}")
-
-                def safe_json_convert(obj):
-                    """递归转换对象中的Decimal类型"""
-                    if isinstance(obj, Decimal):
-                        return float(obj)
-                    elif isinstance(obj, dict):
-                        return {k: safe_json_convert(v) for k, v in obj.items()}
-                    elif isinstance(obj, (list, tuple)):
-                        return [safe_json_convert(item) for item in obj]
-                    else:
-                        return obj
-
-                safe_payload = safe_json_convert(inner_payload)
-                payload_json = json.dumps(safe_payload, separators=(',', ':'))
-
-            # 2. Base64编码
-            payload_b64 = base64.b64encode(payload_json.encode()).decode()
-
-            # 3. 生成签名
-            sign_str = payload_b64 + secret_key
-            sign = hashlib.md5(sign_str.encode()).hexdigest()
-
-            # 4. 构建请求数据
-            form_data = {
-                'user_id': user_id,
-                'data': payload_b64,
-                'sign': sign
-            }
+            form_data = build_form_body(
+                inner_payload.get('action'),
+                inner_payload.get('payload', {}),
+                user_id,
+                secret_key,
+                request_id=inner_payload.get('id'),
+            )
 
             # 5. 发送HTTP请求 - 使用查询专用的请求方法
             # 构造login_data参数（make_request需要）
@@ -4958,40 +4899,13 @@ class JazzCashAutoPayout:
                 self.logger.error("JazzCash API配置缺失")
                 return None
 
-            # 1. 准备payload - 安全序列化，处理可能的Decimal类型
-            try:
-                payload_json = json.dumps(inner_payload, separators=(',', ':'))
-            except TypeError as e:
-                # 如果有Decimal类型导致序列化失败，使用安全转换
-                self.logger.warning(f"JSON序列化失败，使用安全转换: {e}")
-
-                def safe_json_convert(obj):
-                    """递归转换对象中的Decimal类型"""
-                    if isinstance(obj, Decimal):
-                        return float(obj)
-                    elif isinstance(obj, dict):
-                        return {k: safe_json_convert(v) for k, v in obj.items()}
-                    elif isinstance(obj, (list, tuple)):
-                        return [safe_json_convert(item) for item in obj]
-                    else:
-                        return obj
-
-                safe_payload = safe_json_convert(inner_payload)
-                payload_json = json.dumps(safe_payload, separators=(',', ':'))
-
-            # 2. Base64编码
-            payload_b64 = base64.b64encode(payload_json.encode()).decode()
-
-            # 3. 生成签名
-            sign_str = payload_b64 + secret_key
-            sign = hashlib.md5(sign_str.encode()).hexdigest()
-
-            # 4. 构建请求数据
-            form_data = {
-                'user_id': user_id,
-                'data': payload_b64,
-                'sign': sign
-            }
+            form_data = build_form_body(
+                inner_payload.get('action'),
+                inner_payload.get('payload', {}),
+                user_id,
+                secret_key,
+                request_id=inner_payload.get('id'),
+            )
 
             # 5. 发送HTTP请求 - 使用统一的make_request方法
             # 构造login_data参数（make_request需要）
@@ -5011,18 +4925,18 @@ class JazzCashAutoPayout:
             if response and response.status_code == 200:
                 try:
                     result = response.json()
-                    self.logger.info(f"EasyPaisa API响应: {result}")
+                    self.logger.info(f"JazzCash API响应: {result}")
                     return result
                 except Exception as e:
-                    self.logger.error(f"EasyPaisa API响应解析失败: {e}")
+                    self.logger.error(f"JazzCash API响应解析失败: {e}")
                     return None
             else:
                 status_code = response.status_code if response else 'None'
-                self.logger.error(f"EasyPaisa API HTTP错误: {status_code}")
+                self.logger.error(f"JazzCash API HTTP错误: {status_code}")
                 return None
 
         except Exception as e:
-            self.logger.error(f"调用EasyPaisa API异常: {e}")
+            self.logger.error(f"调用JazzCash API异常: {e}")
             return None
 
     def _extract_transaction_id(self, api_result: Dict, action: str) -> str:

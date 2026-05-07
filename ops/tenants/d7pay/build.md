@@ -34,6 +34,7 @@ make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 现有 Dockerfile/发布脚本继续负责应用打包、镜像构建、推送和 rollout。D7pay 只规定这些构建模式：
 
 - `api/admin/merchant`：镜像内运行配置必须来自 `config.example.py` + K8s `d7pay-config` / `d7pay-secret`
+- `api`：JCB 业务默认 `JAZZCASH_API_VERSION=v1.6`，由 `d7pay-config` 注入；不要改回代码内硬编码旧版本。
 - `admin-h5`：使用 `pnpm run d7pay:prod`
 - `merchant-h5`：使用 `pnpm run d7pay:prod`
 - `apkdownload`：使用 `pnpm run build:d7pay`，并发布 D7pay 专属 `appInfo.d7pay.json`

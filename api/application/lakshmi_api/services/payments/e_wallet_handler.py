@@ -181,8 +181,8 @@ class EWalletHandler:
         key = f"{self.__class__.LOGOUT_PREFIX}_{payment.id}"
         await self.redis.delete(key)
 
-    def _use_easypaisa_mysql_final_status(self):
-        return self.__class__.ONLINE_PREFIX == "login_on_easypaisa"
+    def _use_mysql_final_status(self):
+        return self.__class__.ONLINE_PREFIX in ("login_on_easypaisa", "login_on_jazzcash")
 
     @staticmethod
     def _is_easypaisa_payment(payment):
@@ -214,7 +214,7 @@ class EWalletHandler:
 
     # TODO: Fix use payment_id, different with others service problem
     async def selling_order_status(self, payment_id):
-        if self._use_easypaisa_mysql_final_status():
+        if self._use_mysql_final_status():
             status = self._read_mysql_business_status(payment_id)
             value = bool(status and status["collection"])
             self.logger.info(
@@ -230,7 +230,7 @@ class EWalletHandler:
         return await self.redis.get(f"orders_ds_limit_{payment_id}") is not None
 
     async def place_order_status(self, payment_id):
-        if self._use_easypaisa_mysql_final_status():
+        if self._use_mysql_final_status():
             status = self._read_mysql_business_status(payment_id)
             return bool(status and status["payout"])
         return await self.redis.sismember('payment_online_df', payment_id)

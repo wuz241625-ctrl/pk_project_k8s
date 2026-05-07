@@ -24,7 +24,7 @@ import traceback
 
 
 from .query_third_order_status import query_lucky_order, query_apay_order, query_kingpay_order, query_wepay_order, query_kingpay2_order, query_777pay_order, query_swiftpay_order, query_quickpay_order, query_snakepay_order, query_hkpay_order, query_skpay_order, \
-query_ospay_order, query_ospay_upi_order, query_TataPay_order, query_789pay_upi_order, query_789pay_order, query_TataPay_t100037_order,query_Vibrapay_order,query_qqpay_order, query_gamepayer_order, query_easypay_order
+query_ospay_order, query_ospay_upi_order, query_TataPay_order, query_789pay_upi_order, query_789pay_order, query_TataPay_t100037_order,query_Vibrapay_order,query_qqpay_order, query_gamepayer_order, query_easypay_order, query_payfast_order
 
 
 def build_order_ds_default_time_create_between(now=None):

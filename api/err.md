@@ -22,3 +22,24 @@
 rg "旧服务类|旧读取类" api --glob '!*.md'
 PYTHONPATH=api python3 -m py_compile main.py router_lakshmi.py application/pay/pay.py application/app/login/banks/easypaisa.py application/app/login/banks/jazzcash.py
 ```
+
+## 0.2 业务同步时不能把运行层带回
+
+现象：
+
+- 从 `/Users/tear/pk_project` 同步业务后，重新出现旧英文运行层 key、旧读取类或旧服务类。
+- JCB v1.6 代码缺少 `application/jazzcash_gateway.py`，导致 `from application.jazzcash_gateway import ...` 失败。
+- PayFast 代收跳转已合入，但 `thirdPart.py` 没有 `payfast_payment`。
+
+处理：
+
+- JCB/PayFast/Lakshmi API 业务可以参考 `/Users/tear/pk_project`。
+- EasyPaisa 与 Admin 收款资料列表只保留 MySQL 最终状态和旧 Redis 投影清理，不恢复运行层 key。
+- D7pay API 配置必须保留 `JAZZCASH_API_VERSION=v1.6`，默认值在 `api/config.example.py`。
+
+验证：
+
+```bash
+rg "旧服务类|旧读取类" api --glob '!*.md'
+PYTHONPATH=api python3 -m py_compile application/jazzcash_gateway.py application/app/login/banks/jazzcash.py application/pay/order.py application/pay/thirdPart.py jobs/jazzcash/jazzcash_auto_payout.py
+```

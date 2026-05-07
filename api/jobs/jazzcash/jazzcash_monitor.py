@@ -429,8 +429,8 @@ class AutoPayoutMonitor:
 
         # Redis键名配置
         self.REDIS_KEYS = {
-            'jazzcash_online_df': 'payment_online_df',           # 在线账号集合（auto_payout.py使用）
-            'jazzcash_active_df': 'payment_active_df',           # 活跃账号列表（auto_payout.py使用）
+            'retired_jazzcash_online_df': 'payment_online_df',   # 旧在线集合，仅用于清理残留
+            'retired_jazzcash_active_df': 'payment_active_df',   # 旧活跃列表，仅用于清理残留
             'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',  # 余额有序集合（auto_payout.py使用）
             'jazzcash_status_prefix': 'jazzcash_status:',         # 状态缓存前缀（仅自动代付监控系统使用）
             'jazzcash_monitor_report': 'jazzcash_monitor_report', # 监控报告（仅自动代付监控系统使用）
@@ -547,14 +547,11 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT id, phone, account, name, bank_type, partner_id, status, certified,
-                               account_accno
+                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id,
+                               wallet_status
                         FROM payment
-                        WHERE status = 1
-                          AND certified = 1
-                          AND bank_type = 98
-                          AND account_accno IS NOT NULL
-                          AND account_accno != ''
+                        WHERE wallet_status = 1
+                          AND (bank_type = 98 OR bank_type_id = 98)
                         ORDER BY id
                     """
 
@@ -593,8 +590,7 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, partner_id, status, certified,
-                               account_accno
+                        SELECT phone, account, name, bank_type, partner_id, status, certified
                         FROM payment
                         WHERE id = %s
                     """
@@ -1356,8 +1352,8 @@ class AutoPayoutMonitor:
         """更新Redis缓存"""
         try:
             account_id = status_info['account_id']
-            online_set = self.REDIS_KEYS['jazzcash_online_df']
-            active_list = self.REDIS_KEYS['jazzcash_active_df']
+            online_set = self.REDIS_KEYS['retired_jazzcash_online_df']
+            active_list = self.REDIS_KEYS['retired_jazzcash_active_df']
             balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
 
             # 先判断是否正常
@@ -1380,20 +1376,9 @@ class AutoPayoutMonitor:
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
 
-                # 上线处理：先检查是否已在线，避免重复添加
-                is_already_online = self.redis.sismember(online_set, account_id)
-                if not is_already_online:
-                    self.redis.sadd(online_set, account_id)
-                    self.logger.debug(f"账号 {account_id} 已添加到在线集合")
-
-                # 活跃列表处理：先删除旧的（如果存在），再添加到头部
-                # 这样确保没有重复且最新活跃的在前面
-                self.redis.lrem(active_list, 0, account_id)  # 删除所有相同的（通常0或1个）
-                self.redis.lpush(active_list, account_id)     # 添加到头部
-                self.redis.ltrim(active_list, 0, 99)         # 保持列表长度
-                self.logger.debug(f"账号 {account_id} 已更新到活跃列表头部")
-
-                # 删除踢下线标记（如果存在）
+                # MySQL 三最终态是资格源；在线成功只更新余额和状态缓存，不再写旧在线/活跃队列。
+                self.redis.srem(online_set, account_id)
+                self.redis.lrem(active_list, 0, account_id)
                 self.redis.delete(f'kick_off_{account_id}')
 
             else:
@@ -1690,7 +1675,10 @@ class AutoPayoutMonitor:
             zset_deleted = self.redis.zrem(self.set_key, account_id)
 
             # 2. 删除在线状态相关
+            self.redis.srem('payment_online_ds', account_id)
             self.redis.srem('payment_online_df', account_id)
+            self.redis.lrem('payment_active_df', 0, account_id)
+            self.redis.lrem('payment_active_1003', 0, account_id)
 
             # 3. 删除JazzCash特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
@@ -1735,10 +1723,14 @@ class AutoPayoutMonitor:
 
             try:
                 with connection.cursor() as cur:
-                    # 更新payment表状态为0（下线）
+                    # 更新payment表状态为0（下线），并清理最终业务状态
                     sql = """
                         UPDATE payment
-                        SET status = 0, time_update = NOW()
+                        SET status = 0,
+                            wallet_status = 0,
+                            collection_status = 0,
+                            payout_status = 0,
+                            time_update = NOW()
                         WHERE id = %s
                     """
 
@@ -1763,27 +1755,18 @@ class AutoPayoutMonitor:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
-                self.redis.delete('kick_off_{}'.format(login_data['id']))
-                # 放入接单集合
-                self.redis.sadd('payment_online_ds', login_data['id'])   # JazzCash只做代付，不做代收
-                self.redis.sadd('payment_online_df', login_data['id'])   # 代付必须的在线状态
-                # self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])  # 代收通道队列，不需要
-                # self.redis.lpush('payment_active_{}'.format(login_data['qr_channel']), login_data['id'])  # 代收通道队列，不需要
-                # self.sendMsg('push_payment_information', True, 'Login success')  # 登录成功通知
-                # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), True, 'Login success')  # 登录成功通知
-                self.logger.info(f"{login_data['id']}, {self.name} 上线接单： {login_data['id']}")
-                # self.read_cache('on_off(1)')
+                self.logger.info(
+                    f"{login_data['id']}, {self.name} 在线确认：不写旧 Redis 在线集合，"
+                    "钱包采集/代收/代付资格分别由 MySQL wallet_status/collection_status/payout_status 控制"
+                )
                 return True
-            # 防止代收派单的时候，协议爬取同时操作，导致payment id无法下线
-            self.redis.setex('kick_off_{}'.format(login_data['id']), 60 * 20, 1)
-            # 解除接单集合
-            self.redis.srem('payment_online_ds', login_data['id'])  # JazzCash不做代收，无需清理
-            self.redis.srem('payment_online_df', login_data['id'])  # 代付下线必须清理
-            # self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])  # 代收通道队列，无需清理
-            # self.sendMsg('push_payment_information', False, 'Login failed and quit')  # 退出登录进行通知
-            # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), False, 'Login failed and quit')  # 退出登录进行通知
-            self.logger.error(f"{login_data['id']}, {self.name} 下线接单： {login_data['id']}")
-            # self.read_cache('on_off()')
+            # 下线时只清理旧 Redis 残留；资格状态由 update_payment_status_offline 写 MySQL 三最终态。
+            self.redis.srem('payment_online_ds', login_data['id'])
+            self.redis.srem('payment_online_df', login_data['id'])
+            self.redis.lrem('payment_active_df', 0, login_data['id'])
+            self.redis.lrem('payment_active_1003', 0, login_data['id'])
+            self.redis.delete('kick_off_{}'.format(login_data['id']))
+            self.logger.error(f"{login_data['id']}, {self.name} 清理旧 Redis 在线残留： {login_data['id']}")
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -2012,10 +1995,6 @@ class AutoPayoutMonitor:
             cache_key_lock = f'{self.name}_operate_{user_id}'
             cache_key_login_on = f'login_on_{self.name}_{user_id}'
             cache_key_upi_active_payment = f'upi_active_payment:{user_id}'
-            cache_key_payment_online_ds = f'payment_online_ds'
-            cache_key_payment_online_df = f'payment_online_df'
-            cache_key_payment_active_qr_channel = f'payment_active_{qr_channel}'
-            cache_key_kick_off = f'kick_off_{user_id}'
             cache_key_device = f'{self.name}_device'
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
@@ -2023,10 +2002,10 @@ class AutoPayoutMonitor:
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_ds}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_ds, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_ds)}")  # JazzCash不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_df}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_df, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_df)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_active_qr_channel}, 成员: {login_data['id']}, 是否在list列表中 {login_data['id'] in self.read_redis_list(cache_key_payment_active_qr_channel)}, ttl: {self.redis.ttl(cache_key_payment_active_qr_channel)}")  # JazzCash不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_kick_off}, value: {self.redis.get(cache_key_kick_off)}, ttl: {self.redis.ttl(cache_key_kick_off)}")
+            self.logger.info(
+                f"{login_data['id']}, read_cache() MySQL 三最终态提示：wallet_status/collection_status/payout_status "
+                "是钱包采集、代收、代付资格源；旧 payment_online/payment_active/kick_off 不再参与资格判断"
+            )
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
             tb_str = traceback.format_exc()

@@ -58,6 +58,7 @@ def _base_config():
         easypaisa_user_id=_env("EASYPAISA_USER_ID", "177651e475bc439cac98d4b54ce4f6b1"),
         easypaisa_secret_key=_env("EASYPAISA_SECRET_KEY", "39eafd9c3767471e9d0fae1906dd706e"),
         jazzcash_api_url=_env("JAZZCASH_API_URL", "http://34.150.42.92:84"),
+        jazzcash_api_version=_env("JAZZCASH_API_VERSION", "v1.6"),
         jazzcash_user_id=_env("JAZZCASH_USER_ID", "ba08c3c0e4f546ad92dd2c2e8542ca36"),
         jazzcash_secret_key=_env("JAZZCASH_SECRET_KEY", "ca45b35e132b46b9b68dd55f1ab077de"),
     )

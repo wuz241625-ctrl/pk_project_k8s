@@ -84,7 +84,7 @@ class NoticeRazorpay_upi_origin(BaseHandler):
         self.logger.info('Razorpay-upi-origin-订单 %s,确认成功' % code)
         self.set_status(200)
         return self.write('SUCCESS')
-    
+
 class lucky_notify(BaseHandler):
     async def post(self):
         # 打印接收到的所有 form-data 参数
@@ -97,7 +97,7 @@ class lucky_notify(BaseHandler):
         if not r_t[0]['notify_ip']:
             self.logger.error('[lucky] 无回调通知 IP，请加回调通知 IP lucky_notify')
             return self.write('not notify_ip')
-        
+
         ips = r_t[0]['notify_ip'].split(',')
         ip = await self.get_ip()
         if ip not in ips:
@@ -126,8 +126,8 @@ class lucky_notify(BaseHandler):
             order_no = webhook_body.get('orderNo', [''])[0]
             chain_name = webhook_body.get('chainName', [''])[0]
             coin_unit = webhook_body.get('coinUnit', [''])[0]
-            pay_amount = webhook_body.get('payAmount', [''])[0] 
-            status = webhook_body.get('status', [''])[0] 
+            pay_amount = webhook_body.get('payAmount', [''])[0]
+            status = webhook_body.get('status', [''])[0]
             txid = webhook_body.get('txid', [''])[0]
             received_sign = webhook_body.get('sign', [''])[0]
             # 拼接签名字符串并计算签名
@@ -143,7 +143,7 @@ class lucky_notify(BaseHandler):
             code = client_no
             amount = decimal.Decimal(pay_amount)
             account_id = mer_id
-            
+
             self.logger.info(f'[lucky] lucky_notify 收到回调参数 {webhook_body}')
 
             # 生成签名
@@ -165,7 +165,7 @@ class lucky_notify(BaseHandler):
 
             # 发起 GET 请求并传递参数
             response = requests.get(query_url, params=params, headers=headers, timeout=(5, 5), verify=False)
-            
+
             # 打印请求参数日志
             self.logger.info(f'query_order 请求URL: {response.url}')
 
@@ -226,7 +226,7 @@ class lucky_notify(BaseHandler):
             await self.redis.delete(busy_key)
             self.logger.error(f'[lucky] 错误：lucky_notify-订单 {code}，更新失败')
             return self.write('update order error')
-        
+
         self.logger.info(f'[lucky] lucky_notify-订单 {code}, 确认成功')
         self.set_status(200)
         return self.write('ok')
@@ -569,7 +569,7 @@ class wepay_notify(BaseHandler):
             "mch_order_no": mer_transfer_id,
             "sign_type": "MD5",
         }
-        
+
         # 生成 MD5 签名
         params["sign"] = self.generate_md5_sign(params, mch_key)
 
@@ -628,7 +628,7 @@ class wepay_notify(BaseHandler):
         md5_hash = hashlib.md5(query_string.encode('utf-8')).hexdigest().lower()
 
         return md5_hash
-    
+
     def verify_md5_signature(self, params, private_key):
         """
         校验 MD5 签名
@@ -929,9 +929,9 @@ class quickpay_notify(BaseHandler):
 
             # 先查询订单状态，确保回调数据的正确性
             query_status = await self.query_order_status(
-                r_t[0]['merchant_id'], 
-                data_receive.get('orderId'), 
-                key3, 
+                r_t[0]['merchant_id'],
+                data_receive.get('orderId'),
+                key3,
                 r_t[0]['query_url']
             )
             self.logger.info(f"[quickpay] 查询订单返回值: {query_status}")
@@ -1132,7 +1132,7 @@ class SnakePayNotify(BaseHandler):
         self.logger.info(f'[SnakePay] SnakePay_notify-订单 {code}, 确认成功')
         self.set_status(200)
         return self.write('ok')
-    
+
 class hkpay_notify(BaseHandler):
     async def post(self):
         self.logger.info("[HKPay] 开始处理 HKPay 回调通知")
@@ -1291,7 +1291,7 @@ class hkpay_notify(BaseHandler):
 # SkPayNotify
 class skpay_notify(BaseHandler):
     async def post(self):
-        
+
         self.logger.info("[Skpay] 开始处理 Skpay 回调通知")
         sql_t = 'SELECT merchant_id, `key`, `key2`, `key3`, pay_url, name, query_url, notify_ip FROM otherpay WHERE name = %s'
         r_t = await self.query(sql_t, 'Skpay')
@@ -1307,14 +1307,14 @@ class skpay_notify(BaseHandler):
         if ip not in ips:
             self.logger.error(f'[Skpay] IP: {ip}, 回调 IP 错误 Skpay_notify')
             return self.write('notify_ip error')
-        
+
         mer_id = r_t[0]['merchant_id']
         query_url = r_t[0]['query_url']
 
         try:
             data_receive = json.loads(self.request.body)
             self.logger.info(f'[Skpay] 收到回调参数: {data_receive}, 来自 IP: {ip}')
-            
+
             # 验证签名
             headers = self.request.headers
             sign = headers.get('sign')
@@ -1332,7 +1332,7 @@ class skpay_notify(BaseHandler):
                 self.logger.error(f"[Skpay] {data_receive}签名错误: 接收到的签名 {sign}, ip: {ip}")
                 return self.write('sign error')
             self.logger.info(f'[Skpay]  收到回调参数: {data_receive}, 签名通过')
-            
+
             # 获取参数并解析
             code = data_receive.get('merchantOrderNo')
             orderNo = data_receive.get('orderNo')
@@ -1341,18 +1341,18 @@ class skpay_notify(BaseHandler):
             # 查询订单信息
             sql_order_info = 'SELECT code, amount, partner_id, payment_id, status , third_party_order_number FROM orders_ds WHERE code = %s'
             _order_info = await self.query(sql_order_info, code)
-            
+
             if not _order_info:
                 self.logger.error(f'[HKPay] 错误，无此订单 {code}')
                 return self.write({"code": "1", "message": "error 无此订单"})
-            
+
             # 检查订单是否已处理
             if str(data_receive.get('status')) == "success":
                 self.logger.info(f"订单已支付。支付订单： {code}")
             else:
                 self.logger.error(f"订单状态: {data_receive.get('status')}")
                 return self.write(f"订单状态: {data_receive.get('status')}")
-            
+
             # 检查订单状态
             if _order_info[0]['status'] > 2:
                 self.logger.error(f'[Skpay] SnakePay_notify-订单已经回调成功过 {code}, 确认成功')
@@ -1365,7 +1365,7 @@ class skpay_notify(BaseHandler):
             if int(decimal.Decimal(_order_info[0]['amount'])) != int(decimal.Decimal(amount)):
                 self.logger.error(f'[Skpay] 订单 {code} 金额不一致')
                 return self.write('error 金额不一致')
-            
+
             # 发起 POST 请求到查询接口
             data_post = dict()
             data_post['orderNo'] = orderNo
@@ -1394,7 +1394,7 @@ class skpay_notify(BaseHandler):
 
             query_status = str(result.get("data", {}).get('status'))
             status = str(data_receive.get('status'))
-            
+
             self.logger.info(f"[Skpay] 查询订单返回值: {query_status}")
             self.logger.info(f"[Skpay] 回调通知状态: {status}")
 
@@ -1409,7 +1409,7 @@ class skpay_notify(BaseHandler):
             if status != "success":
                 self.logger.error('[Skpay] 订单未支付成功')
                 return self.write({"code": "1", "message": "not paid"})
-            
+
         except Exception as e:
             self.logger.exception(f'[Skpay] 参数异常: {str(e)}')
             return self.write({"code": "1", "message": "params error"})
@@ -1999,4 +1999,134 @@ class gamepayer_notify(BaseHandler):
             return self.write('update order error')
         self.set_status(200)
         self.logger.info(f'[{pay_name}] {pay_name}_notify-订单 {code}, 确认成功')
+        return self.write('SUCCESS')
+
+
+class PayfastRedirect(BaseHandler):
+    """PayFast 自动提交表单页面 —— 从 Redis 读取表单参数，浏览器自动 POST 到 PayFast"""
+    async def get(self, code):
+        pay_name = "payfast"
+        redis_key = f'payfast_redirect_{code}'
+        raw = await self.redis.get(redis_key)
+        if not raw:
+            self.set_status(410)
+            return self.write('Payment link expired or invalid')
+
+        form_data = json.loads(raw)
+        pay_url = form_data.pop('PAY_URL')
+
+        # 构建 hidden inputs
+        inputs = ''.join(
+            f'<input type="hidden" name="{k}" value="{v}" />'
+            for k, v in form_data.items()
+        )
+        html_content = f'''<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>Redirecting to PayFast...</title></head>
+<body>
+    <p style="text-align:center;margin-top:100px;font-size:18px;">Redirecting to PayFast, please wait...</p>
+    <form id="payfast_form" method="post" action="{pay_url}">
+        {inputs}
+    </form>
+    <script>document.getElementById('payfast_form').submit();</script>
+</body>
+</html>'''
+        self.set_header('Content-Type', 'text/html; charset=utf-8')
+        self.write(html_content)
+
+
+class PayfastNotify(BaseHandler):
+    """PayFast IPN 回调（GET + POST）—— 验证 validation_hash 并更新订单"""
+    async def post(self):
+        return await self._handle_notify()
+
+    async def get(self):
+        return await self._handle_notify()
+
+    async def _handle_notify(self):
+        pay_name = "payfast"
+        result_data = {k: self.get_argument(k) for k in self.request.arguments}
+        ip = await self.get_ip()
+        self.logger.info(f'[{pay_name}] 收到回调参数: {result_data}, 来自 IP: {ip}')
+        self.set_status(403)
+
+        sql_t = 'SELECT merchant_id, `key`, pay_url, name, query_url, notify_ip FROM otherpay WHERE name = %s'
+        r_t = await self.query(sql_t, 'payfast')
+        if not r_t:
+            self.logger.error(f'[{pay_name}] otherpay 中未找到 payfast 配置')
+            return self.write('config not found')
+
+        # 检查回调 IP
+        if r_t[0]['notify_ip']:
+            ips = r_t[0]['notify_ip'].split(',')
+            if ip not in ips:
+                self.logger.error(f'[{pay_name}] IP: {ip}, 回调 IP 错误')
+                return self.write('notify_ip error')
+
+        secured_key = r_t[0]['key']
+        mer_id = r_t[0]['merchant_id']
+
+        try:
+            err_code = result_data.get('err_code', '')
+            err_msg = result_data.get('err_msg', '')
+            basket_id = result_data.get('basket_id', '')
+            transaction_id = result_data.get('transaction_id', '')
+            validation_hash = result_data.get('validation_hash', '')
+            transaction_amount = result_data.get('transaction_amount', '')
+
+            self.logger.info(f'[{pay_name}] basket_id={basket_id}, err_code={err_code}, transaction_id={transaction_id}')
+
+            # 验证 validation_hash = SHA256(basket_id|secured_key|merchant_id|err_code)
+            hash_str = f'{basket_id}|{secured_key}|{mer_id}|{err_code}'
+            expected_hash = hashlib.sha256(hash_str.encode('utf-8')).hexdigest()
+            if expected_hash != validation_hash:
+                self.logger.error(f'[{pay_name}] validation_hash 不匹配: expected={expected_hash}, got={validation_hash}')
+                return self.write('hash error')
+            self.logger.info(f'[{pay_name}] validation_hash 验证通过')
+
+            # 判断是否支付成功
+            if err_code not in ('000', '00'):
+                self.logger.info(f'[{pay_name}] 支付未成功, err_code={err_code}, err_msg={err_msg}')
+                return self.write(f'payment not success: {err_code} {err_msg}')
+
+            code = basket_id  # basket_id 就是我们的订单号
+
+            # 更新三方订单号
+            update_data = {'third_party_order_number': transaction_id}
+            await self.update_result('orders_ds', update_data, {'code': code})
+
+            # 查询订单信息
+            sql_order = 'SELECT code, amount, partner_id, payment_id, status FROM orders_ds WHERE code = %s'
+            _order_info = await self.query(sql_order, code)
+
+            if not _order_info:
+                self.logger.error(f'[{pay_name}] 无此订单 {code}')
+                return self.write('No such order')
+
+            if _order_info[0]['status'] > 2:
+                self.logger.info(f'[{pay_name}] 订单 {code} 已成功，忽略重复回调')
+                self.set_status(200)
+                return self.write('SUCCESS')
+
+            # 验证金额
+            if transaction_amount:
+                order_amount = decimal.Decimal(_order_info[0]['amount'])
+                callback_amount = decimal.Decimal(transaction_amount)
+                if order_amount != callback_amount:
+                    self.logger.error(f'[{pay_name}] 订单 {code} 金额不一致: order={order_amount}, callback={callback_amount}')
+                    return self.write('amount mismatch')
+
+        except Exception as e:
+            self.logger.exception(f'[{pay_name}] 参数异常: {str(e)}')
+            return self.write('params error')
+
+        # 订单成功处理
+        if not await order_success_ds_third(self, code):
+            busy_key = f'order_success_busy_{code}'
+            await self.redis.delete(busy_key)
+            self.logger.error(f'[{pay_name}] 订单 {code} 更新失败')
+            return self.write('update order error')
+
+        self.set_status(200)
+        self.logger.info(f'[{pay_name}] 订单 {code} 确认成功')
         return self.write('SUCCESS')

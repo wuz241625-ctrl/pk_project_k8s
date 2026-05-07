@@ -1220,3 +1220,22 @@ async def query_easypay_order(self, mer_id, code, mc_key, mc_key2, query_url,
     except Exception as e:
         self.logger.error(f"[{pay_name}] 查询异常 code={code}: {e}")
         return None
+
+
+async def query_payfast_order(self, mer_id, code, mc_key, mc_key2, query_url, third_party_name,
+                               private_key='', third_party_order_number=''):
+    """
+    PayFast 补单查询：PayFast 无主动查询 API。
+
+    只有回调已经写入 third_party_order_number / transaction_id 时，才允许后台补单继续。
+    """
+    pay_name = "payfast"
+    try:
+        if third_party_order_number:
+            self.logger.info(f"[{pay_name}] 订单 {code} 已有 transaction_id: {third_party_order_number}，允许补单")
+            return True
+        self.logger.warning(f"[{pay_name}] 订单 {code} 无 transaction_id，PayFast 未回调成功，不允许补单")
+        return False
+    except Exception as e:
+        self.logger.error(f"[{pay_name}] 查询订单 {code} 发生异常: {e}")
+        return None

@@ -424,7 +424,7 @@ class BankLogin:
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
         # 新增: 初始化数据库连接
         self.db_connection = self.check_db_connection()
-    
+
     def check_db_connection(self):
             """
             检查并返回pymysql数据库连接。
@@ -458,21 +458,23 @@ class BankLogin:
         with self.db_connection.cursor() as cur:
             try:
                 sql_query = """
-                    SELECT *
-                    FROM payment 
+                    SELECT phone
+                    FROM payment
                     WHERE id = %s
+                      AND wallet_status = 1
+                      AND (bank_type = 98 OR bank_type_id = 98)
                 """
                 cur.execute(sql_query, (payment_id,))
                 payment_info = cur.fetchone()
-                
+
                 if not payment_info:
                     self.logger.info(f"未找到ID为 {payment_id} 的信息。")
                     return None
-                
+
                 self.logger.info(f"成功查询到 payment 信息: {payment_info}")
 
-                return payment_info.get('account_accno')
-                    
+                return payment_info.get('phone')
+
             except Exception as e:
                 self.logger.error(f"数据库查询失败: {e}", exc_info=True)
                 self.db_connection.rollback()
@@ -684,7 +686,7 @@ class BankLogin:
                 self.logger.info("关闭临时异步会话")
 
     '''
-    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期 
+    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期
     2. **临时会话模式**：每次请求都创建一个新的临时会话，请求完成后自动关闭
     3. **自动资源管理**：使用async with 确保会话在使用完毕后被正确关闭
     4. **消除状态依赖**：不再依赖实例变量 self._async_session，完全无状态化
@@ -1136,11 +1138,11 @@ class BankLogin:
             }
             # 记录发送前的日志
             self.logger.info(f"payment_id: {login_data['id']} 正在尝试发送状态更新请求: {simplejson.dumps(orders_send)}")
-        
+
             if_send = await self.send(orders_send, login_data)
             # 记录第一次发送后的日志
             self.logger.info(f"payment_id: {login_data['id']} 第一次状态更新请求返回: {simplejson.dumps(if_send)}")
-        
+
             if if_send['is_success'] is False:
                 # time.sleep(0.5)
                 await asyncio.sleep(0.5)
@@ -1454,7 +1456,7 @@ class BankLogin:
                     normalized_account_id = normalized_account_id[1:]
                 elif normalized_account_id.startswith('92'):
                     normalized_account_id = normalized_account_id[2:]
-                    
+
                 # 检查是否包含 92 前缀（例如: '923710910652'）
                 full_account_id_92 = '92' + normalized_account_id
 
@@ -1474,7 +1476,7 @@ class BankLogin:
                 df_flag = False
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:] 
+                match_suffix = full_account_id_92[-9:]
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -1503,7 +1505,7 @@ class BankLogin:
                         txn_amount = float(amount_debited)
                     except ValueError:
                         txn_amount = 0.0
-                    
+
                     # # 出款时，对方是收款方 (BENEFICIARY_MSISDN 或 ACCOUNT_NUMBER)
                     # cust_ref_no = transaction.get('BENEFICIARY_MSISDN') or transaction.get('ACCOUNT_NUMBER')
                     # 出款时，对方是收款方 (取自 CONTEXT_DATA 中的 ACCOUNT_NUMBER)
@@ -1512,7 +1514,7 @@ class BankLogin:
                     # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                     if isinstance(receive_account, str):
                         receive_account = receive_account.strip()
-                        
+
                         # 检查是否以 '92' 开头
                         if receive_account.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1527,11 +1529,11 @@ class BankLogin:
                     if not payee_account_no:
                         # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                         receive_account = transaction.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-                        
+
                         # 对新获取的 receive_account 同样进行格式处理
                         if isinstance(receive_account, str):
                             receive_account = receive_account.strip()
-                            
+
                             # 检查是否以 '92' 开头
                             if receive_account.startswith('92'):
                                 # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1540,10 +1542,10 @@ class BankLogin:
                                 receive_account = '0' + receive_account
 
                         # 再次赋值给 payee_account_no
-                        payee_account_no = receive_account 
+                        payee_account_no = receive_account
 
                     # 最终 payee_account_no 包含了所需的值
-                    
+
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)--对应是付款的账号
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     # ---------- 格式处理 ----------
@@ -1569,7 +1571,7 @@ class BankLogin:
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     payee_account_no = full_account_id_92 # 自己的账户
-                    
+
                     # ---------- 格式处理 ----------
                     if isinstance(cust_ref_no, str):
                         cust_ref_no = cust_ref_no.strip()
@@ -1577,7 +1579,7 @@ class BankLogin:
                             cust_ref_no = cust_ref_no[2:]
                         elif cust_ref_no.startswith('0') and len(cust_ref_no) > 10:
                             cust_ref_no = cust_ref_no[1:]
-                        
+
                 # --- 状态和日志 ---
                 txn_status = 'SUCCESS' # queryBill 成功返回的记录通常是成功交易
 
@@ -1587,7 +1589,7 @@ class BankLogin:
                 mapped_trans = {
                     'txnType': txn_type,
                     # 统一使用计算后的金额
-                    'txnAmount': txn_amount, 
+                    'txnAmount': txn_amount,
                     # custRefNo: 出款是对方账号/手机，入款是对方手机
                     'custRefNo': cust_ref_no,
                     'txnStatus': txn_status,
@@ -1674,12 +1676,12 @@ class BankLogin:
             current_time = int(time.time())
             last_request_time = login_data.get('time', 0)
             required_time = current_time - _time_grab
-            
+
             # 将 Unix 时间戳转换为可读的日期格式
             last_request_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_request_time))
             current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))
             required_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(required_time))
-            
+
             # self.logger.info(f"上次请求时间: {last_request_time_str}")
             self.logger.info(f"当前时间 - 间隔要求: {current_time_str} - {_time_grab}秒 = {required_time_str}")
 
@@ -1859,7 +1861,7 @@ class BankLogin:
                          f"从 {len(members)} 个成员中分配到 {len(allocated_members)} 个")
 
         return allocated_members
-    
+
     async def verify_and_handle_abnormal_payout(self, login_data, order_data):
         self.logger.info(f"verify_and_handle_abnormal_payout 异常订单数据: {order_data}")
         receive_account = order_data.get('account_id', '')
@@ -1927,7 +1929,7 @@ class BankLogin:
 
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:] 
+                match_suffix = full_account_id_92[-9:]
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -1947,7 +1949,7 @@ class BankLogin:
                     # 理论上 JazzCash 流水总有一个方向是自己，如果都不是，视为异常或无法识别的内部交易，默认按入款处理 (保守策略)
                     self.logger.warning(f"grabstatement 交易流水获取: Transaction {counter}: 无法识别交易方向，AC_FROM/AC_TO 后缀均不匹配。默认标记为入款。")
                     df_flag = False
-                    
+
                 if not df_flag:
                     # 如果不是代付（出款），且您只关心代付流水，则跳过
                     continue
@@ -1965,7 +1967,7 @@ class BankLogin:
                 # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                 if isinstance(receive_account_1, str):
                     receive_account_1 = receive_account_1.strip()
-                    
+
                     # 检查是否以 '92' 开头
                     if receive_account_1.startswith('92'):
                         # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1980,11 +1982,11 @@ class BankLogin:
                 if not payee_account_no:
                     # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                     receive_account_1 = trans.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-                    
+
                     # 对新获取的 receive_account 同样进行格式处理
                     if isinstance(receive_account_1, str):
                         receive_account_1 = receive_account_1.strip()
-                        
+
                         # 检查是否以 '92' 开头
                         if receive_account_1.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1993,7 +1995,7 @@ class BankLogin:
                             receive_account_1 = '0' + receive_account_1
 
                     # 再次赋值给 payee_account_no
-                    payee_account_no = receive_account_1 
+                    payee_account_no = receive_account_1
 
                 # 最终 payee_account_no 包含了所需的值
 
@@ -2008,8 +2010,8 @@ class BankLogin:
                         # 2. 在处理后的 cust_ref_no 前面加上一个 '0'
                         cust_ref_no = '0' + cust_ref_no
                     # else: 如果不以 '92' 开头，则不进行任何处理，保持原样（但仍执行了 strip()）
-                
-            
+
+
                 # ---------- 新增逻辑：提取最终结果的后九位 ----------
                 if isinstance(cust_ref_no, str) and cust_ref_no:
                     cust_ref_no = cust_ref_no[-9:]
@@ -2044,19 +2046,19 @@ class BankLogin:
                             # 记录因风控逻辑跳过
                             self.logger.info(f"{login_data['id']}, 交易 {utr}: 【风控跳过：交易时间早于失败标记时间】 失败标记时间: {failed_time}，交易时间: {trans_time}。")
                             continue
-                            
+
                     except Exception as e:
                         self.logger.error(f"处理 payment_id_failed_jazzcash 检查时发生异常: {e}")
                         pass
                     # === 新增风控检查结束 ===
-                    
+
                     txn_type = 'PAY'
                     txn_status = 'SUCCESS' # QueryBill 成功返回的记录通常是成功交易
 
                     # 构造 mapped_trans
                     mapped_trans = {
                         'txnType': txn_type,
-                        'txnAmount': transaction_amount, 
+                        'txnAmount': transaction_amount,
                         # custRefNo 和 accountNo 字段指向收款方
                         'custRefNo': cust_ref_no,
                         'txnStatus': txn_status,
@@ -2065,12 +2067,12 @@ class BankLogin:
                         # payeeAccountNo 指向自己的账户（代付方）
                         'payeeAccountNo': extracted_number,
                         # payeeIfsc 使用 bankCode
-                        'payeeIfsc': trans.get('bankCode', ''), 
+                        'payeeIfsc': trans.get('bankCode', ''),
                         'tradeTime': trans.get('TRX_DTTM', ''),
                         # extOrderNo 使用 TRANS_ID (流水号)
-                        'extOrderNo': trans.get('TRANS_ID', ''), 
+                        'extOrderNo': trans.get('TRANS_ID', ''),
                         'fee': float(trans.get('FEE', 0)),
-                        'appTransaction': True 
+                        'appTransaction': True
                     }
                     # 调用 transaction_callback
                     await self.transaction_callback(mapped_trans, login_data)
@@ -2166,7 +2168,7 @@ class BankLogin:
                         self.logger.info(f"{_id}, 失败订单 {ABNORMAL_PAYOUTS_KEY} 处理完成并移除")
                     except Exception as e:
                         self.logger.error(f"{_id}, 处理失败订单 {ABNORMAL_PAYOUTS_KEY} 失败: {e}")
-                    
+
                 # 状态检查
                 # if login_data['status'] not in ['sendOTP', 'grabOTP', 'device_check', 'send_sms', 'wait_client_send_sms', 'verify_sms', 'grabstatement']:
                 if login_data['status'] not in ['grabstatement']:

@@ -11,6 +11,7 @@
 
 - 删除 运行时 模块和相关测试。
 - 收款资料展示以 MySQL `payment.wallet_status`、`collection_status`、`payout_status` 为最终业务字段。
+- `bank_type` / `bank_type_id` 为 `97` 或 `98` 的收款资料都属于 MySQL 最终态展示，不能再被 `payment_online_ds` / `payment_online_df` 覆盖。
 - Redis 只用于兼容旧队列，不能作为最终业务状态。
 
 验证：

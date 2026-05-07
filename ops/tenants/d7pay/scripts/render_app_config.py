@@ -41,6 +41,7 @@ def render(source_path, allow_placeholder=False):
         "API_WEBSOCKET_ALLOW_HOST": os.environ.get("API_WEBSOCKET_ALLOW_HOST", api_domain),
         "ADMIN_API_URL": os.environ.get("ADMIN_API_URL", "http://api:9000"),
         "MERCHANT_API_URL": os.environ.get("MERCHANT_API_URL", "http://api:9000"),
+        "JAZZCASH_API_VERSION": os.environ.get("JAZZCASH_API_VERSION", "v1.6"),
     }
 
     lines = []

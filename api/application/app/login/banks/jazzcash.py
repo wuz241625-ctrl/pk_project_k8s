@@ -9,6 +9,7 @@ import bcrypt
 import logging
 from sqlalchemy import update
 
+from application.jazzcash_gateway import build_form_body, calculate_final_status, decode_response, mask_sensitive_payload
 # 错误处理相关导入
 from application.lakshmi_api.services.error_manager import ErrorManager
 from application.lakshmi_api.exceptions.api_error import NewApiError
@@ -39,16 +40,17 @@ USE_TEST_FINGERPRINT = False  # 改为 False 关闭测试模式
 TEST_FINGERPRINT_PATH = '/www/python/dev/api/application/app/login/banks/20251114-105902.815899848-hand_data_1763117938015.zip'
 
 # ========== API版本控制 ==========
-# 修改这个变量来切换v1.2/v1.5流程
-# 'v1.2': 使用旧流程（需要提前上传指纹）
-# 'v1.5': 使用新流程（不需要上传指纹，loginStep2不验证指纹）
-JAZZCASH_API_VERSION = 'v1.2'  # ⭐ 已切换到v1.5新流程
+JAZZCASH_VERSION = conf.get('jazzcash_api_version', 'v1.6')
+if JAZZCASH_VERSION != 'v1.6':
+    raise RuntimeError(f'Unsupported JazzCash API version: {JAZZCASH_VERSION}')
+JAZZCASH_SHOULD_VERIFY_FINGERPRINT = True
 
 # Redis状态常量
 class LoginStatus:
     PRE_LOGIN = "preLogin"                      # 预登录状态
     SEND_OTP = "sendOtp"                        # OTP发送
     VERIFY_OTP = "verifyOtp"                    # OTP验证
+    SECOND_LOGIN_READY = "secondLoginReady"     # 已绑定账号等待二次登录
     LOGIN_SUCCESSFUL = "loginSuccessful"        # 登录成功
     ACTIVE_SUCCESSFUL = "activeSuccessful"      # 激活成功
 
@@ -123,7 +125,7 @@ class JazzCash:
 
     API_ENDPOINTS = {
         'base_url': conf.get('jazzcash_api_url', 'http://34.150.42.92:84'),
-        # JazzCash v1.2 接口
+        # JazzCash legacy 接口
         'is_logined': 'isLogined',       # 查询云机实体分配情况
         'send_otp': 'loginStep1',        # 发送OTP（需要提前上传指纹）
         'verify_otp': 'loginStep2',      # 验证OTP
@@ -785,6 +787,7 @@ class JazzCash:
             user_id = self.handler.current_user.id  # ← 获取码商ID
             is_new_user = data.get('is_new_user', True)
             payment_id = data.get('payment_id')  # 获取payment_id
+            bound_payment = None
 
             self.logger.info(f'{self._log_key(funcName)} 预登录参数: 银行={bankname}, 手机号={phone}, 码商ID={user_id}')
             self.logger.info(f'{self._log_key(funcName)} 当前认证用户信息: ID={user_id}, 手机号={getattr(self.handler.current_user, 'cellphone', 'Unknown')}')
@@ -807,12 +810,28 @@ class JazzCash:
                 with self.handler.db_orm.sessionmaker() as session:
                     existing_payment = session.query(Payment).filter(
                         Payment.id == payment_id,
-                        Payment.bank_type == bank_type_id
+                        Payment.bank_type_id == bank_type_id
                     ).first()
                     if not existing_payment:
                         raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Payment record not found: {payment_id}')
                     if existing_payment.phone != phone:
                         raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number mismatch for payment {payment_id}, expected {existing_payment.phone}')
+                    if int(getattr(existing_payment, 'user_id', 0) or 0) != int(user_id):
+                        raise NewApiError('10402', 'UPI already occupied by another user')
+                    bound_payment = {
+                        'id': existing_payment.id,
+                        'phone': existing_payment.phone,
+                        'user_id': existing_payment.user_id,
+                        'pin': getattr(existing_payment, 'pin', None),
+                        'name': getattr(existing_payment, 'name', '') or '',
+                        'account_entire': getattr(existing_payment, 'account_entire', None),
+                        'account_accno': getattr(existing_payment, 'account_accno', None),
+                        'account_iban': getattr(existing_payment, 'account_iban', None),
+                        'channel': getattr(existing_payment, 'channel', None),
+                    }
+                    phone_owner = await self._check_payment(bankname, phone, user_id)
+                    if phone_owner and str(phone_owner.get('id')) != str(existing_payment.id):
+                        raise NewApiError('10402', 'UPI already occupied by another payment id')
                     self.logger.info(f'{self._log_key(funcName)} Payment record validation successful: {payment_id}')
 
                     # 找到了 Payment 记录，说明是老用户
@@ -824,15 +843,15 @@ class JazzCash:
                 self.logger.info(f'{self._log_key(funcName)} 用户类型检查: {phone} - partner_id: {user_id} - 新用户: {is_new_user}')
 
                 if existing_payment:
-                    # 检查UPI是否属于当前用户（参考 Paytm 逻辑）
-                    if existing_payment['user_id'] == user_id:
-                        # UPI已存在且属于当前用户
-                        self.logger.error(f'{self._log_key(funcName)} UPI已存在且属于当前用户: phone={phone}, user_id={user_id}, payment_id={existing_payment["id"]}')
-                        raise NewApiError('10401', 'This is your UPI. Please active it in UPI list')  # UPI已存在且属于当前用户
-                    else:
-                        # UPI已被其他用户占用
+                    if int(existing_payment.get('user_id') or 0) != int(user_id):
                         self.logger.error(f'{self._log_key(funcName)} UPI已被占用: phone={phone}, current_user={user_id}, owner_user={existing_payment["user_id"]}')
                         raise NewApiError('10402', 'UPI already occupied by another user')  # UPI已被其他用户占用
+                    self.logger.info(
+                        f'{self._log_key(funcName)} JazzCash 已绑定当前码商: phone={phone}, '
+                        f'user_id={user_id}, payment_id={existing_payment["id"]}'
+                    )
+                    payment_id = existing_payment.get('id')
+                    bound_payment = existing_payment
                 else:
                     payment_id = phone  # 直接使用手机号作为临时ID
                     self.logger.info(f'{self._log_key(funcName)} 使用手机号作为payment_id: {payment_id}')
@@ -846,6 +865,45 @@ class JazzCash:
             except NewApiError as lock_error:
                 self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
                 raise lock_error
+
+            if bound_payment:
+                session_data = self._build_bound_prelogin_session(
+                    bankname=bankname,
+                    payment_id=payment_id,
+                    phone=phone,
+                    original_phone=original_phone,
+                    password=password,
+                    pin=pin,
+                    name=name,
+                    user_id=user_id,
+                    bound_payment=bound_payment,
+                )
+                is_logined = await self._is_logined(session_data)
+                if is_logined.get('data') is True:
+                    redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+                    await self.redis.delete(redis_key)
+
+                    result = {
+                        'status': 'success',
+                        'message': '成功',
+                        'data': {
+                            'id': payment_id,
+                            'redis_key': None,
+                            'expires_in': 0,
+                            'total_timeout': 120,
+                            'is_new_user': False,
+                            'bank_type': self.LOGIN_TYPE,
+                            'fingerprint_uploaded': True,
+                            'next_step': 'second_login'
+                        }
+                    }
+                    self.logger.info(f'{self._log_key(funcName)} 已绑定JazzCash账号通过isLogined，返回second_login: {result}')
+                    return result
+
+                self.logger.warning(
+                    f'{self._log_key(funcName)} 已绑定JazzCash账号isLogined失败，回退首次登录流程: '
+                    f'phone={phone}, payment_id={payment_id}, result={is_logined}'
+                )
 
             # 创建Redis登录会话
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
@@ -958,7 +1016,7 @@ class JazzCash:
                     'pin_verified': False                   # PIN是否已验证
                 },
 
-                # === JazzCash v1.2 特有字段 ===
+                # === JazzCash legacy 特有字段 ===
                 'fingerprint_uploaded': False,              # 指纹是否已上传（is_data_uploaded 结果）
                 'fingerprint_check_time': 0,                # 指纹检查时间戳
             }
@@ -976,19 +1034,19 @@ class JazzCash:
 
             # ========== [新增] 查询指纹是否已上传 ==========
             self.logger.info(f'{self._log_key(funcName)} ========================================')
-            self.logger.info(f'{self._log_key(funcName)} 当前API版本: {JAZZCASH_API_VERSION}')
+            self.logger.info(f'{self._log_key(funcName)} 当前API版本: {JAZZCASH_VERSION}')
             self.logger.info(f'{self._log_key(funcName)} 开始查询指纹上传状态')
             self.logger.info(f'{self._log_key(funcName)} 查询账号: phone={phone}')
             fingerprint_uploaded = False  # 默认值
 
             # ========== 根据API版本决定是否检查指纹 ==========
-            if JAZZCASH_API_VERSION == 'v1.5':
-                # v1.5流程：跳过指纹检查
-                self.logger.info(f'{self._log_key(funcName)} v1.5流程：跳过指纹检查（不验证指纹）')
-                fingerprint_uploaded = True  # v1.5不需要提前检查，设为True告诉前端不需要上传
+            if JAZZCASH_VERSION == 'v1.6':
+                # v1.6流程：先发送OTP，再上传指纹，最后触发loginStep2
+                self.logger.info(f'{self._log_key(funcName)} v1.6流程：指纹上传延后到OTP发送后')
+                fingerprint_uploaded = False
             else:
-                # v1.2流程：检查指纹（保持原有逻辑）
-                self.logger.info(f'{self._log_key(funcName)} v1.2流程：检查指纹上传状态')
+                # legacy流程：检查指纹（保持原有逻辑）
+                self.logger.info(f'{self._log_key(funcName)} legacy流程：检查指纹上传状态')
                 try:
                     # 调用指纹查询 API
                     self.logger.info(f'{self._log_key(funcName)} 调用 _check_fingerprint_uploaded 方法...')
@@ -1113,14 +1171,14 @@ class JazzCash:
             self.logger.info(f'{self._log_key(funcName)} 正在决定 next_step...')
 
             # ========== 根据API版本决定next_step ==========
-            if JAZZCASH_API_VERSION == 'v1.5':
-                # v1.5流程：所有用户都直接进入send_otp（不管指纹状态）
-                fingerprint_uploaded = True  # 强制设为True
+            if JAZZCASH_VERSION == 'v1.6':
+                # v1.6流程：先发送OTP，再上传指纹，最后触发loginStep2
+                fingerprint_uploaded = False
                 next_step = 'send_otp'
-                message = '预登录成功，可以发送OTP'
-                self.logger.info(f'{self._log_key(funcName)} v1.5流程: next_step=send_otp (跳过指纹上传)')
+                message = '预登录成功，请先发送OTP，发送后上传指纹'
+                self.logger.info(f'{self._log_key(funcName)} v1.6流程: next_step=send_otp，指纹上传延后到OTP发送后')
             else:
-                # v1.2流程：根据用户类型和指纹状态决定（保持原有逻辑）
+                # legacy流程：根据用户类型和指纹状态决定（保持原有逻辑）
                 if is_new_user:
                     # 新用户：强制要求上传指纹（不管查询结果如何）
                     fingerprint_uploaded = False  # 强制设置为未上传
@@ -1335,9 +1393,9 @@ class JazzCash:
 
             # ========== [新增] 处理 loginStep1 的指纹缺失 ==========
             if api_result.get('status') == 'fingerprint_missing':
-                # v1.2流程：loginStep1 返回指纹缺失
-                if JAZZCASH_API_VERSION == 'v1.2':
-                    self.logger.warning(f'{self._log_key(funcName)} loginStep1 返回指纹缺失（v1.2）')
+                # legacy流程：loginStep1 返回指纹缺失
+                if JAZZCASH_VERSION == 'legacy':
+                    self.logger.warning(f'{self._log_key(funcName)} loginStep1 返回指纹缺失（legacy）')
                     fingerprint_msg = api_result.get('message', '指纹数据不存在，请先上传指纹')
 
                     return {
@@ -1352,9 +1410,9 @@ class JazzCash:
                         }
                     }
                 else:
-                    # v1.5不应该出现指纹缺失错误
-                    self.logger.error(f'{self._log_key(funcName)} v1.5不应该返回指纹缺失错误')
-                    raise NewApiError(ErrorCode.SendOTPFail, 'Unexpected fingerprint error in v1.5')
+                    # v1.6不应该出现指纹缺失错误
+                    self.logger.error(f'{self._log_key(funcName)} v1.6不应该返回指纹缺失错误')
+                    raise NewApiError(ErrorCode.SendOTPFail, 'Unexpected fingerprint error in v1.6')
 
             # ========== 处理成功 ==========
             self.logger.info(
@@ -1368,11 +1426,12 @@ class JazzCash:
 
             result = {
                 'status': 'success',
-                'message': 'OTP发送成功，请输入收到的验证码',
+                'message': 'OTP发送成功，请上传指纹后再验证OTP',
                 'data': {
-                    'next_status': LoginStatus.VERIFY_OTP,
+                    'next_status': LoginStatus.SEND_OTP,
+                    'next_step': 'upload_fingerprint',
                     'phone': session_data.get('phone'),
-                    'instruction': f'请查看手机 {session_data.get('phone')} 收到的OTP验证码短信'
+                    'instruction': f'请查看手机 {session_data.get('phone')} 收到的OTP验证码短信；收到OTP后先上传指纹，再提交OTP验证'
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -1481,6 +1540,10 @@ class JazzCash:
                 raise NewApiError(ErrorCode.Logined2, f'Invalid status transition, current status: {current_status}')
 
             self.logger.info(f'{self._log_key(funcName)} 状态转换验证通过！')
+
+            if not session_data.get('fingerprint_uploaded') or not session_data.get('fingerprint_path'):
+                self.logger.error(f'{self._log_key(funcName)} 指纹尚未上传，拒绝触发loginStep2')
+                raise NewApiError(ErrorCode.UploadFingerPrint, 'Please upload fingerprint before OTP verification')
 
             # 调用API
             api_result_verify_otp = await self._verify_otp(session_data, otp)
@@ -1887,20 +1950,19 @@ class JazzCash:
                 self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
                 await self._update_payment(session_payment_id, session_data, account_entire=account_entire_json, account_accno=account_accno, account_iban=account_iban)
 
-                # ========== 11. 添加到Redis在线状态和队列 ==========
-                # 11.1 添加到在线状态集合
-                await self.redis.sadd('payment_online_ds', session_payment_id)
-                self.logger.info(f'{self._log_key(funcName)} 已添加到 payment_online_ds: {session_payment_id}')
-
-                # 11.2 添加到渠道队列
+                # ========== 11. 清理旧 Redis 接单投影 ==========
+                # MySQL 三最终态是唯一资格源：wallet_status/collection_status/payout_status。
+                await self.redis.srem('payment_online_ds', session_payment_id)
+                await self.redis.srem('payment_online_df', session_payment_id)
+                await self.redis.lrem('payment_active_df', 0, session_payment_id)
                 qr_channel = session_data.get('qr_channel', '1003')
                 channels = qr_channel.split(',') if isinstance(qr_channel, str) else [qr_channel]
-
                 for channel in channels:
-                    channel = channel.strip()  # 去除空格
-                    await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)  # 先删除（避免重复）
-                    await self.redis.rpush(f'payment_active_{channel}', session_payment_id)  # 添加到队尾
-                    self.logger.info(f'{self._log_key(funcName)} 已添加到 payment_active_{channel}: {session_payment_id}')
+                    channel = channel.strip()
+                    await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)
+                self.logger.info(
+                    f'{self._log_key(funcName)} 已清理旧 Redis 接单投影: payment_id={session_payment_id}, channels={channels}'
+                )
 
                 # ========== 12. 返回成功 ==========
                 self.logger.info(f'{self._log_key(funcName)} 账号激活成功')
@@ -1994,6 +2056,114 @@ class JazzCash:
             raise NewApiError(ErrorCode.ActiveAccount, f'Account active failed: {str(e)}')
         finally:
             # [UNLOCK] 释放payment接口锁
+            await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
+            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
+    async def second_login_http(self, data):
+        """已绑定 JazzCash 账号二次登录。"""
+        funcName = 'second_login_http'
+        lockName = 'second_login'
+        payment_lock_id = None
+        payment_lock_value = None
+        self.login_data = data
+        try:
+            required_fields = ['bankname', 'payment_id']
+            if not all(field in data for field in required_fields):
+                missing_fields = [field for field in required_fields if field not in data]
+                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
+
+            bankname = data['bankname']
+            payment_id = str(data['payment_id'])
+            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+
+            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
+
+            session_data = await self._get_session_data(redis_key)
+            if not session_data:
+                session_data = await self._build_bound_second_login_session(bankname, payment_id)
+
+            current_status = session_data.get('status')
+            if current_status == LoginStatus.ACTIVE_SUCCESSFUL:
+                return {
+                    'status': 'success',
+                    'message': '账号已经激活成功，请勿重复激活',
+                    'data': {'phase': LoginStatus.ACTIVE_SUCCESSFUL}
+                }
+
+            api_result_verify_acct = await self._verify_account(session_data)
+
+            if api_result_verify_acct.IsSuccess:
+                secondlogin_outer_data = api_result_verify_acct.data or {}
+                secondlogin_account_data = secondlogin_outer_data.get('data', secondlogin_outer_data)
+                account_iban = secondlogin_account_data.get('iban', '')
+                account_entire_json = json.dumps(secondlogin_account_data, ensure_ascii=False)
+
+                await self._update_session_status(redis_key, session_data, LoginStatus.LOGIN_SUCCESSFUL)
+                await self._update_session_status(redis_key, session_data, LoginStatus.ACTIVE_SUCCESSFUL)
+                await self._update_payment(
+                    payment_id,
+                    session_data,
+                    account_entire=account_entire_json,
+                    account_iban=account_iban,
+                )
+
+                return {
+                    'status': 'success',
+                    'message': '二次登录成功',
+                    'data': {
+                        'phase': LoginStatus.ACTIVE_SUCCESSFUL,
+                        'payment_id': payment_id,
+                        'account_iban': account_iban,
+                    }
+                }
+
+            if api_result_verify_acct.IsInCoolDown:
+                return {
+                    'status': 'error',
+                    'message': '当前处于冷却期',
+                    'data': {
+                        'code': 'SL_COOLDOWN',
+                        'phase': 'inCooldown',
+                        'cd_until': session_data.get('cd_until', 0),
+                    }
+                }
+
+            if api_result_verify_acct.IsNeedChangePin:
+                return {
+                    'status': 'error',
+                    'message': '需要修改 PIN',
+                    'data': {
+                        'code': 'SL_NEEDS_PIN_CHANGE',
+                        'phase': 'awaitingPinChange',
+                    }
+                }
+
+            if api_result_verify_acct.IsNeedRelogin:
+                return {
+                    'status': 'error',
+                    'message': '会话已过期，请重新开始',
+                    'data': {
+                        'code': 'SL_SESSION_EXPIRED',
+                        'phase': 'needsRelogin',
+                    }
+                }
+
+            return {
+                'status': 'error',
+                'message': '上游错误',
+                'data': {
+                    'code': 'SL_UPSTREAM_ERROR',
+                    'phase': 'failed',
+                }
+            }
+        except NewApiError:
+            raise
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}', exc_info=True)
+            raise NewApiError(ErrorCode.VerifyAccount, f'Second login failed: {str(e)}')
+        finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
             self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
 
@@ -2120,7 +2290,7 @@ class JazzCash:
 
     async def upload_fingerprint_http(self, data):
         """
-        指纹上传（必需功能 - 根据 JazzCash v1.2 文档）
+        指纹上传（必需功能 - 根据 JazzCash legacy 文档）
 
         状态要求：PRE_LOGIN（在 pre_login_http 之后）
 
@@ -2129,7 +2299,7 @@ class JazzCash:
         2. 保存指纹数据到数据库
         3. 记录上传次数
 
-        JazzCash v1.2 流程（根据文档）：
+        JazzCash legacy 流程（根据文档）：
         - pre_login（调用 isLogined）
           ├─ cloud_exists = false → upload_fingerprint（必需，上传指纹）→ send_otp
           └─ cloud_exists = true  → send_otp（云机已存在，直接发OTP）
@@ -2296,19 +2466,21 @@ class JazzCash:
                 redis_key, session_data, session_data.get('status'),
                 {
                     'fg_times': session_fg_times,
-                    'fingerprint_path': fingerprint_path  # 保存指纹路径到 session
+                    'fingerprint_path': fingerprint_path,  # 保存指纹路径到 session
+                    'fingerprint_uploaded': True,
+                    'fingerprint_check_time': int(time.time()),
                 }
             )
 
             self.logger.info(f'{self._log_key(funcName)} 指纹上传成功！')
             result = {
                 'status': 'success',
-                'message': '指纹上传成功，请继续发送OTP',
+                'message': '指纹上传成功，请继续验证OTP',
                 'data': {
                     'maximum': FINGERPRINT_UPLOAD_ATTEMPTS_MAXIMUM,
                     # 'current': session_fg_times
                     'current': 0,
-                    'next_step': 'send_otp'  # 告诉前端下一步应该调用 send_otp
+                    'next_step': 'verify_otp'  # 告诉前端下一步应该调用 verify_otp
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -2518,7 +2690,6 @@ class JazzCash:
                 obj = {
                     "payment_id": payment_id,
                     "phone": session_data.get('phone', ''),
-                    "pin": session_data.get('pinCode', ''),
                     "cd_until": session_data.get('cd_until', 0),
                     "upi_list": upi_list,  # ⭐ 添加 upi_list
                 }
@@ -2717,7 +2888,7 @@ class JazzCash:
         """
         查询云机实体分配情况
 
-        根据 JazzCash v1.2 文档：
+        根据 JazzCash legacy 文档：
         - 用途：当前account_id未分配云机实体时应当触发loginStep首先分配云机
         - 返回 code=200, data=true → 云机在线
         - 返回 code=403, data=false → 云机不存在
@@ -3018,7 +3189,7 @@ class JazzCash:
             self.logger.info(f'{self._log_key(funcName)} 保存账号数据: {json.dumps(result.data, ensure_ascii=False)}')
             # endregion verify_account
 
-            # JazzCash 错误码处理（根据 doc_JazzCashMerchant v1.2.txt）
+            # JazzCash 错误码处理（根据 doc_JazzCashMerchant legacy.txt）
             if status == 501:
                 # code 501 需要区分：冷却期 vs 账号异常
                 # ⚠️ 直接使用已经解析好的 result.data
@@ -3322,7 +3493,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['is_logined'], request_msg)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3345,7 +3516,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['send_otp'], request_msg)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3359,23 +3530,19 @@ class JazzCash:
 
         request_msg = {
             "account_id": phone,
-            "otpcode": otp
+            "otpcode": otp,
+            "should_verify_otpcode": False,
+            "should_verify_fingerprint": True,
         }
-
-        # ========== API版本控制验证行为 ==========
-        if JAZZCASH_API_VERSION == 'v1.2':
-            request_msg["should_verify_otpcode"] = False       # 验证OTP
-            request_msg["should_verify_fingerprint"] = True   # 验证指纹
-            self.logger.info(f'{self._log_key(funcName)} v1.2模式: should_verify_otpcode=True, should_verify_fingerprint=True')
-        elif JAZZCASH_API_VERSION == 'v1.5':
-            request_msg["should_verify_otpcode"] = True       # 验证OTP
-            request_msg["should_verify_fingerprint"] = False  # 不验证指纹（因为没上传）
-            self.logger.info(f'{self._log_key(funcName)} v1.5模式: should_verify_otpcode=True, should_verify_fingerprint=False')
+        self.logger.info(
+            f'{self._log_key(funcName)} v1.6模式: should_verify_otpcode=False, '
+            f'should_verify_fingerprint=True'
+        )
 
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_otp'], request_msg)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3394,7 +3561,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} payload数据: {json.dumps(request_msg, ensure_ascii=False)}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_account'], request_msg)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3414,7 +3581,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_fingerprint'], json_str)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3436,7 +3603,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['change_pin'], json_str)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3479,7 +3646,7 @@ class JazzCash:
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
 
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['query_acct_list'], json_str)
-        self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
+        self.logger.info(f'{self._log_key(funcName)} 加密完成, 字段: {list(encoded_msg.keys()) if isinstance(encoded_msg, dict) else 'form-body'}')
 
         return encoded_msg
 
@@ -3512,56 +3679,24 @@ class JazzCash:
             # 出错时返回默认值
             return int(time.time()) + CDSCOPE
 
-    def _encode_indus_request(self, funcName, action: str, payload: dict) -> str:
+    def _encode_indus_request(self, funcName, action: str, payload: dict) -> dict:
         funcName = '消息编码'
         try:
-
-            outer = dict()
-
-            # 置随机UUID
-            outer["id"] = str(uuid.uuid4())
-
-            # 设置业务方法
-            outer["action"] = action
-
-            # 设置业务数据
-            outer["payload"] = payload
-
-            # 转JSON字符串
-            outer_json = json.dumps(outer)
-
-            # Base64编码
-            outer_base64 = base64.b64encode(outer_json.encode('utf-8')).decode('utf-8')
-
-            # 拼接密钥并MD5
-            outer_base64_combine_secret = outer_base64 + APISECRET
-
-            sign = hashlib.md5(outer_base64_combine_secret.encode('utf-8')).hexdigest()
-            result = f'user_id={APIKEY}&data={outer_base64}&sign={sign}'
-            self.logger.info(f'{self._log_key(funcName)} 加密成功，原文：{outer_json}, 签名: {sign}, 最终: {result}')
-
+            result = build_form_body(action, payload, APIKEY, APISECRET)
+            safe_payload = mask_sensitive_payload(payload)
+            self.logger.info(
+                f'{self._log_key(funcName)} 加密成功，action: {action}, '
+                f'payload: {safe_payload}, sign: {result.get("sign")}'
+            )
             return result
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}', exc_info=True)
-            return ''
+            return {}
 
     def _decode_indus_response(self, funcName, response_data):
         funcName = funcName + ' 消息解码'
         try:
-            result = {}
-            self.logger.info(f'{self._log_key(funcName)} 解码前: {response_data}')
-            if isinstance(response_data, dict):
-                # 检查是否有加密的resp字段
-                if 'resp' in response_data:
-                    # 解码加密的响应
-                    decoded_resp = self.decode_message(response_data['resp'])
-                    result = json.loads(decoded_resp)
-                else:
-                    # 如果已经是字典且没有resp字段，直接返回
-                    result = response_data
-            elif isinstance(response_data, str):
-                # 如果是字符串，尝试JSON解析
-                result = json.loads(response_data)
+            result = decode_response(response_data)
             self.logger.info(f'{self._log_key(funcName)} 解码后: {result}')
             return result
         except Exception as e:
@@ -3628,6 +3763,103 @@ class JazzCash:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}', exc_info=True)
             return None
 
+    def _build_bound_prelogin_session(
+        self,
+        *,
+        bankname,
+        payment_id,
+        phone,
+        original_phone,
+        password,
+        pin,
+        name,
+        user_id,
+        bound_payment,
+    ):
+        return {
+            'id': payment_id,
+            'partner_id': user_id,
+            'phone': phone,
+            'original_phone': original_phone,
+            'status': LoginStatus.SECOND_LOGIN_READY,
+            'status_history': [LoginStatus.SECOND_LOGIN_READY],
+            'time': int(time.time()),
+            'try_count': 0,
+            'bankname': bankname,
+            'password': password,
+            'pinCode': pin or bound_payment.get('pin'),
+            'name': name or bound_payment.get('name', ''),
+            'is_new_user': False,
+            'last_status_change': int(time.time()),
+            'last_request_time': int(time.time()),
+            'account_entire': bound_payment.get('account_entire'),
+            'account_accno': bound_payment.get('account_accno'),
+            'account_iban': bound_payment.get('account_iban'),
+            'qr_channel': bound_payment.get('channel') or '1003',
+        }
+
+    async def _query_bound_payment_for_current_partner(self, bankname, payment_id):
+        funcName = '查询当前码商绑定JazzCash payment'
+        bank_type_id = await self._get_bank_type_id(bankname)
+        if not bank_type_id:
+            raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Bank type not found for: {bankname}')
+
+        with self.handler.db_orm.sessionmaker() as session:
+            payment = session.query(Payment).filter(
+                Payment.id == payment_id,
+                Payment.bank_type_id == bank_type_id,
+            ).first()
+
+        if not payment:
+            raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Payment record not found: {payment_id}')
+
+        current_partner_id = int(getattr(self.handler.current_user, 'id', 0) or 0)
+        owner_partner_id = int(getattr(payment, 'user_id', 0) or 0)
+        if owner_partner_id != current_partner_id:
+            self.logger.warning(
+                f'{self._log_key(funcName)} 码商归属不匹配: payment_id={payment_id}, '
+                f'current_partner={current_partner_id}, owner_partner={owner_partner_id}'
+            )
+            raise NewApiError('10402', 'UPI already occupied by another user')
+
+        return payment
+
+    async def _build_bound_second_login_session(self, bankname, payment_id):
+        payment = await self._query_bound_payment_for_current_partner(bankname, payment_id)
+        phone = getattr(payment, 'phone', None)
+        if not phone:
+            raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number missing for payment {payment_id}')
+
+        session_data = {
+            'id': str(payment_id),
+            'partner_id': getattr(payment, 'user_id', None),
+            'phone': phone,
+            'original_phone': phone,
+            'status': LoginStatus.SECOND_LOGIN_READY,
+            'status_history': [LoginStatus.SECOND_LOGIN_READY],
+            'time': int(time.time()),
+            'try_count': 0,
+            'bankname': bankname,
+            'pinCode': getattr(payment, 'pin', None),
+            'password': getattr(payment, 'net_trade_pw', None),
+            'name': getattr(payment, 'name', '') or '',
+            'is_new_user': False,
+            'last_status_change': int(time.time()),
+            'last_request_time': int(time.time()),
+            'account_entire': getattr(payment, 'account_entire', None),
+            'account_accno': getattr(payment, 'account_accno', None),
+            'account_iban': getattr(payment, 'account_iban', None),
+            'qr_channel': getattr(payment, 'channel', None) or '1003',
+        }
+
+        is_logined = await self._is_logined(session_data)
+        if is_logined.get('data') is not True:
+            raise NewApiError(
+                'JAZZCASH_CLOUD_NOT_LOGGED',
+                'Bound JazzCash account is not assigned to cloud machine; reset manually before second login'
+            )
+        return session_data
+
     async def _query_payment(self, payment_id):
         funcName = '查询payment'
         try:
@@ -3649,6 +3881,11 @@ class JazzCash:
                         'upi': existing_payment.upi,
                         'user_id': existing_payment.user_id,
                         'status': existing_payment.status,
+                        'certified': existing_payment.certified,
+                        'manual_status': existing_payment.manual_status,
+                        'wallet_status': getattr(existing_payment, 'wallet_status', 0),
+                        'collection_status': getattr(existing_payment, 'collection_status', 0),
+                        'payout_status': getattr(existing_payment, 'payout_status', 0),
                         'time_create': existing_payment.created_at.isoformat() if existing_payment.created_at else None,
                         'account_entire': existing_payment.account_entire,
                         'account_accno': existing_payment.account_accno,
@@ -3727,6 +3964,9 @@ class JazzCash:
                 'account_accno': account_accno,     # 第三方账号-选中的accno（新增支持）
                 'account_iban': account_iban,       # 第三方账号-选中的iban（新增支持）
                 'channel': '1003',  # JazzCash 默认只支持渠道 1003
+                'wallet_status': 0,
+                'collection_status': 0,
+                'payout_status': 0,
                 # created_at字段有默认值，不需要手动设置
             }
 
@@ -3798,7 +4038,14 @@ class JazzCash:
             isOn = 1 if session_data.get('status', '') == LoginStatus.ACTIVE_SUCCESSFUL else 0
             if isOn == 1:
                 update_data['status'] = 1
-                self.logger.info(f'{self._log_key(funcName)} 更新 status: {1}')
+                final_status = calculate_final_status(
+                    status=1,
+                    certified=(existing_payment_info or {}).get('certified', 1),
+                    manual_status=(existing_payment_info or {}).get('manual_status', 0),
+                    wallet_status=1,
+                )
+                update_data.update(final_status)
+                self.logger.info(f'{self._log_key(funcName)} 更新 status: 1, final_status: {final_status}')
 
             # 使用SQLAlchemy更新数据
             with self.handler.db_orm.sessionmaker() as session:

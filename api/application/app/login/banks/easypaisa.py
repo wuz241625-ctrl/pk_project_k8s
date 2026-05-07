@@ -1335,30 +1335,30 @@ class EasyPaisa:
 
             if bound_payment:
                 is_registered = await self._is_account_registered(phone)
-                if not is_registered:
-                    raise NewApiError(
-                        'EP_CLOUD_NOT_REGISTERED',
-                        'Bound EasyPaisa account is not registered on cloud machine; reset manually before first login'
-                    )
+                if is_registered:
+                    redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+                    await self.redis.delete(redis_key)
 
-                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-                await self.redis.delete(redis_key)
-
-                result = {
-                    'status': 'success',
-                    'message': '成功',
-                    'data': {
-                        'id': payment_id,
-                        'redis_key': None,
-                        'expires_in': 0,
-                        'total_timeout': 120,
-                        'is_new_user': False,
-                        'bank_type': self.LOGIN_TYPE,
-                        'next_step': 'second_login'
+                    result = {
+                        'status': 'success',
+                        'message': '成功',
+                        'data': {
+                            'id': payment_id,
+                            'redis_key': None,
+                            'expires_in': 0,
+                            'total_timeout': 120,
+                            'is_new_user': False,
+                            'bank_type': self.LOGIN_TYPE,
+                            'next_step': 'second_login'
+                        }
                     }
-                }
-                self.logger.info(f'{self._log_key(funcName)} 已绑定账号通过归属校验，返回second_login: {result}')
-                return result
+                    self.logger.info(f'{self._log_key(funcName)} 已绑定账号通过归属校验，返回second_login: {result}')
+                    return result
+
+                self.logger.warning(
+                    f'{self._log_key(funcName)} 已绑定EasyPaisa账号云机未注册，回退首次上号流程: '
+                    f'phone={phone}, payment_id={payment_id}'
+                )
 
             # 创建Redis登录会话
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)

@@ -10,7 +10,7 @@ from application.app.login.banks.jazzcash import JazzCash
 
 class HttpLoginController(BaseHandler):
     """HTTP登录控制器基类"""
-    
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.login_logger = logging.getLogger(self.__class__.__name__)
@@ -19,30 +19,30 @@ class HttpLoginController(BaseHandler):
         """获取请求数据"""
         client_ip = await self.get_ip()
         self.logger.info(f"请求开始 - URL: {self.request.path}, Method: {self.request.method}, IP: {client_ip}")
-        
+
         try:
             await self.authenticate_current_user()
             self.logger.info(f"用户认证成功 - User ID: {getattr(self.current_user, 'id', 'Unknown')}")
-            
+
             # 从请求体获取数据 (使用Tornado标准方式)
             try:
                 files = self.request.files.get("files")
                 if not files:
                     self.logger.info(f"原始请求体内容: {self.request.body}")
-                
+
                 # 使用Tornado标准方式处理Form数据
                 data = {k: self.get_argument(k) for k in self.request.arguments}
                 self.logger.info(f"Form数据解析成功 - 参数数量: {len(data)}")
                 self.logger.info(f"解析后的数据: {data}")
-                
+
             except Exception as e:
                 self.logger.error(f"请求数据处理异常: {str(e)}")
                 data = {}
-            
+
             # 添加用户信息
             data['user_id'] = self.current_user.id
             return data
-            
+
         except ApiError as error:
             self.logger.error(f"API错误: {str(error)}")
             raise NewApiError('10211', f'API error: {str(error)}')
@@ -64,12 +64,12 @@ class PreLogin(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -83,9 +83,9 @@ class PreLogin(HttpLoginController):
                 self.logger.info(f"{self.funcName} JazzCash 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -103,12 +103,12 @@ class GetOtp(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -122,9 +122,9 @@ class GetOtp(HttpLoginController):
                 self.logger.info(f"{self.funcName} JazzCash 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -142,12 +142,12 @@ class VerifyOtp(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -161,9 +161,9 @@ class VerifyOtp(HttpLoginController):
                 self.logger.info(f"{self.funcName} JazzCash 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -181,12 +181,12 @@ class ActiveAccount(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -201,9 +201,9 @@ class ActiveAccount(HttpLoginController):
                 self.logger.info(f"{self.funcName} JazzCash 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -221,12 +221,12 @@ class ChangePin(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -235,9 +235,9 @@ class ChangePin(HttpLoginController):
                 self.logger.info(f"{self.funcName} EasyPaisa 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -255,19 +255,19 @@ class UploadFingerPrint(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         files = self.request.files.get("files")
         if not files:
             self.logger.error(f"{self.funcName} 失败: 获取不到文件")
             return
 
         data['file'] = files[0]
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -336,8 +336,11 @@ class SecondLogin(HttpLoginController):
             if bankname == 'easypaisa':
                 easypaisa = EasyPaisa(self)
                 result = await easypaisa.second_login_http(data)
+            elif bankname == 'jazzcash':
+                jazzcash = JazzCash(self)
+                result = await jazzcash.second_login_http(data)
             else:
-                raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa')
+                raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
 
             self.write(result)
         except NewApiError:
@@ -357,12 +360,12 @@ class QueryAccts(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -371,9 +374,9 @@ class QueryAccts(HttpLoginController):
                 self.logger.info(f"{self.funcName} EasyPaisa 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -391,12 +394,12 @@ class SelectAccts(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")
@@ -405,9 +408,9 @@ class SelectAccts(HttpLoginController):
                 self.logger.info(f"{self.funcName} EasyPaisa 结果: {result.get('status', 'unknown')}")
             else:
                 raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
-            
+
             self.write(result)
-            
+
         except NewApiError:
             raise  # 重新抛出NewApiError，让error_handler.py处理
         except Exception as e:
@@ -425,12 +428,12 @@ class PaymentStatus(HttpLoginController):
         if data is None:
             self.logger.error(f"{self.funcName} 失败: 无法获取请求数据")
             return
-        
+
         try:
             # 验证银行类型
             bankname = data.get('bankname', '').lower()
             self.logger.info(f"银行类型验证: {bankname}")
-            
+
             # Switch 逻辑处理不同银行
             if bankname == 'easypaisa':
                 self.logger.info(f"{self.funcName} EasyPaisa 调用")

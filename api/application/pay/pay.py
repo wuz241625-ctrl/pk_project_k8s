@@ -31,7 +31,7 @@ from application.message import msg, msg_en
 from application.sign import SignatureAndVerification
 from application.pay.payout_channel_guard import is_jazzcash_payout_request
 from application.pay.thirdPart import Razorpay_upi_origin
-from application.pay.thirdPart import lucky_payment, apay_payment, kingpay_payment, wepay_payment, pay777pay_payment, swiftpay_payment, quickpay_payment, snakepay_payment, hkpay_payment, skpay_payment, ospay_payment, tatapay_payment,vibrapay_payment,qqpay_payment,gamepayer_payment
+from application.pay.thirdPart import lucky_payment, apay_payment, kingpay_payment, wepay_payment, pay777pay_payment, swiftpay_payment, quickpay_payment, snakepay_payment, hkpay_payment, skpay_payment, ospay_payment, tatapay_payment,vibrapay_payment,qqpay_payment,gamepayer_payment,payfast_payment
 from application.payment_eligibility import (
     can_dispatch_ds,
     collection_sql_condition,

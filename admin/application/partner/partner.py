@@ -24,11 +24,20 @@ import bcrypt
 from application.system import operationLog
 
 
+def payment_bank_type(payment_row):
+    return str((payment_row or {}).get('bank_type_id') or (payment_row or {}).get('bank_type') or '')
+
+
 def is_easypaisa_payment(payment_row):
-    return (
-        str((payment_row or {}).get('bank_type_id') or '') == '97'
-        or str((payment_row or {}).get('bank_type') or '') == '97'
-    )
+    return payment_bank_type(payment_row) == '97'
+
+
+def is_jazzcash_payment(payment_row):
+    return payment_bank_type(payment_row) == '98'
+
+
+def is_mysql_final_state_payment(payment_row):
+    return payment_bank_type(payment_row) in {'97', '98'}
 
 
 def _as_int(value, default=0):
@@ -122,8 +131,8 @@ async def reset_easypaisa_redis_state(redis_client, payment_id, channels=None):
     }
 
 
-def apply_easypaisa_wallet_status_fields(payment_row):
-    if not is_easypaisa_payment(payment_row):
+def apply_payment_wallet_status_fields(payment_row):
+    if not is_mysql_final_state_payment(payment_row):
         return payment_row
 
     wallet_status = _as_int(payment_row.get('wallet_status'))
@@ -134,6 +143,10 @@ def apply_easypaisa_wallet_status_fields(payment_row):
     payment_row['online_df'] = 1 if payout_status == 1 else 0
     payment_row['online_ds'] = 1 if collection_status == 1 else 0
     return payment_row
+
+
+def apply_easypaisa_wallet_status_fields(payment_row):
+    return apply_payment_wallet_status_fields(payment_row)
 
 
 # 增加
@@ -715,11 +728,11 @@ class getPartnerRank(BaseHandler):
 
 # 获取
 class getPayment(BaseHandler):
-    async def _easypaisa_ids_for_table(self, table):
-        rows = await self.query(f"select id from {table} where bank_type=97 or bank_type_id=97")
+    async def _mysql_final_state_ids_for_table(self, table):
+        rows = await self.query(f"select id from {table} where bank_type in (97, 98) or bank_type_id in (97, 98)")
         return {str(row["id"]) for row in rows or []}
 
-    async def _easypaisa_wallet_status_ids(self, table, kind):
+    async def _mysql_final_state_status_ids(self, table, kind):
         if table != 'payment':
             return set()
         formula = (
@@ -731,7 +744,7 @@ class getPayment(BaseHandler):
             f"""
             select id
             from payment
-            where (bank_type=97 or bank_type_id=97)
+            where (bank_type in (97, 98) or bank_type_id in (97, 98))
               and {formula}
             """
         )
@@ -748,9 +761,9 @@ class getPayment(BaseHandler):
 
     async def _merged_online_ids(self, table, legacy_key, kind):
         legacy_ids = self._normalize_redis_members(await self.redis.smembers(legacy_key))
-        easypaisa_ids = await self._easypaisa_ids_for_table(table)
-        mysql_ids = await self._easypaisa_wallet_status_ids(table, kind)
-        return (legacy_ids - easypaisa_ids) | mysql_ids
+        mysql_final_state_ids = await self._mysql_final_state_ids_for_table(table)
+        mysql_ids = await self._mysql_final_state_status_ids(table, kind)
+        return (legacy_ids - mysql_final_state_ids) | mysql_ids
 
     @tornado.web.authenticated
     async def post(self):
@@ -886,10 +899,10 @@ class getPayment(BaseHandler):
             i['online_df'] = 0
             # 采集状态
             i['online_status'] = 0
-            bank_type_id = 97 if is_easypaisa_payment(i) else int(i.get('bank_type_id') or i['bank_type'])
+            bank_type_id = int(payment_bank_type(i) or 0)
             if bank_type_id in login_on.keys():
-                if bank_type_id == 97:
-                    apply_easypaisa_wallet_status_fields(i)
+                if is_mysql_final_state_payment(i):
+                    apply_payment_wallet_status_fields(i)
                 elif await self.redis.get('login_on_{bank}_{id}'.format(bank=login_on[bank_type_id], id=i['id'])):
                     i['online_status'] = 1
 
@@ -918,7 +931,7 @@ class getPayment(BaseHandler):
                 self.logger.info(f"[状态未变] ID: {i['id']} 不在 Redis 中，保持 online_mobile_status=0")
 
 
-            if bank_type_id != 97:
+            if not is_mysql_final_state_payment(i):
                 i['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', i['id']) else 0
                 i['online_df'] = 1 if await self.redis.sismember('payment_online_df', i['id']) else 0
             # 获取当前的 monitor_status 值并将其赋值给 i['monitor_status']
@@ -928,7 +941,7 @@ class getPayment(BaseHandler):
             # 检查 key 是否不存在或已过期
             if ttl <= 0:
                 i['monitor_status'] = 0
-            
+
             # 🔥 查询 EasyPaisa 限额数据（新增）
             i['easypaisa_limits'] = None
             try:
@@ -941,7 +954,7 @@ class getPayment(BaseHandler):
             except Exception as e:
                 self.logger.warning(f"获取账号 {i['id']} EasyPaisa 限额数据失败: {e}")
                 # 失败时保持 None，不影响返回
-            
+
             # 🔥 查询 JazzCash 限额数据（新增）
             i['jazzcash_limits'] = None
             try:
@@ -954,26 +967,26 @@ class getPayment(BaseHandler):
             except Exception as e:
                 self.logger.warning(f"获取账号 {i['id']} JazzCash 限额数据失败: {e}")
                 # 失败时保持 None，不影响返回
-            
+
             # 🔥 查询实时余额数据 - 只使用Redis余额，无数据时设为None
             # 策略：先查 EasyPaisa，再查 JazzCash，哪个有数据就用哪个
             try:
                 payment_id = i['id']
                 redis_balance = None
-                
+
                 # 先尝试从 EasyPaisa Redis 获取余额
                 easypaisa_balance = await self.redis.zscore('easypaisa_balance_sorted', payment_id)
                 if easypaisa_balance is not None:
                     redis_balance = easypaisa_balance
                     self.logger.info(f"[余额查询] 账号 {payment_id} 从EasyPaisa Redis获取余额: {redis_balance}")
-                
+
                 # 如果 EasyPaisa 没有，再尝试从 JazzCash Redis 获取余额
                 if redis_balance is None:
                     jazzcash_balance = await self.redis.zscore('jazzcash_balance_sorted', payment_id)
                     if jazzcash_balance is not None:
                         redis_balance = jazzcash_balance
                         self.logger.info(f"[余额查询] 账号 {payment_id} 从JazzCash Redis获取余额: {redis_balance}")
-                
+
                 # 🔥 只使用Redis余额，无数据时设为None
                 if redis_balance is not None:
                     i['balance'] = float(redis_balance)
@@ -983,13 +996,13 @@ class getPayment(BaseHandler):
                     i['balance'] = None
                     i['sys_balance'] = None
                     self.logger.debug(f"[余额查询] 账号 {payment_id} Redis无余额数据，设置为None")
-                    
+
             except Exception as e:
                 self.logger.warning(f"获取账号 {i['id']} Redis余额失败: {e}")
                 # 异常时也设为None
                 i['balance'] = None
                 i['sys_balance'] = None
-        
+
         result = dict(code=20000, data=data_r, total=total, count=count_r, msg='获取成功')
         return await self.json_response(result)
 
@@ -1041,15 +1054,15 @@ class updatePaymentMonitorStatus(BaseHandler):
 class syncPaymentToMerchant():
     # target_payment存储的是以,分割的payment id
     active_channel_merchants_sql = """
-        select DISTINCT merchant.id, merchant.target_payment 
-        from merchant inner join merchant_channel on merchant.id = merchant_channel.merchant_id 
+        select DISTINCT merchant.id, merchant.target_payment
+        from merchant inner join merchant_channel on merchant.id = merchant_channel.merchant_id
         where merchant_channel.code = 1004 and merchant_channel.status = 1
     """
 
     @classmethod
     def parse_target_payments(cls, target_payments):
         return [] if (target_payments is None or target_payments.strip() == "") else target_payments.split(',')
-    
+
     @classmethod
     async def update_merchant(cls, db, merchant_id, target_payment):
         async with db.acquire() as conn:
@@ -1100,7 +1113,7 @@ class syncPaymentToMerchant():
                 logger.warning((
                     f"收款资料时同步到商户失败 action: {action}, payment_id: {payment_id} "
                     f"merchant id: {merchant['id']}, target_payment: {merchant['target_payment']}"))
-    
+
     @classmethod
     async def sync(cls, action, payment_id, db, logger):
         """
@@ -1199,7 +1212,7 @@ class updatePayment(BaseHandler):
                     )
 
             # 验证 upi 唯一性
-            if upi:      
+            if upi:
                 # 获取 upi 字段
                 old_upi = old_payment.get('upi')
 
@@ -1272,7 +1285,7 @@ class updatePayment(BaseHandler):
                 # 优先派单限时2个小时，后自动返回普通派单
                 _key = "priority_collection_{payment_id}".format(payment_id=data['id'])
                 await self.redis.set(_key, 1, 2*60*60)
-        
+
         payment_status = data['status'] if data.get('status') is not None else old_payment['status']
         if 'channel' in data and payment_status == 1:
             new_channels = syncPaymentToMerchant.parse_target_payments(data['channel'])
@@ -1463,13 +1476,13 @@ class addBank_recoed(BaseHandler):
     # 代收完成
     async def order_success_ds(self, data):
         # 查找订单
-        sql_select_order = """select * from orders_ds where utr=%s and amount=%s and status in (-1,1,2) and 
+        sql_select_order = """select * from orders_ds where utr=%s and amount=%s and status in (-1,1,2) and
                             date_add(time_create, interval 30 minute) > now() """
         # 获取码商
         sql_select_partner = """select partner_id,upi from payment where id=%s"""
         # 商户代理费率
-        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant 
-                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join 
+        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant
+                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join
                                     merchant_channel m on m.merchant_id=mid and m.code=%s where m.merchant_id is not null  order by m.merchant_id desc"""
         # 码商代理费率
         sql_select_rates_partner = """select rates from channel where code=%s"""
@@ -1735,9 +1748,9 @@ class handleClearBalance(BaseHandler):
                             count_circle = 0
                             while True:
                                 if await self.redis.setnx(busy_key, 1):
-                                    await self.redis.expire(busy_key, 10)  
+                                    await self.redis.expire(busy_key, 10)
                                     break
-                                if count_circle >= 25:  
+                                if count_circle >= 25:
                                     self.logger.warning(f"用户 {user_id} 清空余额被其他进程占用")
                                     continue
                                 time.sleep(0.2)
@@ -1750,17 +1763,17 @@ class handleClearBalance(BaseHandler):
 
                             if not user:
                                 self.logger.warning(f"用户 {user_id} 不存在，跳过")
-                                continue  
+                                continue
 
                             balance = Decimal(user["balance"])
 
                             if balance <= 0:
                                 self.logger.info(f"用户 {user_id} 余额已是 {balance}，无需清空")
-                                continue  
+                                continue
 
                             # **使用 change_balance 清空余额**
                             success = await self.change_balance(
-                                conn, cur, "partner", user_id, -balance,  
+                                conn, cur, "partner", user_id, -balance,
                                 code="clear_balance", record_type=8, remark="清空余额"
                             )
 
@@ -2270,7 +2283,7 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             print(f"读取文件时发生错误: {e}")
             return []
-        
+
     @staticmethod
     async def extract_equitas_data(self, uploaded_name):
         """
@@ -2278,7 +2291,7 @@ class importBankRecord(BaseHandler):
         返回的内容为字典列表：
         [
             {'utr': '回执UTR', 'content': '描述内容', 'trade_type': 交易类型, 'amount': 金额, 'code': '订单代码'},
-            ...... 
+            ......
         ]
         """
 
@@ -2413,7 +2426,7 @@ class importBankRecord(BaseHandler):
                     continue
                 if not utr or not utr.strip():  # 如果 utr 是空值或仅包含空格，跳过
                     continue
-                
+
                 if trade_type == 2:
                     self.logger.info(f"忽略出款数据")
                     continue
@@ -2444,12 +2457,12 @@ class importBankRecord(BaseHandler):
         """
         uploaded_name = uploaded_name.lower()
         file_path = f"static/upload/bank_statement/{uploaded_name}"
-        
+
         # 定义目标标题字段，全部小写（目标字段本身不含空格）
         target_fields = ["description", "debit amount", "credit amount"]
-        
+
         file_ext = os.path.splitext(uploaded_name)[-1]
-        
+
         try:
             # 先不指定表头读取整个文件
             if file_ext == '.csv':
@@ -2465,10 +2478,10 @@ class importBankRecord(BaseHandler):
                 df = pd.read_excel(file_path, header=None)
             else:
                 raise ValueError("不支持的文件格式，请上传 Excel 或 CSV 文件。")
-            
+
             self.logger.info("初始读取的前10行：")
             self.logger.info(df.head(10))
-            
+
             # -------------------------------
             # 动态查找包含所有目标字段的行（对单元格做 strip 和 lower 处理，去除右侧空格）
             header_row_index = None
@@ -2479,12 +2492,12 @@ class importBankRecord(BaseHandler):
                 if all(target_field in row_processed for target_field in target_fields):
                     header_row_index = i
                     break
-            
+
             if header_row_index is None:
                 raise ValueError("文件中未找到包含所有指定标题字段的表头行。")
-            
+
             self.logger.info(f"动态定位到的表头行索引：{header_row_index}")
-            
+
             # -------------------------------
             # 重新读取文件，指定表头行
             if file_ext == '.csv':
@@ -2492,33 +2505,33 @@ class importBankRecord(BaseHandler):
                     df = pd.read_csv(f, header=header_row_index, delimiter=dialect.delimiter)
             else:
                 df = pd.read_excel(file_path, header=header_row_index)
-            
+
             # 去除列名前后的空格
             df.columns = [str(c).strip() for c in df.columns]
             self.logger.info("重新读取后 DataFrame 的表头：", df.columns.tolist())
-            
+
             # -------------------------------
             # 数据解析逻辑
             results = []
             # 根据实际情况调整正则（此处示例使用 UPI/xxxx 格式匹配）
             utr_pattern = r'UPI/(\d+)'
-            
+
             for _, row in df.iterrows():
                 # 获取字段值并清除左右空格
                 debit_val = str(row.get("Debit Amount", "")).strip().replace(",", "").replace(" ", "")
                 credit_val = str(row.get("Credit Amount", "")).strip().replace(",", "").replace(" ", "")
                 content = str(row.get("Description", "")).strip()
-                
+
                 # 如果两个金额字段均为空，则跳过该行
                 if (not debit_val or pd.isna(debit_val)) and (not credit_val or pd.isna(credit_val)):
                     continue
-                
+
                 # 尝试匹配 UTR
                 utr_match = re.search(utr_pattern, content)
                 utr = utr_match.group(1) if utr_match else ""
                 if not utr:
                     continue  # 根据需要是否跳过
-                
+
                 try:
                     if debit_val.replace('.', '', 1).isdigit() and float(debit_val) > 0:
                         results.append({
@@ -2537,10 +2550,10 @@ class importBankRecord(BaseHandler):
                 except ValueError as ve:
                     self.logger.info(f"金额转换错误，跳过该行: {row}, 错误: {ve}")
                     continue
-            
+
             self.logger.info(f"Number of results processed: {len(results)}")
             return results
-        
+
         except Exception as e:
             self.logger.info(f"读取文件时发生错误: {e}")
             return []
@@ -2884,20 +2897,20 @@ class importBankRecord(BaseHandler):
             self.logger.info(f"❌ 读取 CSV 文件时发生错误: {e}")
         self.logger.info("初始读取的前10行：")
         self.logger.info(df.head(10))
-        
+
         # -------------------------------
         # 动态查找包含所有目标字段的行（对单元格做 strip 和 lower 处理，去除右侧空格）
         header_row_index = None
         for i, row in df.iterrows():
             # 对当前行的每个单元格做 strip() 和 lower() 处理
             row_processed = [str(cell).strip().lower() for cell in row.values]
-            
+
             # 打印当前处理的行
             self.logger.info(f"Row {i}: {row_processed}")
-            
+
             # 检查当前行是否包含所有目标字段
             match_status = [target_field in row_processed for target_field in target_fields]
-            
+
             # 打印匹配状态
             self.logger.info(f"Matching status: {match_status}")
             if all(match_status):
@@ -2906,9 +2919,9 @@ class importBankRecord(BaseHandler):
                 break
         if header_row_index is None:
             raise ValueError("文件中未找到包含所有指定标题字段的表头行。")
-        
+
         self.logger.info(f"动态定位到的表头行索引：{header_row_index}")
-        
+
         self.logger.info("预览文件内容（前5行）：")
         # self.logger.info(df.head())
         self.logger.info(f"表头行索引: {header_row_index}")
@@ -3379,9 +3392,9 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             self.logger.error(f"处理文件时发生错误: {e}")
             return []
-        
-    
-    
+
+
+
     @staticmethod
     async def extract_karnataka_bank_data(self, uploaded_name):
         """
@@ -3550,7 +3563,7 @@ class importBankRecord(BaseHandler):
                     "content": utr_content,
                     "trade_type": 1  # 固定为1（UPI交易）
                 })
-            
+
             for res in results:
                 self.logger.info(f"排序前: {res}")
             results.reverse()  # 🔁 将列表反转，达到倒置目的
@@ -3724,7 +3737,7 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             self.logger.error(f'读取文件时发生错误: {e}')
             return []
-        
+
         self.logger.info('预览文件内容（前5行）：')
         self.logger.info(df.head())
         self.logger.info(f'表头行索引: {header_row_index}')
@@ -3752,7 +3765,7 @@ class importBankRecord(BaseHandler):
                 if utr is None:
                     self.logger.info(f'跳过无 UTR 的交易: {utr_content}')
                     continue
-                
+
                 deposits = Decimal(0) if pd.isna(deposits) else Decimal(deposits.replace(',', ''))
                 withdrawals =  Decimal(0) if pd.isna(withdrawals) else Decimal(withdrawals.replace(',', ''))
                 if deposits == Decimal(0) and withdrawals == Decimal(0):
@@ -3818,7 +3831,7 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             self.logger.error(f'读取文件时发生错误: {e}')
             return []
-        
+
         self.logger.info(f'表头行索引: {header_row_index}')
         self.logger.info(f'表头字段：{list(df.columns)}')
         self.logger.info('预览文件内容（前5行）：')
@@ -3844,7 +3857,7 @@ class importBankRecord(BaseHandler):
                 if utr is None:
                     self.logger.info(f'跳过无UTR或非目标的交易: {utr_content}')
                     continue
-                
+
                 deposits = Decimal(0) if pd.isna(deposits) else Decimal(deposits.replace(',', ''))
                 withdrawals =  Decimal(0) if pd.isna(withdrawals) else Decimal(withdrawals.replace(',', ''))
                 if deposits == Decimal(0) and withdrawals == Decimal(0):
@@ -4005,8 +4018,8 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             self.logger.error(f'处理文件时发生错误: {e}')
             return []
-        
-    
+
+
     @staticmethod
     async def extract_paytm_bank_data(self, uploaded_name):
         """
@@ -4047,7 +4060,7 @@ class importBankRecord(BaseHandler):
         except Exception as e:
             self.logger.error(f'读取文件时发生错误: {e}')
             return []
-        
+
         self.logger.info(f'表头行索引: {header_row_index}')
         self.logger.info(f'表头字段：{list(df.columns)}')
         self.logger.info('预览文件内容（前5行）：')
@@ -4560,7 +4573,7 @@ class importBankRecord(BaseHandler):
                     # 成功获取锁，设置过期时间
                     await self.redis.expire(utr_lock_key, UTR_LOCK_EXPIRY_SECONDS)
                     self.logger.info(f"成功获取 UTR: {utr} 的锁.")
-                    
+
                     # 成功获取锁后，进入 try-finally 块确保锁被释放
                     try:
                         file_data['bank_name'] = bank_name
@@ -4574,7 +4587,7 @@ class importBankRecord(BaseHandler):
                         # 代收回调, 代付不需要回调
                         if file_data.get('amount') > 0 :
                             r = await self.success_ds(file_data)
-                            
+
                             if r['code'] == 99 :
                                 ew_code = await self.create_order_code('EW')  # 额外流水号
                                 async with self.application.db.acquire() as conn:
@@ -4596,7 +4609,7 @@ class importBankRecord(BaseHandler):
                         if not await self.create_result('bank_record', file_data):
                             self.logger.error('导入bank_record异常,创建记录失败,utr:{utr}'.format(utr=file_data['utr']))
                             continue
-                            
+
                     except Exception as e:
                         self.logger.error(f"处理 UTR:{file_data['utr']} 时发生错误: {e}", exc_info=True)
                     finally:
@@ -4620,12 +4633,12 @@ class importBankRecord(BaseHandler):
             elif len(data['code']) == 5:
                 condition = 'auth_code'
         # 根据确认码或UTR查找订单
-        sql_select_order = """select * from orders_ds where amount=%s and {}=%s and status in (-1,1,2) and 
+        sql_select_order = """select * from orders_ds where amount=%s and {}=%s and status in (-1,1,2) and
                                 date_add(time_create, interval 180 minute) > now() order by id limit 1""".format(
             condition)
         # 商户代理费率
-        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant 
-                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join 
+        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant
+                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join
                                     merchant_channel m on m.merchant_id=mid and m.code=%s where m.merchant_id is not null  order by m.merchant_id desc"""
         # 码商代理费率
         sql_select_rates_partner = """select rates from channel where code=%s"""
@@ -4651,9 +4664,9 @@ class importBankRecord(BaseHandler):
 
             self.logger.info(f"[订单匹配] 金额 {amount} 含小数 {rounded_amount}，使用更严格规则匹配订单（按 payment_id + 时间）")
             sql_select_order = """
-                SELECT * FROM orders_ds 
-                WHERE amount=%s AND payment_id=%s AND status IN (-1,1,2) 
-                AND date_add(time_create, interval 180 minute) > now() 
+                SELECT * FROM orders_ds
+                WHERE amount=%s AND payment_id=%s AND status IN (-1,1,2)
+                AND date_add(time_create, interval 180 minute) > now()
                 ORDER BY id DESC LIMIT 1
             """
             self.logger.info(f"[订单匹配] 执行 SQL: {sql_select_order.strip()} 参数: 金额={rounded_amount} / {rounded_amount}, payment_id={data['payment_id']}")
@@ -4663,11 +4676,11 @@ class importBankRecord(BaseHandler):
             self.logger.info(f"[订单匹配] 执行 SQL: {sql_select_order.strip()} 参数: 金额={amount}, 匹配字段={condition}, 值={data['code'] if condition != 'utr' else data['utr']}")
             _order = await self.query(sql_select_order,
                 amount, data['code'] if condition != 'utr' else data['utr'])
-            
+
         if not _order:
             if not condition == 'utr':  # 如果查询不到，重新按utr查询
                 self.logger.warning('utr:{}Not Order not found'.format(data['utr']))
-                sql_select_order = """select * from orders_ds where amount=%s and {}=%s and status in (-1,1,2) and 
+                sql_select_order = """select * from orders_ds where amount=%s and {}=%s and status in (-1,1,2) and
                                             date_add(time_create, interval 180 minute) > now() order by id limit 1""".format(
                     'utr')
                 _order = await self.query(sql_select_order, *(Decimal(data['amount']), data['utr']))
@@ -4704,9 +4717,9 @@ class importBankRecord(BaseHandler):
                     if has_decimal:
                         self.logger.info(f"[订单匹配] 金额 {amount} 含小数，使用更严格规则匹配订单（按 payment_id + 时间）")
                         sql_select_order = """
-                            SELECT * FROM orders_ds 
-                            WHERE amount=%s AND payment_id=%s AND status IN (-1,1,2) 
-                            AND date_add(time_create, interval 180 minute) > now() 
+                            SELECT * FROM orders_ds
+                            WHERE amount=%s AND payment_id=%s AND status IN (-1,1,2)
+                            AND date_add(time_create, interval 180 minute) > now()
                             ORDER BY id DESC LIMIT 1
                         """
                         self.logger.info(f"[订单匹配] 执行 SQL: {sql_select_order.strip()} 参数: 金额={rounded_amount}, payment_id={data['payment_id']}")
@@ -4844,19 +4857,19 @@ class importBankRecord(BaseHandler):
                         amount = original_amount
                         amount_key = f'decimal_amount:{amount:.2f}'
                         cleanup_key = f'decimal_cleanup:{amount:.2f}'
-                        
+
                         # 从 List 中删除成功的 payment_id
                         removed_count = await self.redis.lrem(amount_key, 1, qr_id)
                         if removed_count > 0:
                             self.logger.info(f'成功回调后清理: 从 {amount_key} 中删除 {qr_id}')
-                        
+
                         # 从 Hash 中删除对应记录（使用payment_id+金额作为释放时间控制键）
                         await self.redis.hdel(cleanup_key, qr_id)
                         release_key = f"{payment_id}:{amount:.2f}"
                         await self.redis.hdel('payment_release_time', release_key)
-                        
+
                         self.logger.info(f'成功回调清理完成: payment_id={qr_id}, amount={amount}')
-                        
+
                     except Exception as e:
                         self.logger.exception(f'成功回调清理失败: {e}')
                     # 加入回调
@@ -5227,7 +5240,7 @@ class getBankType(BaseHandler):
         newBankType = await self.query(sql_count)
         result = dict(code=20000, data=data_r, total=newBankType[0]['count'],newBankType=newBankType[0]['count'], msg='获取成功')
         return await self.json_response(result)
-    
+
 # 银行管理查询Setting
 class getBankTypeSetting(BaseHandler):
     @tornado.web.authenticated
@@ -5299,13 +5312,13 @@ class addBankTypeSetting(BaseHandler):
         bank_id = data['bank_id']
         max_count = data['max_count']
         max_sec = data['max_sec']
-        
+
         sql_check = "SELECT name, type FROM bank_type_setting WHERE bank_id = %s"
         result = await self.query(sql_check, bank_id)
         if result:
             self.logger.info(f'所选银行数据已经存在: {data}')
             return await self.json_response(data=msg[10008])
-        
+
         # 校验 bank_type 是否存在 且 type != 0
         sql_check = "SELECT name, type FROM bank_type WHERE id = %s"
         result = await self.query(sql_check, bank_id)
@@ -5320,7 +5333,7 @@ class addBankTypeSetting(BaseHandler):
         data['name'] = result[0]['name']
         data['type'] = result[0]['type']
         data.pop('id', None)
-        
+
         # 更新数据库
         await self.create_result('bank_type_setting', data)
 
@@ -5336,14 +5349,14 @@ class addBankTypeSetting(BaseHandler):
         if status == 0:
             await self.redis.delete(redis_max_count_key)
             self.logger.info(f"Deleted Redis key: {redis_max_count_key}")
-            
+
             await self.redis.delete(redis_max_sec_key)
             self.logger.info(f"Deleted Redis key: {redis_max_sec_key}")
 
         elif status == 1:
             await self.redis.set(redis_max_count_key, max_count)
             self.logger.info(f"Set Redis key: {redis_max_count_key} = {max_count}")
-            
+
             await self.redis.set(redis_max_sec_key, max_sec)
             self.logger.info(f"Set Redis key: {redis_max_sec_key} = {max_sec}")
 
@@ -5421,14 +5434,14 @@ class updateBankTypeSetting(BaseHandler):
         if status == 0:
             await self.redis.delete(redis_max_count_key)
             self.logger.info(f"Deleted Redis key: {redis_max_count_key}")
-            
+
             await self.redis.delete(redis_max_sec_key)
             self.logger.info(f"Deleted Redis key: {redis_max_sec_key}")
 
         elif status == 1:
             await self.redis.set(redis_max_count_key, max_count)
             self.logger.info(f"Set Redis key: {redis_max_count_key} = {max_count}")
-            
+
             await self.redis.set(redis_max_sec_key, max_sec)
             self.logger.info(f"Set Redis key: {redis_max_sec_key} = {max_sec}")
 

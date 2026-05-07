@@ -19,3 +19,4 @@ data:
   ADMIN_API_URL: http://api:9000
   MERCHANT_API_URL: http://api:9000
   API_CURRENT_PAY: pakistanpay
+  JAZZCASH_API_VERSION: v1.6

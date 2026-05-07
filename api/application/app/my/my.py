@@ -129,10 +129,23 @@ def _is_easypaisa_bank_type(bank_type):
     return str(bank_type) == '97'
 
 
+def _is_jazzcash_bank_type(bank_type):
+    return str(bank_type) == '98'
+
+
 def _is_easypaisa_payment(payment_row):
     return (
         _is_easypaisa_bank_type((payment_row or {}).get('bank_type_id'))
         or _is_easypaisa_bank_type((payment_row or {}).get('bank_type'))
+    )
+
+
+def _is_mysql_final_state_payment(payment_row):
+    return (
+        _is_easypaisa_bank_type((payment_row or {}).get('bank_type_id'))
+        or _is_easypaisa_bank_type((payment_row or {}).get('bank_type'))
+        or _is_jazzcash_bank_type((payment_row or {}).get('bank_type_id'))
+        or _is_jazzcash_bank_type((payment_row or {}).get('bank_type'))
     )
 
 
@@ -182,7 +195,7 @@ def payment_update_for_certified(payment_row, certified):
 
 
 async def _apply_payment_online_fields(self, payment_row):
-    if _is_easypaisa_payment(payment_row):
+    if _is_mysql_final_state_payment(payment_row):
         payment_row['online_ds'] = 1 if can_dispatch_ds(payment_row) else 0
         payment_row['online_df'] = 1 if can_dispatch_df(payment_row) else 0
         return
@@ -582,9 +595,9 @@ async def sendOTP(self, data):
     try:
         self.logger.info("{id} sendOTP 收到验证码 {otp}".format(id=str(data['payment_id']), otp=str(data['otp'])))
         bank_type_name_sql = """
-            select bank_type.name 
+            select bank_type.name
             from bank_type
-            inner join payment on payment.bank_type = bank_type.id 
+            inner join payment on payment.bank_type = bank_type.id
             where payment.id = %s
         """
         query_result = (await self.query(bank_type_name_sql, int(data['payment_id'])))

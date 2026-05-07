@@ -74,7 +74,7 @@ async def lucky_payment(self, code, amount, merchant_id, mer_key2, pay_url):
             rs = len(notice_domain_api_list)
             rs = random.randint(0, rs - 1)
             host = notice_domain_api_list[rs]
-        
+
         # 打印 host + notify
         self.logger.info('host + notify===', host + notify)
         # 打印 host + callback
@@ -113,18 +113,18 @@ async def lucky_payment(self, code, amount, merchant_id, mer_key2, pay_url):
 
         # 使用 requests.post 发起请求
         response = requests.post(pay_url, data=data_post, headers=headers, timeout=(5, 5), verify=False)
-        
+
         # 解析返回数据
         result = response.json()
         self.logger.info(f'lucky_payment 发送地址{pay_url},返回数据{result}')
 
         if result.get('success') and result.get('code') == 200 and result['data'].get('status') == 'CREATE':
             third_party_id = merchant_id
-            third_party_order_number = result['data'].get('orderNo') 
+            third_party_order_number = result['data'].get('orderNo')
 
             sql = """
-            SELECT name 
-            FROM otherpay 
+            SELECT name
+            FROM otherpay
             WHERE merchant_id = %s
             """
             value = [third_party_id]
@@ -229,7 +229,7 @@ async def apay_payment(self, code, amount,name, merchant_id, mer_key, pay_url):
     except Exception as e:
         self.logger.exception(f'apay_payment 错误：发送地址{pay_url},错误{e}')
         return False
-    
+
 # kingpay_payment 代收
 async def kingpay_payment(self, code, amount, merchant_id, app_id, private_key, pay_url, notify_url):
         # 生成 returnUrl 和 notifyUrl
@@ -243,7 +243,7 @@ async def kingpay_payment(self, code, amount, merchant_id, app_id, private_key, 
                 notice_domain_api_list = str(notice_domain_api_list).strip().split(',')
                 notice_domain_api_list = [i.strip() for i in notice_domain_api_list if i]
                 host = random.choice(notice_domain_api_list)
-            
+
             self.logger.info(f'host + notify_url****{host + notify_url}')
             self.logger.info(f'host + return_url****{host + return_url}')
 
@@ -305,8 +305,8 @@ async def kingpay_payment(self, code, amount, merchant_id, app_id, private_key, 
 
                 # 查询商户名称
                 sql = """
-                SELECT name 
-                FROM otherpay 
+                SELECT name
+                FROM otherpay
                 WHERE merchant_id = %s
                 """
                 value = [third_party_id]
@@ -384,12 +384,12 @@ async def wepay_payment(self, code, amount, merchant_id, private_key, pay_url):
             headers = {
                 'Content-Type': 'application/x-www-form-urlencoded'
             }
-            
+
             self.logger.info(f"请求地址 ({pay_url}):")
             self.logger.info(f"请求参数 ({request_params}):")
             for key, value in request_params.items():
                 self.logger.info(f"  {key}: {value}")
-                
+
             response = requests.post(pay_url, data=request_params, headers=headers, timeout=(5, 10))
 
             # 解析返回数据
@@ -822,10 +822,10 @@ async def hkpay_payment(self, code, amount, merchant_id, private_key, pay_url):
 
         if result.get('code') == 200:  # 200 表示请求成功
             third_party_order_number = result['data'].get('orderno')
-            
+
             url = result['data'].get('payurl')
             orderno = str(result['data'].get('orderno'))
-            
+
             # 获取信息接入本地收银台 拼装二维码信息获取地址，并从二维码地址中获取到upi和auth_code
             url = "https://api.hhpayapi.com/mcapi/cashplaceorder/v2/" + orderno
 
@@ -851,7 +851,7 @@ async def hkpay_payment(self, code, amount, merchant_id, private_key, pay_url):
             self.logger.info(f'response.text==={response.text}')
             result_upi = response.json()
             self.logger.info(f'result_upi====={result_upi}')
-            
+
             # 获取 'wakeup_params' 中的 'qr' 字符串
             qr_string = result_upi["data"]["cash_params"]["wakeup_params"]["qr"]
 
@@ -918,7 +918,7 @@ async def skpay_payment(self, code, amount, merchant_id, accesskey, secretkey, p
 
         self.logger.info(f'host + notify_url****{final_notify_url}')
         self.logger.info(f'host + callback_url****{final_callback_url}')
-       
+
         # 格式化金额为两位小数
         amount_str = "{:.2f}".format(float(amount))
         # 代收请求参数
@@ -1385,4 +1385,93 @@ async def gamepayer_payment(self, code, amount, merchant_id, name, mer_key, pay_
         # 使用 traceback.format_exc() 获取堆栈信息，并写入日志
         error_details = traceback.format_exc()  # 获取详细的异常堆栈信息
         self.logger.exception(f'gamepayer_payment 错误：{e}\n{error_details}')
+        return False
+
+
+async def payfast_payment(self, code, amount, merchant_id, secured_key, token_url, pay_url, merchant_callback=''):
+    """
+    PayFast 代收请求函数（巴基斯坦）
+    两步流程：1) GetAccessToken  2) 浏览器表单 POST 到 PayFast
+    """
+    pay_name = "payfast"
+    notifyurl = '/payfast_notify'
+    try:
+        # 获取 host
+        notice_domain_api_list = await self.redis.get('notice_domain_api_list')
+        if not notice_domain_api_list:
+            host = self.request.protocol + '://' + self.request.host
+        else:
+            notice_domain_api_list = str(notice_domain_api_list).strip().split(',')
+            notice_domain_api_list = [i.strip() for i in notice_domain_api_list if i != '']
+            rs = len(notice_domain_api_list)
+            rs = random.randint(0, rs - 1)
+            host = notice_domain_api_list[rs]
+
+        notify_full = host + notifyurl
+        self.logger.info(f'[{pay_name}] host + callback_url: {notify_full}')
+
+        # ---- Step 1: GetAccessToken ----
+        token_params = (
+            f'MERCHANT_ID={merchant_id}'
+            f'&SECURED_KEY={secured_key}'
+            f'&TXNAMT={amount}'
+            f'&BASKET_ID={code}'
+            f'&CURRENCY_CODE=PKR'
+        )
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'CURL/PHP PayFast Example'
+        }
+        self.logger.info(f'[{pay_name}] GetAccessToken 请求: {token_url}')
+        resp = requests.post(token_url, data=token_params, headers=headers, timeout=(5, 10))
+        self.logger.info(f'[{pay_name}] GetAccessToken 返回: {resp.text}')
+
+        token_data = resp.json()
+        access_token = token_data.get('ACCESS_TOKEN', '')
+        if not access_token:
+            self.logger.error(f'[{pay_name}] GetAccessToken 失败: {token_data}')
+            self.api_result = token_data.get('err_msg', 'Failed to get PayFast access token')
+            return False
+
+        # ---- Step 2: 将表单参数存入 Redis，由 /payfast/redirect/<code> 页面自动提交 ----
+        order_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        form_data = {
+            'MERCHANT_ID': str(merchant_id),
+            'MERCHANT_NAME': 'Hamza Traders',
+            'TOKEN': access_token,
+            'PROCCODE': '00',
+            'TXNAMT': str(amount),
+            'CUSTOMER_MOBILE_NO': '',
+            'CUSTOMER_EMAIL_ADDRESS': '',
+            'SIGNATURE': f'PAYFAST-{code}',
+            'VERSION': 'MERCHANTCART-0.1',
+            'TXNDESC': f'Order {code}',
+            'SUCCESS_URL': merchant_callback or notify_full,
+            'FAILURE_URL': merchant_callback or notify_full,
+            'BASKET_ID': code,
+            'ORDER_DATE': order_date,
+            'CHECKOUT_URL': notify_full,
+            'CURRENCY_CODE': 'PKR',
+            'Transaction_Instrument': '4',
+            'PAY_URL': pay_url,
+        }
+        redis_key = f'payfast_redirect_{code}'
+        await self.redis.set(redis_key, json.dumps(form_data), ex=1800)  # 30 min TTL
+        self.logger.info(f'[{pay_name}] 表单数据已存入 Redis: {redis_key}')
+
+        # 更新数据库
+        update_data = {
+            'third_party_id': str(merchant_id),
+            'status': 1,
+            'third_party_name': pay_name,
+        }
+        await self.update_result('orders_ds', update_data, {'code': code})
+
+        # 返回 True 标记成功，实际跳转由 pay.py 接入自有收银台 /order/<token> 处理
+        self.logger.info(f'[{pay_name}] 下单成功，表单数据已缓存，等待收银台跳转')
+        return True
+
+    except Exception as e:
+        error_details = traceback.format_exc()
+        self.logger.exception(f'[{pay_name}] payfast_payment 错误：{e}\n{error_details}')
         return False
