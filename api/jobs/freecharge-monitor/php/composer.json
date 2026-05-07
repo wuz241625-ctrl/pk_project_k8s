@@ -1,6 +1,0 @@
-{
-    "require": {
-        "monolog/monolog": "^2.9",
-        "predis/predis": "^2.2"
-    }
-}

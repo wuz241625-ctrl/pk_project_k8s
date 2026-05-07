@@ -133,6 +133,19 @@ def main():
         if (ROOT / old_apk).exists():
             raise AssertionError(f"D7pay 分支不允许保留旧客户 APK: {old_apk}")
 
+    for removed_dead_path in (
+        "api/jobs/freecharge-monitor/php",
+        "api/application/app/login/banks/gcash_bank.py",
+        "api/application/app/login/banks/indus_bank.py",
+        "api/docker",
+        "api/jobs/induspay",
+        "api/jobs/jio",
+        "api/jobs/maha",
+        "merchant/.config.py.swp",
+    ):
+        if (ROOT / removed_dead_path).exists():
+            raise AssertionError(f"D7pay 分支不允许保留旧银行死代码或旧制品: {removed_dead_path}")
+
     jenkins = read("ops/tenants/d7pay/jenkins.env.example")
     require(jenkins, "KUBE_NAMESPACE=pk-d7pay", "jenkins.env.example")
     require(jenkins, "RUN_ENV=PROD", "jenkins.env.example")

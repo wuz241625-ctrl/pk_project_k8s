@@ -48,12 +48,14 @@ PYTHONPATH=api python3 -m py_compile application/jazzcash_gateway.py application
 
 现象：
 
-- 仓库重新出现 `api/jobs/freecharge-monitor/php/vendor`、`api/jobs/easypaisa/auto_payout.py.bak`、`api/docker-compose.yml` 或 `api/static/v2`。
+- 仓库重新出现 `api/jobs/freecharge-monitor/php`、`api/jobs/easypaisa/auto_payout.py.bak`、`api/docker-compose.yml`、`api/docker` 或 `api/static/v2`。
+- 仓库重新出现 D7pay 已清理的旧银行实现：`gcash_bank.py`、`indus_bank.py`、`api/jobs/induspay`、`api/jobs/jio`、`api/jobs/maha`。
 - D7pay 下载站重新提交 `apkdownload/public/files/android/lakshmi/*.apk` 或 `apkdownload/public/files/android/ashrafi/*.apk`。
 
 处理：
 
 - PHP 依赖应由对应旧项目自行安装，不提交 vendor 目录到 D7pay 分支。
+- Freecharge PHP、GCash、Indus、Jio、Maha 旧入口不属于 D7pay 当前运行链路，不重新提交。
 - 备份文件不进入 Git，需要保留历史时使用 Git commit。
 - D7pay APK 下载页只保留 D7pay 发布项，不携带 Ashrafi/Lakshmi 旧客户 APK。
 - 当前线上发布只走 Jenkins/K8s，不恢复 API 本地 compose。
@@ -61,7 +63,7 @@ PYTHONPATH=api python3 -m py_compile application/jazzcash_gateway.py application
 验证：
 
 ```bash
-test "$(git ls-files api/jobs/freecharge-monitor/php/vendor | wc -l | tr -d ' ')" = "0"
+test "$(git ls-files api/jobs/freecharge-monitor/php | wc -l | tr -d ' ')" = "0"
 test "$(git ls-files api/static/v2 | wc -l | tr -d ' ')" = "0"
-test -z "$(git ls-files api/jobs/easypaisa/auto_payout.py.bak api/docker-compose.yml apkdownload/public/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk apkdownload/public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk)"
+test -z "$(git ls-files api/jobs/easypaisa/auto_payout.py.bak api/docker-compose.yml api/docker api/application/app/login/banks/gcash_bank.py api/application/app/login/banks/indus_bank.py api/jobs/induspay api/jobs/jio api/jobs/maha merchant/.config.py.swp apkdownload/public/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk apkdownload/public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk)"
 ```

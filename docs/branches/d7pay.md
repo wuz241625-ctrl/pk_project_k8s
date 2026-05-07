@@ -16,7 +16,8 @@
 
 ## 清理边界
 
-- 分支不再保留已提交的 PHP vendor、`.bak` 备份文件、旧 Ashrafi/Lakshmi APK、API 本地 `docker-compose.yml` 和无外部引用的 AdminLTE v2 静态包。
+- 分支不再保留已提交的 PHP vendor、`.bak` 备份文件、旧 Ashrafi/Lakshmi APK、API 本地 `docker-compose.yml`、旧 `api/docker/` 和无外部引用的 AdminLTE v2 静态包。
+- 分支不再保留 D7pay 不使用的旧 Freecharge PHP、GCash/Indus 独立登录实现、Indus/Jio/Maha worker 目录和 tracked Vim swap 文件。
 - `apkdownload` 默认配置和兜底配置都指向 `d7pay_merchant`，避免下载站在 D7pay 环境混入旧客户包。
 - `api/application/lakshmi_api` 虽然沿用旧命名，但当前承载 Flutter App `/v1` 接口，不能按目录名当作垃圾删除。
 - `api/application/phonepe`、旧印度钱包分支和三方回调仍被路由或订单回调引用；后续要清理时必须先同步前端菜单、权限、路由和数据库配置。
