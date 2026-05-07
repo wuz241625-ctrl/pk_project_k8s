@@ -23,7 +23,7 @@ class FakeRedis:
 
 
 class EasyPaisaTimeOutGuardTests(unittest.TestCase):
-    def test_bank_type_field_also_routes_to_runtime_dispatch_index(self):
+    def test_bank_type_field_also_routes_to_mysql_dispatch_state(self):
         from time_out import TimeOutGuard
 
         redis = FakeRedis()

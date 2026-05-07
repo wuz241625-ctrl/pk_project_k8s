@@ -1,5 +1,4 @@
 import datetime
-import inspect
 import json
 import random
 import re
@@ -28,10 +27,6 @@ import requests
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
-from application.easypaisa_runtime import keyspace as easypaisa_keyspace
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
-from application.jazzcash_runtime import keyspace as jazzcash_keyspace
-from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.message import msg, msg_en
 from application.sign import SignatureAndVerification
 from application.pay.payout_channel_guard import is_jazzcash_payout_request
@@ -42,37 +37,12 @@ from application.payment_eligibility import (
     collection_sql_condition,
 )
 
-EASYPAISA_BANK_TYPE_ID = "97"
-JAZZCASH_BANK_TYPE_ID = "98"
 
-
-def _is_easypaisa_bank_type(bank_type) -> bool:
-    return str(bank_type) == EASYPAISA_BANK_TYPE_ID
-
-
-def _is_jazzcash_bank_type(bank_type) -> bool:
-    return str(bank_type) == JAZZCASH_BANK_TYPE_ID
-
-
-def _is_easypaisa_payment_type(*, bank_type_id=None, bank_type=None) -> bool:
-    return _is_easypaisa_bank_type(bank_type_id) or _is_easypaisa_bank_type(bank_type)
-
-
-def _is_jazzcash_payment_type(*, bank_type_id=None, bank_type=None) -> bool:
-    return _is_jazzcash_bank_type(bank_type_id) or _is_jazzcash_bank_type(bank_type)
-
-
-def _redis_text(value) -> str:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return str(value)
-
-
-async def _redis_get_value(redis_client, key):
-    value = redis_client.get(key)
-    if inspect.isawaitable(value):
-        return await value
-    return value
+def _to_int(value, default=0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _collection_dispatch_extra_sql_condition(alias="pay", channel_code=None) -> str:
@@ -83,21 +53,18 @@ def _is_collection_dispatch_enabled(payment) -> bool:
     return can_dispatch_ds(payment)
 
 
-async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None, bank_type=None, payment=None):
-    if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-        if payment is None:
-            payment = await self.get_result_by_condition(
-                'payment',
-                ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
-                {'id': payment_id},
-            )
-        return _is_collection_dispatch_enabled(payment)
-    if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-        if not hasattr(self.redis, "get"):
-            return False
-        jazzcash_reader = JazzCashRuntimeReader(self.redis)
-        return await jazzcash_reader.is_collection_order_online(payment_id)
-    return False
+def _manual_lock_update_fields(payment):
+    return {"manual_status": 1, "collection_status": 0}
+
+
+async def _is_collection_payment_online(self, payment_id, bank_type_id, bank_type=None, payment=None):
+    if payment is None:
+        payment = await self.get_result_by_condition(
+            'payment',
+            ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
+            {'id': payment_id},
+        )
+    return _is_collection_dispatch_enabled(payment)
 
 
 async def _mysql_collection_ids(self, channel_code=None):
@@ -110,39 +77,15 @@ async def _mysql_collection_ids(self, channel_code=None):
     return {str(row["id"]) for row in rows or []}
 
 
-async def _collection_online_payment_ids(self, runtime_reader=None, channel_code=None):
+async def _collection_online_payment_ids(self, channel_code=None):
     payment_ids = await _mysql_collection_ids(self, channel_code)
-    if hasattr(self.redis, "get"):
-        jazzcash_reader = JazzCashRuntimeReader(self.redis)
-        payment_ids.update(await jazzcash_reader.collection_online_payment_ids())
     return sorted((payment_id for payment_id in payment_ids if payment_id.isdigit()), key=int)
 
 
-async def _non_runtime_legacy_collection_ids(self, payment_ids):
-    legacy_ids = sorted(
-        {str(payment_id).strip() for payment_id in payment_ids if str(payment_id).strip().isdigit()},
-        key=int,
-    )
-    if not legacy_ids:
-        return set()
-    ids_sql = ",".join(legacy_ids)
-    rows = await self.query(
-        """
-        select id from payment
-        where id in ({ids})
-          and COALESCE(bank_type_id, 0) != 97
-          and COALESCE(bank_type, 0) != 97
-          and COALESCE(bank_type_id, 0) != 98
-          and COALESCE(bank_type, 0) != 98
-        """.format(ids=ids_sql)
-    )
-    return {str(row["id"]) for row in rows or []}
-
-
-async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=None):
+async def _is_collection_payment_online_by_id(self, payment_id):
     payment = await self.get_result_by_condition(
         'payment',
-        ['bank_type', 'bank_type_id', 'wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
+        ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
         {'id': payment_id},
     )
     if not payment:
@@ -151,28 +94,9 @@ async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=N
         self,
         payment_id,
         (payment or {}).get('bank_type_id'),
-        runtime_reader,
         bank_type=(payment or {}).get('bank_type'),
         payment=payment,
     )
-
-
-async def _has_collection_kickoff(self, payment_id):
-    payment = await self.get_result_by_condition(
-        'payment',
-        ['bank_type', 'bank_type_id'],
-        {'id': payment_id},
-    )
-    if not payment:
-        return True
-
-    bank_type_id = (payment or {}).get('bank_type_id')
-    bank_type = (payment or {}).get('bank_type')
-    if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-        return await _redis_get_value(self.redis, easypaisa_keyspace.kickoff_key(payment_id)) is not None
-    if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-        return await _redis_get_value(self.redis, jazzcash_keyspace.kickoff_key(payment_id)) is not None
-    return await _redis_get_value(self.redis, 'kick_off_' + str(payment_id)) is not None
 
 
 def crc16_ccitt(data: bytes, poly: int = 0x1021, init: int = 0xFFFF) -> int:
@@ -208,7 +132,7 @@ def _format_timestamp(ts: Union[int, float, str, datetime.datetime]) -> str:
     pkt = timezone(timedelta(hours=5))
     if isinstance(ts, (int, float)):
         dt = datetime.datetime.fromtimestamp(ts, tz=pkt)
-    elif isinstance(ts, datetime):
+    elif isinstance(ts, datetime.datetime):
         dt = ts.astimezone(pkt) if ts.tzinfo is not None else ts.replace(tzinfo=pkt)
     elif isinstance(ts, str):
         s = ts.strip()
@@ -217,11 +141,11 @@ def _format_timestamp(ts: Union[int, float, str, datetime.datetime]) -> str:
         # Try epoch seconds/millis
         if s.isdigit() and len(s) in (10, 13):
             sec = int(s[:10])
-            dt = datetime.fromtimestamp(sec, tz=pkt)
+            dt = datetime.datetime.fromtimestamp(sec, tz=pkt)
         else:
             # Try flexible parse: ddMMyyyyHHmm
             try:
-                return datetime.strptime(s, "%d%m%Y%H%M").strftime("%d%m%Y%H%M")
+                return datetime.datetime.strptime(s, "%d%m%Y%H%M").strftime("%d%m%Y%H%M")
             except Exception as e:
                 raise ValueError(f"Unrecognized timestamp string: {ts}") from e
     else:
@@ -1189,7 +1113,6 @@ class Pay(BaseHandler):
         # back_key = []
         is_push = False
         upi = ''
-        runtime_reader = EasyPaisaRuntimeReader(self.redis)
         for payment_id, payment_info in new_payment_list.items():
             try:
                 self.logger.info(f"Step 10: 选择支付码 {payment_id} 进行处理, 订单 {code}, 金额 {amount}")
@@ -1234,26 +1157,11 @@ class Pay(BaseHandler):
                     self,
                     payment_id,
                     bank_id,
-                    runtime_reader,
                     bank_type=payment.get('bank_type'),
+                    payment=payment,
                 ):
                     self.logger.warn(f"码 {payment_id} 已停止接单，不允许接单 code: {code}")
                     continue
-
-                list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, payment_id):
-                #     self.logger.warn(f"码 {payment_id} 不在通道中，不允许接单 code: {code}")
-                #     continue
-                position = await self.redis.lpos(list_name, payment_id)
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
-                    continue
-                else:
-                    # 元素存在
-                    self.logger.info(f"码 {payment_id} 在 Redis 队列 '{list_name}, code: {code}' 中 (执行 lpos)。")
 
                 # 检查支付码是否在列表中
                 if int(payment_id) not in new_payment_list.keys():
@@ -1604,12 +1512,14 @@ class Pay(BaseHandler):
         返回:
             成功时返回二维码文本（base64编码的图像数据），否则返回 None。
         """
+        log = logger or self.logger
+
         # 检查基本输入
         if not account_id or not amount:
-            logger.error(f"无效的输入数据：account_id={account_id}, amount={amount}")
+            log.error(f"无效的输入数据：account_id={account_id}, amount={amount}")
             return None
 
-        self.logger.info(f'generate_qr_code====================1===========account_id={account_id}, amount={amount}===============')
+        log.info(f'generate_qr_code====================1===========account_id={account_id}, amount={amount}===============')
         # 从otherpay表中查询配置信息
         account_iban = ''
         async with self.application.db.acquire() as conn:
@@ -1621,18 +1531,21 @@ class Pay(BaseHandler):
                 """
                 await cur.execute(sql_select_payment, (payment_id,))
                 payment_info = await cur.fetchone()
-                self.logger.info(f'payment_info======={payment_info}=============')
+                log.info(f'payment_info======={payment_info}=============')
                 if not payment_info:
-                    logger.error(f"未在数据库中找到 ID 为 {payment_id} 的有效payment。")
+                    log.error(f"未在数据库中找到 ID 为 {payment_id} 的有效payment。")
                     return None
                 
                 account_iban = payment_info.get('account_iban')
 
-        self.logger.info(f'generate_qr_code======account_iban======={account_iban}=======')
-        timestamp = int(time.time()) + 600
-        # qr = build_payload(iban=account_iban, amount=amount, timestamp=timestamp)
-        qr = build_payload(iban=account_iban)
-        self.logger.info(f'qr======取得二维码数据=============={qr}')
+        if not account_iban:
+            log.error(f"payment_id={payment_id} 缺少 account_iban，无法生成 EasyPaisa QR。")
+            return None
+
+        log.info(f'generate_qr_code======account_iban======={account_iban}=======')
+        expires_at = int(time.time()) + 7 * 60
+        qr = build_payload_amount(iban=account_iban, amount=amount, timestamp=expires_at)
+        log.info(f'qr======取得二维码数据=============={qr}')
         return qr
 
     # 二维码生成存档
@@ -1792,13 +1705,13 @@ class Pay(BaseHandler):
 
         # 定义 Redis 列表名
         list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
+        collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", data.get("channel_code"))
 
         self.logger.info(f"开始处理订单 {code}, 金额 {amount}, 渠道 {data['channel_code']}")  # 添加日志
         payment_id_list = []
         
         # 确保初始化
         back_key = []
-        runtime_reader = EasyPaisaRuntimeReader(self.redis)
         self.logger.info("初始化 back_key")
 
         try:
@@ -1887,10 +1800,6 @@ class Pay(BaseHandler):
                         _payment_ids = ','.join(batch_payment_ids)
                         self.logger.info(f"Step 1.3.3: 当前处理批次支付码: {batch_payment_ids}, 订单 {code}, 金额 {amount}")
                         
-                        collection_dispatch_condition = _collection_dispatch_extra_sql_condition(
-                            "pay",
-                            data.get("channel_code"),
-                        )
                         # 获取银行信息
                         self.logger.info(f"Step 3: 获取银行信息, 订单 {code}, 金额 {amount}")
                         bank_type_list = await self.query("select id from bank_type where status=0")
@@ -1898,11 +1807,14 @@ class Pay(BaseHandler):
                         _bank_type_list = []
                         if not bank_type_list:
                             self.logger.info(f"Step 3: 无银行信息，使用默认查询条件, 订单 {code}, 金额 {amount}")
-                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, 
-                                    pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
+                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
+                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
+                                    pay.status as payment_status, pay.certified as payment_certified,
+                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                                     from payment pay 
                                     left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids}) and {collection_dispatch_condition}
+                                    where pay.id in ({_payment_ids})
+                                    and {collection_dispatch_condition}
                                     and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
                                     and p.certified=1 and p.status=1""".format(
                                         _payment_ids=_payment_ids,
@@ -1915,11 +1827,14 @@ class Pay(BaseHandler):
                             _bank_type_list = ','.join(str(id) for id in _bank_type_list)
                             self.logger.info(f"最终的逗号分隔字符串: {_bank_type_list}")
                             # 联表查询
-                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, 
-                                    pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
+                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
+                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
+                                    pay.status as payment_status, pay.certified as payment_certified,
+                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                                     from payment pay 
                                     left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids}) and {collection_dispatch_condition}
+                                    where pay.id in ({_payment_ids})
+                                    and {collection_dispatch_condition}
                                     and pay.bank_type not in ({_bank_type_list})
                                     and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
                                     and p.balance>={amount}
@@ -1944,7 +1859,11 @@ class Pay(BaseHandler):
                         new_partner_list = dict()
 
                         # 提取支付码和合作伙伴信息
-                        payment_key = ['id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status', 'bank_type_id']
+                        payment_key = [
+                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
+                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
+                            'payment_status', 'payment_certified'
+                        ]
                         partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
                         for i in _list:
                             new_payment = {key: i[key] for key in payment_key}
@@ -2007,7 +1926,7 @@ class Pay(BaseHandler):
                         self.logger.info("第一次处理失败，开始第二次处理")
 
                         try:
-                            sys_info_list = await _collection_online_payment_ids(self, runtime_reader)
+                            sys_info_list = await _collection_online_payment_ids(self, channel_code=data.get("channel_code"))
                             if sys_info_list:
                                 self.logger.info(f"从 Redis 获取到支付码列表: {sys_info_list}")
                             else:
@@ -2024,8 +1943,10 @@ class Pay(BaseHandler):
                             self.logger.info(f"Final _payment_ids: {_payment_ids}")
                             # 构造 SQL 查询
                             sql = """
-                                select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, 
-                                    pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max 
+                                select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
+                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
+                                    pay.status as payment_status, pay.certified as payment_certified,
+                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                                 from payment pay 
                                 left join partner p on pay.partner_id = p.id 
                                 where pay.id in ({payment_ids})
@@ -2053,7 +1974,11 @@ class Pay(BaseHandler):
                         new_partner_list = dict()
 
                         # 提取支付码和合作伙伴信息
-                        payment_key = ['id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status', 'bank_type_id']
+                        payment_key = [
+                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
+                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
+                            'payment_status', 'payment_certified'
+                        ]
                         partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
                         for i in _list:
                             self.logger.info(f"正在处理支付码 ID: {i['id']}，合作伙伴 ID: {i['partner_id']}")
@@ -2063,8 +1988,8 @@ class Pay(BaseHandler):
                                 self,
                                 i['id'],
                                 i.get('bank_type_id'),
-                                runtime_reader,
                                 bank_type=i.get('bank_type'),
+                                payment=i,
                             )
                             self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
 
@@ -2115,8 +2040,10 @@ class Pay(BaseHandler):
 
                         # 构造 SQL 查询
                         sql = """
-                            select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, 
-                                pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max 
+                            select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
+                                pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
+                                pay.status as payment_status, pay.certified as payment_certified,
+                                p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                             from payment pay 
                             left join partner p on pay.partner_id = p.id 
                             where pay.id in ({payment_ids})
@@ -2142,7 +2069,11 @@ class Pay(BaseHandler):
                         new_partner_list = dict()
 
                         # 提取支付码和合作伙伴信息
-                        payment_key = ['id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status', 'bank_type_id']
+                        payment_key = [
+                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
+                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
+                            'payment_status', 'payment_certified'
+                        ]
                         partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
                         for i in _list:
                             
@@ -2153,8 +2084,8 @@ class Pay(BaseHandler):
                                 self,
                                 i['id'],
                                 i.get('bank_type_id'),
-                                runtime_reader,
                                 bank_type=i.get('bank_type'),
+                                payment=i,
                             )
                             self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
 
@@ -2187,16 +2118,6 @@ class Pay(BaseHandler):
         except Exception as e:
             self.logger.exception(f"Step final: 派单异常处理，订单代码 {code}: {e}\n{traceback.format_exc()}, 金额 {amount}")
 
-        # 能继续接单的重新加入队列
-        # for i in back_key:
-        #     if await self.redis.sismember('payment_online_ds', i):
-        #         if self.redis.get('kick_off_' + str(i)):
-        #             continue
-        #         await self.redis.lrem(list_name, 0, i)
-        #         await self.redis.rpush(list_name, i)
-        # self.logger.info(f"Step 24: 结束处理订单 {code}, 是否成功推送: {is_push}")
-        # return is_push
-
         self.logger.info(f"Step 24: 开始处理能继续接单的任务, 订单 {code}, 金额 {amount}")
 
         try:
@@ -2210,14 +2131,26 @@ class Pay(BaseHandler):
                 self.logger.info(f"Step 24.2: 当前处理的 i 是 {i}, 订单 {code}, 金额 {amount}")
 
                 
-                # 检查是否在 'payment_online_ds' 集合中
+                # 接单资格只看 MySQL payment 字段，不再通过 Redis 在线集合二次判定。
                 try:
-                    is_member = await _is_collection_payment_online_by_id(self, i, runtime_reader)
-                    self.logger.info(f"Step 24.3: {i} 是否在 'payment_online_ds': {is_member}, 订单 {code}, 金额 {amount}")
+                    payment = await self.get_result_by_condition(
+                        'payment',
+                        ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
+                        {'id': i},
+                    )
+                    if not payment:
+                        continue
+                    is_member = await _is_collection_payment_online(
+                        self,
+                        i,
+                        None,
+                        payment=payment,
+                    )
+                    self.logger.info(f"Step 24.3: {i} MySQL 接单资格: {is_member}, 订单 {code}, 金额 {amount}")
                     if not is_member:
                         continue
                 except Exception as e:
-                    self.logger.error(f"Step 24.3: 检查 'payment_online_ds' 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
+                    self.logger.error(f"Step 24.3: 检查 MySQL 接单资格时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
                     continue
 
                 # 检查支付码是否在通道中
@@ -2236,16 +2169,6 @@ class Pay(BaseHandler):
                     self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
 
                 self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                # runtime 银行只看各自 runtime kickoff key，避免 legacy 脏 key 误拦截。
-                try:
-                    kick_off = await _has_collection_kickoff(self, i)
-                    self.logger.info(f"Step 24.4: 检查 {i} 是否存在代收 kickoff: {kick_off}, 订单 {code}, 金额 {amount}")
-                    if kick_off:
-                        self.logger.info(f"Step 24.5: {i} 被标记为代收 kickoff，跳过处理, 订单 {code}, 金额 {amount}")
-                        continue
-                except Exception as e:
-                    self.logger.error(f"Step 24.4: 检查代收 kickoff 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    continue
 
                 # 移除列表中的元素
                 try:
@@ -2276,28 +2199,22 @@ class Pay(BaseHandler):
 
     async def push_order(self, data, target_payment):
         list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
+        collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", data.get("channel_code"))
         is_push = False
         back_key = []  # 重新加入list的key
         code = data['code']
         amount = data['amount']
         start_time = datetime.datetime.now().timestamp()
         upi = ''
-        runtime_reader = EasyPaisaRuntimeReader(self.redis)
 
-        # 线上可接单银行卡数量限制
-        num_total_payment_active = await self.redis.llen(list_name)
-        if num_total_payment_active > 20000:
-            self.logger.info(f"支付ID列表超过20000（共{num_total_payment_active}条），截取前20000条")
-            payment_id_list = await self.redis.lrange(list_name, 0, 19999)
-        else:
-            self.logger.info(f"支付ID列表在限制内（共{num_total_payment_active}条），全量获取")
-            payment_id_list = await self.redis.lrange(list_name, 0, -1)
+        payment_id_list = list(await _mysql_collection_ids(self, data.get("channel_code")))
+        self.logger.info(f"从 MySQL 获取到 {len(payment_id_list)} 个可接单支付码")
 
         gonghu_ds_payment = await self.redis.get("gonghu_ds_payment")
         gonghu_ds_payment_ids = []
         if gonghu_ds_payment:
             for i in gonghu_ds_payment.split(','):
-                if i and await _is_collection_payment_online_by_id(self, i, runtime_reader):
+                if i and await _is_collection_payment_online_by_id(self, i):
                     gonghu_ds_payment_ids.append(i)
                     payment_id_list.append(i)
             self.logger.warn('code: {code}, 有效公户{gonghu_ds_payment_ids}'.format(code=code, gonghu_ds_payment_ids=' '.join(gonghu_ds_payment_ids)))
@@ -2353,23 +2270,43 @@ class Pay(BaseHandler):
             _payment_ids = ','.join(str(id) for id in payment_id_list)
         else:
             return is_push
-        collection_dispatch_condition = _collection_dispatch_extra_sql_condition(
-            "pay",
-            data.get("channel_code"),
-        )
         # 获取银行信息
         bank_type_list = await self.query("select id from bank_type where status=0")
         self.logger.warn('code: {code}, bank_type_list时间：{t}'.format(code=code, t=datetime.datetime.now().timestamp() - start_time))
         _bank_type_list = []
         if not bank_type_list:
             # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and {collection_dispatch_condition} and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p. ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, amount=amount, collection_dispatch_condition=collection_dispatch_condition)
+            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id,
+            pay.wallet_status, pay.account_accno, pay.collection_status,
+            pay.status as payment_status, pay.certified as payment_certified,
+            p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
+            from payment pay left join partner p on pay.partner_id=p.id
+            where pay.id in ({_payment_ids})
+            and {collection_dispatch_condition}
+            and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p. ds_max=0) and p.certified=1 and p.status=1""".format(
+                _payment_ids=_payment_ids,
+                amount=amount,
+                collection_dispatch_condition=collection_dispatch_condition,
+            )
         else:
             for i in bank_type_list:
                 _bank_type_list.append(i['id'])
             _bank_type_list = ','.join(str(id) for id in _bank_type_list)
             # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and {collection_dispatch_condition} and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list})) and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount, collection_dispatch_condition=collection_dispatch_condition)
+            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id,
+            pay.wallet_status, pay.account_accno, pay.collection_status,
+            pay.status as payment_status, pay.certified as payment_certified,
+            p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
+            from payment pay left join partner p on pay.partner_id=p.id
+            where pay.id in ({_payment_ids})
+            and {collection_dispatch_condition}
+            and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
+            and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(
+                _payment_ids=_payment_ids,
+                _bank_type_list=_bank_type_list,
+                amount=amount,
+                collection_dispatch_condition=collection_dispatch_condition,
+            )
         # 获取vip信息
         vip_list = await self.get_results_no_condition('vip', ['*'])
         _vip_list = []
@@ -2390,7 +2327,11 @@ class Pay(BaseHandler):
         weights = []
         target_weights = []
         payment_id_weights=[]
-        payment_key = ['id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status', 'bank_type_id']
+        payment_key = [
+            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
+            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
+            'payment_status', 'payment_certified'
+        ]
         partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
         for i in _list:
             i['weight'] = i['weight'] if i['weight'] else 1  # 默认为1
@@ -2471,24 +2412,6 @@ class Pay(BaseHandler):
             payment = new_payment_list[int(payment_id)]
 
 
-            # 20250407 可用通道验证
-            list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-            # 检查支付码是否在通道中
-            # if not await self.redis.lpos(list_name, payment_id):
-            #     self.logger.warn(f"码 {payment_id} 不在通道中，不允许接单 code: {code}")
-            #     continue
-
-            position = await self.redis.lpos(list_name, payment_id)
-            # 判断元素是否存在
-            if position is None:
-                # 元素不存在
-                self.logger.warning(f"码 {payment_id} 不在通道中 {list_name}，不允许接单 code: {code}")
-                continue
-            else:
-                # 元素存在
-                self.logger.info(f"码 {payment_id} 在 Redis 队列 '{list_name}, code: {code}' 中 (执行 lpos)。")
-
-            
             # 码异常
             if not payment:
                 self.logger.warn('码{payment_id}状态异常，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
@@ -2543,8 +2466,8 @@ class Pay(BaseHandler):
                 self,
                 payment_id,
                 bank_id,
-                runtime_reader,
                 bank_type=payment.get('bank_type'),
+                payment=payment,
             ):
                 self.logger.warn('码{payment_id}已停止接单，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
                 continue
@@ -2700,7 +2623,7 @@ class Pay(BaseHandler):
                     orders_ds_limit_count = await self.redis.get(redis_orders_ds_limit_count)
                     if orders_ds_limit_count and int(orders_ds_limit_count) > 2:
                         await self.redis.delete(redis_orders_ds_limit_count)
-                        await self.update_result('payment', {'manual_status': 1}, {'id': payment_id})
+                        await self.update_result('payment', _manual_lock_update_fields(payment), {'id': payment_id})
                         self.logger.warn('码商{partner_id},码{payment_id}成功率低于{redis_orders_ds_limit_success_rate_count}%次数过多，不允许接单,code: {code}'.format(partner_id=partner_id, payment_id=payment_id,redis_orders_ds_limit_success_rate_count=redis_orders_ds_limit_success_rate_count, code=code))
                         continue
                     await self.redis.incr(redis_orders_ds_limit_count)
@@ -2892,7 +2815,19 @@ class Pay(BaseHandler):
                         break
         # 能继续接单的重新加入队列
         for i in back_key:
-            if await _is_collection_payment_online_by_id(self, i, runtime_reader):
+            payment = await self.get_result_by_condition(
+                'payment',
+                ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
+                {'id': i},
+            )
+            if not payment:
+                continue
+            if await _is_collection_payment_online(
+                self,
+                i,
+                None,
+                payment=payment,
+            ):
                 # 检查支付码是否在通道中
                 # if not await self.redis.lpos(list_name, i):
                 #     self.logger.warn(f"【码监控】: 码 {payment_id} 不在通道中 {list_name}")
@@ -2909,8 +2844,6 @@ class Pay(BaseHandler):
                     self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
 
                 self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                if await _has_collection_kickoff(self, i):
-                    continue
                 await self.redis.lrem(list_name, 0, i)
                 await self.redis.rpush(list_name, i)
                 self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
@@ -3505,8 +3438,6 @@ class Pay_df(BaseHandler):
                         return await self.json_response(data=msg[10014])
                     else:
                         await conn.commit()
-                        await self.redis.publish('order_df_push',
-                                                 '{code}_{amount}'.format(code=order_data['code'], amount=round(amount, 2)))
                         return await self.json_response(({'code': 0, 'massage': '下单成功', 'order_code': order_data['code'], 'amount': amount}))
         except Exception as e:
             self.logger.exception(e)

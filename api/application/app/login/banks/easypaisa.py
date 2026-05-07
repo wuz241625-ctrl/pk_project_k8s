@@ -524,23 +524,16 @@ class EasyPaisa:
         return normalized
 
     @staticmethod
-    def _legacy_runtime_residue_keys(payment_id, phone=None):
+    def _legacy_residue_keys(payment_id, phone=None):
         keys = [
             f'pre_login_easypaisa_{payment_id}',
             f'login_on_easypaisa_{payment_id}',
-            f'easypaisa_runtime:session:{payment_id}',
-            f'easypaisa_runtime:snapshot:{payment_id}',
-            f'easypaisa_runtime:kickoff:{payment_id}',
-            f'easypaisa_runtime:health_pause:order:{payment_id}',
-            f'easypaisa_runtime:lock:payment:{payment_id}',
-            f'easypaisa_runtime:manual_off:collection:{payment_id}',
             f'kick_off_{payment_id}',
         ]
         if phone:
             keys.extend(
                 [
                     f'login_on_easypaisa_{phone}',
-                    f'easypaisa_runtime:lock:phone:{phone}',
                 ]
             )
         return keys
@@ -906,12 +899,8 @@ class EasyPaisa:
 
         resolved_phone = session_data.get("phone") or payment.get("phone")
         await self.redis.delete(redis_key)
-        await self.redis.delete(f'easypaisa_runtime:session:{payment_id}')
-        await self.redis.delete(f'easypaisa_runtime:snapshot:{payment_id}')
         await self.redis.delete(f'login_on_easypaisa_{payment_id}')
         if resolved_phone:
-            await self.redis.delete(f'easypaisa_runtime:session:{resolved_phone}')
-            await self.redis.delete(f'easypaisa_runtime:snapshot:{resolved_phone}')
             await self.redis.delete(f'login_on_easypaisa_{resolved_phone}')
         return True
 
@@ -1354,7 +1343,6 @@ class EasyPaisa:
 
                 redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
                 await self.redis.delete(redis_key)
-                await self.redis.delete(f'easypaisa_runtime:session:{payment_id}')
 
                 result = {
                     'status': 'success',
@@ -1384,7 +1372,7 @@ class EasyPaisa:
                 if current_status == LoginStatus.ACTIVE_SUCCESSFUL:
                     if await self._clear_stale_active_session_if_offline(redis_key, existing_session):
                         self.logger.warning(
-                            f'{self._log_key(funcName)} runtime snapshot 已离线，已清理残留成功会话并允许重新登录: {redis_key}'
+                            f'{self._log_key(funcName)} MySQL 最终态已离线，已清理残留成功会话并允许重新登录: {redis_key}'
                         )
                         existing_session = None
                     else:
@@ -1800,8 +1788,6 @@ class EasyPaisa:
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id_text)
             if old_redis_key != redis_key:
                 await self.redis.delete(old_redis_key)
-                if old_payment_id not in [None, '', real_payment_id_text]:
-                    await self.redis.delete(f'easypaisa_runtime:session:{old_payment_id}')
 
             login_lock_payment_key = self._login_lock_payment_key(real_payment_id)
             await self.redis.setex(login_lock_payment_key, self.lock_time_login_duplicate_avoid, 1)
@@ -3152,7 +3138,7 @@ class EasyPaisa:
         try:
             self.logger.warning(f'{self._log_key(funcName)} 开始执行: payment_id={payment_id}, bankname={bankname}, reason={reason}')
 
-            # === 1. 查询 payment / phone / channel，用于统一 runtime 下线 ===
+            # === 1. 查询 payment / phone / channel，用于统一清理旧在线投影 ===
             payment = None
             try:
                 with self.handler.db_orm.sessionmaker() as session:
@@ -3173,8 +3159,8 @@ class EasyPaisa:
                 payment.channel if payment and getattr(payment, 'channel', None) else None
             )
 
-            # === 2. 清理旧 Redis 残留；MySQL 才是最终状态源，不再写 runtime/kickoff gate ===
-            residue_keys = self._legacy_runtime_residue_keys(payment_id, resolved_phone)
+            # === 2. 清理旧 Redis 残留；MySQL 才是最终状态源，不再写 legacy gate ===
+            residue_keys = self._legacy_residue_keys(payment_id, resolved_phone)
             deleted_residue = await self.redis.delete(*residue_keys)
             for channel in resolved_channels:
                 await self.redis.lrem(f'payment_active_{channel}', 0, payment_id)
@@ -3183,17 +3169,6 @@ class EasyPaisa:
             await self.redis.lrem('payment_active_df', 0, payment_id)
             await self.redis.hdel('hash_easypaisa', payment_id)
             await self.redis.zrem('set_easypaisa', payment_id)
-            for runtime_index in [
-                'easypaisa_runtime:index:online',
-                'easypaisa_runtime:index:collect_enabled',
-                'easypaisa_runtime:index:df_order_enabled',
-                'easypaisa_runtime:index:ds_order_enabled',
-                'easypaisa_runtime:index:dispatch_df',
-                'easypaisa_runtime:index:dispatch_ds',
-            ]:
-                await self.redis.srem(runtime_index, payment_id)
-            await self.redis.zrem('easypaisa_runtime:schedule:collection', payment_id)
-            await self.redis.zrem('easypaisa_runtime:index:updated_at', payment_id)
             self.logger.info(
                 f'{self._log_key(funcName)} [2/4] Redis 残留清理完成: '
                 f'phone={resolved_phone}, channels={resolved_channels}, deleted={deleted_residue}'

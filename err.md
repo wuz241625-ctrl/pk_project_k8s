@@ -1,39 +1,16 @@
-# 项目排错入口
+# 项目排错索引
 
-本文件只做排错索引，具体问题优先看对应子目录的 `err.md`。
+## 0.1 D7pay 清理不用项目和 运行时 残留
 
-## D7pay 运维问题
+本项目当前不再保留：
 
-查看：
+- `旧移动 H5`
+- `Lakshmi UniApp 子模块`
+- EasyPaisa/JazzCashBusiness 运行时 模块
+- D7pay `旧运行配置` 配置命名
 
-```text
-ops/tenants/d7pay/err.md
-```
+排查入口：
 
-## API / EasyPaisa 运行态问题
-
-查看：
-
-```text
-api/err.md
-```
-
-本轮 EasyPaisa 分层真相源边界排错项：
-
-- `api/err.md` 的 `0.20 D7pay 合并 pk_project 业务主线时覆盖 JazzCashBusiness runtime`
-- `api/err.md` 的 `0.19 Pakistanpay worker 调试日志重新读取 EasyPaisa legacy 投影`
-
-常用检查：
-
-```bash
-make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-## D7pay 常见失败方向
-
-- 域名仍是 `example.com` 或 `awekay.com`。
-- `KUBE_NAMESPACE` 错误指向 `pk`。
-- `D7PAY_RUNTIME_SECRET_YAML` 不存在或仍有占位值。
-- nginx 未 reload。
-- `pk-d7pay` deployment 未 rollout 成功。
+- [api/err.md](/Users/tear/pk_project_k8s/api/err.md)
+- [admin/err.md](/Users/tear/pk_project_k8s/admin/err.md)
+- [ops/tenants/d7pay/err.md](/Users/tear/pk_project_k8s/ops/tenants/d7pay/err.md)

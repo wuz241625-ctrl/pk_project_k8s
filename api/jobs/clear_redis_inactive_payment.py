@@ -16,8 +16,6 @@ fh.setFormatter(formatter)
 logger.addHandler(fh)
 conf = get_config()
 
-EASYPAISA_RUNTIME_ONLINE_KEY = "easypaisa_runtime:index:online"
-
 
 def _decode_text(value):
     if isinstance(value, bytes):
@@ -26,12 +24,6 @@ def _decode_text(value):
 
 def get_all_active_payment_ids_from_redis(rds):
     active_payment_ids = {}
-
-    for payment_id in rds.smembers(EASYPAISA_RUNTIME_ONLINE_KEY):
-        pid = _decode_text(payment_id)
-        if pid.isdigit():
-            active_payment_ids[pid] = 'easypaisa'
-            logger.info(f"从 runtime 在线索引读取 EasyPaisa payment_id: {pid}")
 
     for key_bytes in rds.scan_iter('login_on_*'):
         key_str = _decode_text(key_bytes)

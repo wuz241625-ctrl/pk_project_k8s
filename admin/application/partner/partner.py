@@ -22,7 +22,6 @@ import math
 import bcrypt
 
 from application.system import operationLog
-from application.easypaisa_runtime import keyspace
 
 
 def is_easypaisa_payment(payment_row):
@@ -80,41 +79,37 @@ def batch_disable_payment_update_sql(payment_count):
 
 async def reset_easypaisa_redis_state(redis_client, payment_id, channels=None):
     payment_id = str(payment_id)
-    channel_list = keyspace.normalize_channels(channels)
+    channel_list = []
+    if channels not in (None, '', []):
+        raw_items = list(channels) if isinstance(channels, (list, tuple, set)) else [channels]
+        seen = set()
+        for item in raw_items:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8")
+            for part in str(item).split(","):
+                text = part.strip()
+                if text and text not in seen:
+                    seen.add(text)
+                    channel_list.append(text)
     delete_keys = [
-        keyspace.pre_login_key(payment_id),
-        keyspace.session_key(payment_id),
-        keyspace.kickoff_key(payment_id),
-        keyspace.legacy_kickoff_key(payment_id),
-        keyspace.snapshot_key(payment_id),
-        keyspace.health_pause_order_key(payment_id),
-        keyspace.lock_payment_key(payment_id),
-        keyspace.manual_off_collection_key(payment_id),
-        keyspace.legacy_login_on_payment_key(payment_id),
+        f"pre_login_easypaisa_{payment_id}",
+        f"login_on_easypaisa_{payment_id}",
+        f"kick_off_{payment_id}",
     ]
     deleted_keys = await redis_client.delete(*delete_keys)
-    removed_job_hash = await redis_client.hdel(keyspace.JOB_HASH, payment_id)
-    removed_job_set = await redis_client.zrem(keyspace.JOB_SET, payment_id)
-    removed_online_df = await redis_client.srem(keyspace.LEGACY_PAYMENT_ONLINE_DF, payment_id)
-    removed_online_ds = await redis_client.srem(keyspace.LEGACY_PAYMENT_ONLINE_DS, payment_id)
-    removed_active_df = await redis_client.lrem(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, payment_id)
+    removed_job_hash = await redis_client.hdel("hash_easypaisa", payment_id)
+    removed_job_set = await redis_client.zrem("set_easypaisa", payment_id)
+    removed_online_df = await redis_client.srem("payment_online_df", payment_id)
+    removed_online_ds = await redis_client.srem("payment_online_ds", payment_id)
+    removed_active_df = await redis_client.lrem("payment_active_df", 0, payment_id)
 
     removed_channel_active = 0
     for channel in channel_list:
         removed_channel_active += await redis_client.lrem(
-            keyspace.legacy_payment_active_channel_key(channel),
+            f"payment_active_{channel}",
             0,
             payment_id,
         )
-
-    removed_runtime_online = await redis_client.srem(keyspace.INDEX_ONLINE, payment_id)
-    removed_runtime_collect = await redis_client.srem(keyspace.INDEX_COLLECT_ENABLED, payment_id)
-    removed_runtime_df_order = await redis_client.srem(keyspace.INDEX_DF_ORDER_ENABLED, payment_id)
-    removed_runtime_ds_order = await redis_client.srem(keyspace.INDEX_DS_ORDER_ENABLED, payment_id)
-    removed_runtime_dispatch_df = await redis_client.srem(keyspace.INDEX_DISPATCH_DF, payment_id)
-    removed_runtime_dispatch_ds = await redis_client.srem(keyspace.INDEX_DISPATCH_DS, payment_id)
-    removed_runtime_schedule = await redis_client.zrem(keyspace.SCHEDULE_COLLECTION, payment_id)
-    removed_runtime_updated = await redis_client.zrem(keyspace.INDEX_UPDATED_AT, payment_id)
 
     return {
         "deleted_keys": deleted_keys,
@@ -124,14 +119,6 @@ async def reset_easypaisa_redis_state(redis_client, payment_id, channels=None):
         "removed_online_ds": removed_online_ds,
         "removed_active_df": removed_active_df,
         "removed_channel_active": removed_channel_active,
-        "removed_runtime_online": removed_runtime_online,
-        "removed_runtime_collect": removed_runtime_collect,
-        "removed_runtime_df_order": removed_runtime_df_order,
-        "removed_runtime_ds_order": removed_runtime_ds_order,
-        "removed_runtime_dispatch_df": removed_runtime_dispatch_df,
-        "removed_runtime_dispatch_ds": removed_runtime_dispatch_ds,
-        "removed_runtime_schedule": removed_runtime_schedule,
-        "removed_runtime_updated": removed_runtime_updated,
     }
 
 
@@ -148,11 +135,6 @@ def apply_easypaisa_wallet_status_fields(payment_row):
     payment_row['online_ds'] = 1 if collection_status == 1 else 0
     return payment_row
 
-
-async def apply_easypaisa_runtime_fields(payment_row, runtime_reader):
-    if not is_easypaisa_payment(payment_row):
-        return payment_row
-    return apply_easypaisa_wallet_status_fields(payment_row)
 
 # 增加
 class addPartner(BaseHandler):
@@ -764,10 +746,10 @@ class getPayment(BaseHandler):
             normalized.add(str(value))
         return normalized
 
-    async def _merged_online_ids(self, table, legacy_key, runtime_reader, runtime_kind):
+    async def _merged_online_ids(self, table, legacy_key, kind):
         legacy_ids = self._normalize_redis_members(await self.redis.smembers(legacy_key))
         easypaisa_ids = await self._easypaisa_ids_for_table(table)
-        mysql_ids = await self._easypaisa_wallet_status_ids(table, runtime_kind)
+        mysql_ids = await self._easypaisa_wallet_status_ids(table, kind)
         return (legacy_ids - easypaisa_ids) | mysql_ids
 
     @tornado.web.authenticated
@@ -782,7 +764,6 @@ class getPayment(BaseHandler):
         table = 'payment_d' if data['is_del'] else 'payment'
         keys = ['a.id', 'a.partner_id', 'b.status AS partner_status','b.type AS type', 'a.bank_type', 'a.upi', 'a.amount_top', 'a.sys_balance', 'a.balance', 'a.account', 'a.name',
                 'a.ifsc', 'a.account_type', 'a.gmail', 'a.gmail_pw', 'a.time_create', 'a.certified', 'a.status', 'a.manual_status', 'a.priority_collection', 'a.channel', 'a.net_id', 'a.net_trade_pw', 'a.net_pw', 'a.phone', 'a.bank_type_id', 'a.account_accno', payment_wallet_status_select_key(table)] + payment_business_status_select_keys(table)
-        runtime_reader = None
         sql_part = ''
         values = []
 
@@ -796,7 +777,7 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['collect']):
                 collect = condition['collect']
                 del condition['collect']
-                online_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
+                online_ids = await self._merged_online_ids(table, 'payment_online_ds', "ds")
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -805,7 +786,7 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['pay']):
                 pay = condition['pay']
                 del condition['pay']
-                online_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
+                online_ids = await self._merged_online_ids(table, 'payment_online_df', "df")
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -851,8 +832,8 @@ class getPayment(BaseHandler):
         if r:
             data_r = r
             total = t
-        online_ds_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
-        online_df_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
+        online_ds_ids = await self._merged_online_ids(table, 'payment_online_ds', "ds")
+        online_df_ids = await self._merged_online_ids(table, 'payment_online_df', "df")
         count_r = {
             'online_ds': len(online_ds_ids),
             'online_df': len(online_df_ids)
@@ -1024,7 +1005,6 @@ class updatePaymentMonitorStatus(BaseHandler):
         monitor_status = data['monitor_status']
         channel = data['channel'].split(',')
 
-        # 任一银行字段命中 EP 都必须走 runtime 写面
         payment_info = await self.get_result_by_condition(
             'payment',
             ['bank_type', 'bank_type_id', 'wallet_status', 'status', 'certified', 'manual_status', 'collection_status'],

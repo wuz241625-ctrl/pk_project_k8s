@@ -21,31 +21,6 @@ logger.addHandler(fh)
 conf = get_config()
 
 
-class TimeOutGuard:
-    """runtime 银行回压校验器；EP/JazzCash 必须以各自 runtime 派单索引为准。"""
-    EASYPAISA_INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
-    INDEX_DISPATCH_DS = EASYPAISA_INDEX_DISPATCH_DS
-    JAZZCASH_INDEX_DISPATCH_DS = "jazzcash_runtime:index:dispatch_ds"
-
-    def __init__(self, redis_client):
-        self.redis = redis_client
-
-    @staticmethod
-    def _is_easypaisa(bank_type_id=None, bank_type=None) -> bool:
-        return str(bank_type_id or "") == "97" or str(bank_type or "") == "97"
-
-    @staticmethod
-    def _is_jazzcash(bank_type_id=None, bank_type=None) -> bool:
-        return str(bank_type_id or "") == "98" or str(bank_type or "") == "98"
-
-    def check(self, payment_id, bank_type_id=None, bank_type=None) -> bool:
-        if self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
-            return bool(self.redis.sismember(self.EASYPAISA_INDEX_DISPATCH_DS, str(payment_id)))
-        if self._is_jazzcash(bank_type_id=bank_type_id, bank_type=bank_type):
-            return bool(self.redis.sismember(self.JAZZCASH_INDEX_DISPATCH_DS, str(payment_id)))
-        return True
-
-
 def main():
     try:
         connection = pymysql.connect(host=conf['mysql_host'],
@@ -80,11 +55,8 @@ def order_timeout(conn, rds):
             
             # 订单
             orders_select = """
-                SELECT o.code, o.channel_code, o.partner_id, o.amount, o.payment_id, o.original_amount,
-                       p.bank_type_id AS bank_type_id,
-                       p.bank_type AS bank_type
+                SELECT o.code, o.channel_code, o.partner_id, o.amount, o.payment_id, o.original_amount
                 FROM orders_ds o
-                LEFT JOIN payment p ON p.id = o.payment_id
                 WHERE o.status IN (0, 1, 2)
                 AND o.time_create BETWEEN %s AND %s
                 AND (
@@ -178,19 +150,11 @@ def order_timeout(conn, rds):
                         conn.rollback()
                         rds.delete(busy_key)
                         continue
-                    # 放入队列
-                    list_name = 'payment_active_{channel_code}'.format(channel_code=i['channel_code'])
-                    guard = TimeOutGuard(rds)
-                    if not guard.check(
-                        payment_id=payment_id,
-                        bank_type_id=i.get('bank_type_id'),
-                        bank_type=i.get('bank_type'),
-                    ):
-                        logging.info(f"【码监控】: 码 {payment_id} 不在 runtime dispatch_ds 索引, 跳过 rpush {list_name}")
-                    else:
-                        rds.lrem(list_name, 0, payment_id)
-                        rds.rpush(list_name, payment_id)  # 尾部插入
-                        logging.info(f"【码监控】: 准备将码 {payment_id} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
+                    logging.info(
+                        "订单超时已完成退款，payment_id=%s 不再回推旧 payment_active_%s 队列",
+                        payment_id,
+                        i['channel_code'],
+                    )
                     key = 'msg_timeout_{partner_id}'.format(partner_id=partner_id)
                     rds.set(key, 1, 60)    # 保持60秒
                 rds.delete(busy_key)

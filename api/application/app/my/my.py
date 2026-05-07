@@ -8,11 +8,8 @@ from decimal import Decimal
 
 from aiomysql import DictCursor
 
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
-from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
-from application.jazzcash_runtime.reader import JazzCashRuntimeReader
-from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 from application.message import msg
+from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
 from application.phonepe import phmonitor
 
 
@@ -132,10 +129,6 @@ def _is_easypaisa_bank_type(bank_type):
     return str(bank_type) == '97'
 
 
-def _is_jazzcash_bank_type(bank_type):
-    return str(bank_type) == '98'
-
-
 def _is_easypaisa_payment(payment_row):
     return (
         _is_easypaisa_bank_type((payment_row or {}).get('bank_type_id'))
@@ -143,22 +136,55 @@ def _is_easypaisa_payment(payment_row):
     )
 
 
-def _is_jazzcash_payment(payment_row):
-    return (
-        _is_jazzcash_bank_type((payment_row or {}).get('bank_type_id'))
-        or _is_jazzcash_bank_type((payment_row or {}).get('bank_type'))
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def payment_business_status_from_config(wallet_status, status, certified, manual_status):
+    business_enabled = (
+        _as_int(wallet_status) == 1
+        and _as_int(status) == 1
+        and _as_int(certified) == 1
     )
+    return {
+        'collection_status': 1 if business_enabled and _as_int(manual_status) == 0 else 0,
+        'payout_status': 1 if business_enabled else 0,
+    }
 
 
-async def _apply_payment_online_fields(self, payment_row, runtime_reader):
+def payment_update_for_status(payment_row, status):
+    update_data = {'status': _as_int(status)}
+    update_data.update(
+        payment_business_status_from_config(
+            payment_row.get('wallet_status'),
+            update_data['status'],
+            payment_row.get('certified'),
+            payment_row.get('manual_status'),
+        )
+    )
+    return update_data
+
+
+def payment_update_for_certified(payment_row, certified):
+    update_data = {'certified': _as_int(certified)}
+    update_data.update(
+        payment_business_status_from_config(
+            payment_row.get('wallet_status'),
+            payment_row.get('status'),
+            update_data['certified'],
+            payment_row.get('manual_status'),
+        )
+    )
+    return update_data
+
+
+async def _apply_payment_online_fields(self, payment_row):
     if _is_easypaisa_payment(payment_row):
-        payment_row['online_ds'] = 1 if await runtime_reader.is_selling_order_online(payment_row['id']) else 0
-        payment_row['online_df'] = 1 if await runtime_reader.is_place_order_online(payment_row['id']) else 0
-        return
-    if _is_jazzcash_payment(payment_row):
-        jazzcash_reader = JazzCashRuntimeReader(self.redis)
-        payment_row['online_ds'] = 1 if await jazzcash_reader.is_selling_order_online(payment_row['id']) else 0
-        payment_row['online_df'] = 1 if await jazzcash_reader.is_place_order_online(payment_row['id']) else 0
+        payment_row['online_ds'] = 1 if can_dispatch_ds(payment_row) else 0
+        payment_row['online_df'] = 1 if can_dispatch_df(payment_row) else 0
         return
 
     payment_row['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', payment_row['id']) else 0
@@ -168,22 +194,28 @@ async def _apply_payment_online_fields(self, payment_row, runtime_reader):
 async def getpayment(self, data):
     if await self.is_null(data, ['offset']):
         return msg[10100]
-    keys = ['id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
+    keys = [
+        'id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name',
+        'status', 'certified', 'manual_status', 'wallet_status',
+        'collection_status', 'payout_status',
+    ]
     data_r = await self.get_result('payment', keys, {'partner_id': self.current_user['id']}, data['offset'])
-    runtime_reader = EasyPaisaRuntimeReader(self.redis)
     for i in data_r:  # 展示在线
-        await _apply_payment_online_fields(self, i, runtime_reader)
+        await _apply_payment_online_fields(self, i)
     result = {'type': 'payment.getpayment', 'data': data_r}
     return result
 
 # 获取收款信息
 async def getOnlinePayment(self, data):
-    keys = ['id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name', 'status', 'certified']
+    keys = [
+        'id', 'bank_type', 'bank_type_id', 'net_id', 'upi', 'phone', 'name',
+        'status', 'certified', 'manual_status', 'wallet_status',
+        'collection_status', 'payout_status',
+    ]
     data_r = await self.get_results_by_condition('payment', keys, {'partner_id': self.current_user['id']})
     data = []
-    runtime_reader = EasyPaisaRuntimeReader(self.redis)
     for i in data_r:  # 展示在线
-        await _apply_payment_online_fields(self, i, runtime_reader)
+        await _apply_payment_online_fields(self, i)
         if i.get('online_ds') or i.get('online_df'):
             data.append(i)
     result = {'type': 'payment.getOnlinePayment', 'data': data}
@@ -211,7 +243,15 @@ async def change_payment(self, data):
     if await self.is_null(data, ['id', 'status']):
         return msg[10100]
     payment_id = data['id']
-    payment = await self.get_result_by_condition('payment', ['certified', 'manual_status', 'bank_type', 'bank_type_id', 'phone', 'account_type', 'partner_id', 'channel'], {'id': payment_id})
+    payment = await self.get_result_by_condition(
+        'payment',
+        [
+            'certified', 'manual_status', 'wallet_status', 'status',
+            'bank_type', 'bank_type_id', 'phone', 'account_type',
+            'partner_id', 'channel',
+        ],
+        {'id': payment_id},
+    )
     if not payment:
         return msg[10100]
     # if data['status'] and not payment['certified']:
@@ -219,52 +259,12 @@ async def change_payment(self, data):
     # qr_channel = 1002 if payment['account_type'] == 2 else 1001
     qr_channel = payment['channel']
     if _is_easypaisa_payment(payment):
-        if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
+        update_data = payment_update_for_status(payment, data['status'])
+        if not await self.update_result('payment', update_data, {'id': payment_id}):
             return msg[10604]
-        runtime_service = EasyPaisaRuntimeService(self.redis)
-        channels = [str(qr_channel)] if not isinstance(qr_channel, str) else qr_channel.split(',')
-        certified_enabled = str(payment.get('certified')) == '1'
-        manual_locked = str(payment.get('manual_status') or 0) == '1'
-        if str(data['status']) == '1':
-            await runtime_service.resume_order_dispatch(
-                payment_id,
-                ds_enabled=certified_enabled and not manual_locked,
-                df_enabled=certified_enabled,
-                phone=payment.get('phone'),
-                channels=channels,
-                source='app_change_payment_on',
-            )
-        else:
-            await runtime_service.pause_order_dispatch(
-                payment_id,
-                phone=payment.get('phone'),
-                channels=channels,
-                source='app_change_payment_off',
-            )
-        return msg[10603]
-    if _is_jazzcash_payment(payment):
-        if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-            return msg[10604]
-        runtime_service = JazzCashRuntimeService(self.redis)
-        channels = [str(qr_channel)] if not isinstance(qr_channel, str) else qr_channel.split(',')
-        certified_enabled = str(payment.get('certified')) == '1'
-        manual_locked = str(payment.get('manual_status') or 0) == '1'
-        if str(data['status']) == '1':
-            await runtime_service.resume_order_dispatch(
-                payment_id,
-                ds_enabled=certified_enabled and not manual_locked,
-                df_enabled=certified_enabled,
-                phone=payment.get('phone'),
-                channels=channels,
-                source='app_change_payment_on',
-            )
-        else:
-            await runtime_service.pause_order_dispatch(
-                payment_id,
-                phone=payment.get('phone'),
-                channels=channels,
-                source='app_change_payment_off',
-            )
+        if not data['status']:
+            await self.redis.srem('payment_online_df', payment_id)
+            await self.redis.lrem('payment_active_df', 0, payment_id)
         return msg[10603]
     # if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
     #     return msg[10604]
@@ -563,7 +563,13 @@ async def certified(self, data):
         return msg[10100]
     if not data['certified'] in [0, 1]:
         return msg[10100]
-    if not await self.update_result('payment', {'certified': data['certified']}, {'id': data['id']}):
+    payment = await self.get_result_by_condition(
+        'payment',
+        ['bank_type', 'bank_type_id', 'wallet_status', 'status', 'manual_status'],
+        {'id': data['id']},
+    )
+    update_data = payment_update_for_certified(payment, data['certified'])
+    if not await self.update_result('payment', update_data, {'id': data['id']}):
         return msg[10619]
     if data['certified']:
         return msg[10620]

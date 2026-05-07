@@ -20,12 +20,12 @@ reject_reserved_domain_value APP_API_BASE_URL
 RENDER_DIR="${D7PAY_RENDER_DIR:-/tmp/d7pay-rendered}"
 mkdir -p "${RENDER_DIR}"
 
-RUNTIME_CONFIGMAP="${RENDER_DIR}/runtime-configmap.yaml"
+APP_CONFIGMAP="${RENDER_DIR}/app-configmap.yaml"
 NGINX_CONFIG="${RENDER_DIR}/nginx-d7pay.conf"
 SUMMARY_FILE="${RENDER_DIR}/env-summary.txt"
 
 cd "${D7PAY_ROOT}"
-python3 ops/tenants/d7pay/scripts/render_runtime_config.py --output "${RUNTIME_CONFIGMAP}"
+python3 ops/tenants/d7pay/scripts/render_app_config.py --output "${APP_CONFIGMAP}"
 
 cat > "${NGINX_CONFIG}" <<NGINX
 server {
@@ -102,6 +102,6 @@ APKDOWNLOAD_HOST_PATH=${APKDOWNLOAD_HOST_PATH:-/data/pk-d7pay/apkdownload/d7pay}
 SUMMARY
 
 echo "已渲染 D7pay 配置:"
-echo "- ${RUNTIME_CONFIGMAP}"
+echo "- ${APP_CONFIGMAP}"
 echo "- ${NGINX_CONFIG}"
 echo "- ${SUMMARY_FILE}"

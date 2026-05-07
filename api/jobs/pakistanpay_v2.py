@@ -668,7 +668,7 @@ class BankLogin:
             finally:
                 self.db_connection.commit()
 
-    def _read_payment_runtime_flags(self, payment_id):
+    def _read_payment_policy_flags(self, payment_id):
         if not self.db_connection or not self.db_connection.open:
             self.logger.error("数据库连接已关闭，尝试重新连接...")
             self.db_connection = self.check_db_connection()
@@ -688,15 +688,15 @@ class BankLogin:
                 )
                 return cur.fetchone()
             except Exception as e:
-                self.logger.error(f"查询 EasyPaisa runtime 状态失败 payment_id={payment_id}: {e}", exc_info=True)
+                self.logger.error(f"查询 EasyPaisa 数据库状态失败 payment_id={payment_id}: {e}", exc_info=True)
                 self.db_connection.rollback()
                 return None
             finally:
                 self.db_connection.commit()
 
-    def payment_runtime_policy(self, payment_id, login_data=None):
-        """返回采集 worker 写 runtime 前必须遵守的 DB/runtime 策略。"""
-        payment = self._read_payment_runtime_flags(payment_id)
+    def payment_dispatch_policy(self, payment_id, login_data=None):
+        """返回采集 worker 采集 worker 必须遵守的数据库策略。"""
+        payment = self._read_payment_policy_flags(payment_id)
         if not payment:
             return "offline"
 
@@ -911,7 +911,7 @@ class BankLogin:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
-                policy = self.payment_runtime_policy(login_data['id'], login_data)
+                policy = self.payment_dispatch_policy(login_data['id'], login_data)
                 if policy == "offline":
                     self.redis.hdel(self.hash_key, login_data['id'])
                     self.redis.zrem(self.set_key, login_data['id'])
@@ -976,7 +976,7 @@ class BankLogin:
 
     def update_key(self, login_data):
         try:
-            policy = self.payment_runtime_policy(login_data['id'], login_data)
+            policy = self.payment_dispatch_policy(login_data['id'], login_data)
             if policy == "offline":
                 self.redis.hdel(self.hash_key, login_data['id'])
                 self.redis.zrem(self.set_key, login_data['id'])
@@ -1975,7 +1975,7 @@ class BankLogin:
                 #     self.login_off()
                 #     return 'logout'
                 self.redis.delete(_key2)
-                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按 runtime 策略继续采集:" + simplejson.dumps(login_data))
+                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按数据库策略继续采集:" + simplejson.dumps(login_data))
 
             # 通知监控一键下线
             _key3 = 'login_off_realtime_{}_{}'.format(self.name, login_data['id'])
@@ -2619,7 +2619,7 @@ class BankLogin:
                         self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
                         data['status'] = "grabstatement"
                         data['id'] = data['real_payment_id']
-                        policy = self.payment_runtime_policy(data['id'], data)
+                        policy = self.payment_dispatch_policy(data['id'], data)
                         if policy == "offline":
                             self.redis.delete(_id)
                             self.del_lock(_id, _lock)

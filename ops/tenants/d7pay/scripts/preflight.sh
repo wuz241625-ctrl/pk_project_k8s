@@ -17,7 +17,7 @@ print_section "本地合同检查"
 python3 -m py_compile \
   ops/tenants/d7pay/verify_release_contract.py \
   ops/tenants/d7pay/assets/generate_logo_assets.py \
-  ops/tenants/d7pay/scripts/render_runtime_config.py \
+  ops/tenants/d7pay/scripts/render_app_config.py \
   ops/tenants/d7pay/tests/test_config_only_release.py
 python3 ops/tenants/d7pay/verify_release_contract.py
 
@@ -67,18 +67,18 @@ for name in API_DOMAIN ADMIN_DOMAIN MERCHANT_DOMAIN APKDOWNLOAD_DOMAIN API_WEBSO
 done
 
 print_section "Secret 文件检查"
-if [ -n "${D7PAY_RUNTIME_SECRET_YAML:-}" ]; then
-  if [ ! -f "${D7PAY_RUNTIME_SECRET_YAML}" ]; then
-    echo "D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在: ${D7PAY_RUNTIME_SECRET_YAML}" >&2
+if [ -n "${D7PAY_SECRET_YAML:-}" ]; then
+  if [ ! -f "${D7PAY_SECRET_YAML}" ]; then
+    echo "D7PAY_SECRET_YAML 指向的文件不存在: ${D7PAY_SECRET_YAML}" >&2
     exit 1
   fi
-  if grep -E "CHANGE_ME|replace-in-jenkins|example.com|awekay.com" "${D7PAY_RUNTIME_SECRET_YAML}" >/dev/null; then
-    echo "真实 Secret 文件仍包含占位值或禁用域名: ${D7PAY_RUNTIME_SECRET_YAML}" >&2
+  if grep -E "CHANGE_ME|replace-in-jenkins|example.com|awekay.com" "${D7PAY_SECRET_YAML}" >/dev/null; then
+    echo "真实 Secret 文件仍包含占位值或禁用域名: ${D7PAY_SECRET_YAML}" >&2
     exit 1
   fi
   echo "Secret 文件存在且未发现占位值"
 else
-  echo "未设置 D7PAY_RUNTIME_SECRET_YAML，跳过真实 Secret 文件检查"
+  echo "未设置 D7PAY_SECRET_YAML，跳过真实 Secret 文件检查"
 fi
 
 print_section "集群只读检查"

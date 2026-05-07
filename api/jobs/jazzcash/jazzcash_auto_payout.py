@@ -33,7 +33,6 @@ sys.path.append(root_dir)
 
 from config import get_config
 from application.websocket import callback
-from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
 
 # ========== 日志系统 ==========
 # 程序名称（用于日志）
@@ -50,7 +49,7 @@ class ProgramLogger(logging.Logger):
             if frame is not None:
                 frame = frame.f_back
         func_name = frame.f_code.co_name if frame is not None else 'unknown'
-        
+
         # 添加程序名和函数名到消息前缀
         msg = f"[{PROGRAM_NAME}][{func_name}] {msg}"
         super()._log(level, msg, args, exc_info, extra, stack_info, stacklevel)
@@ -403,14 +402,14 @@ BANK_CODE_MAPPING = {
     'easypaisabanklimited': '59',
     'tmfb': '59',
     'tmfbpkka': '59',
-    
+
     # 核心映射 - JazzCash（同行转账，空值）
     'jazzcash': '',
     'mobilink': '',
     'mobilinkmicrofinancebank': '',
     'mobilinkmicrofinancebanklimited': '',
     'jcicpkka': '',
-    
+
     # 常用银行简称
     'ubl': '60',           # United Bank
     'hbl': '49',           # Habib Bank
@@ -421,7 +420,7 @@ BANK_CODE_MAPPING = {
     'bok': '87',           # Bank of Khyber
     'scb': '64',           # Standard Chartered
     'jsb': '75',           # JS Bank
-    
+
     # BIC/SWIFT Codes (完整格式)
     'unilpkkartg': '60',   # United Bank Limited
     'habbpkkartg': '49',   # Habib Bank Limited
@@ -446,7 +445,7 @@ BANK_CODE_MAPPING = {
     'yappkka': '99',       # YAP -> NayaPay
     'khbldfid': '94',      # Khushhali Bank (KHBLDFID -> Khushali Bank)
     'hubppkka': '',        # Hubpay (未在JazzCash列表中，返回空)
-    
+
     # 完整银行名称（规范化：小写无空格）
     'unitedbankltdubl': '60',
     'unitedbanklimited': '60',
@@ -494,7 +493,7 @@ BANK_CODE_MAPPING = {
     'mashreqbankpakistanlimited': '32',
     'nbpfundmanagement': '98',
     'lolcmicrofinance': '81',
-    
+
     # 其他 SWIFT 变体
     'unilpkka': '60',
     'habbpkka': '49',
@@ -525,7 +524,7 @@ class JazzCashAutoPayout:
         self.list_key = f"list_{name}"
         self.hash_key = f"hash_{name}"
         self.set_key = f"set_{name}"
-        
+
         # 系统配置参数
         self.lock_time = 120  # 操作锁的锁定时间（秒） - 修改为120秒以适配60秒转账API超时
 
@@ -533,17 +532,16 @@ class JazzCashAutoPayout:
         self.logger = logger
         self.local_mock = False  # 本地模拟标志
         self.log_handler = file_handler
-        
+
 
         # 连接Redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
-        self.runtime_service = SyncJazzCashRuntimeService(self.redis)
-        
+
         # 会议决策：异常当成功处理（已内置到逻辑中）
-        
+
         # 系统配置
         self.concurrent_limit = 20
-        
+
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
             'jazzcash_online_df': 'payment_online_df',           # JazzCash在线代付账号集合（复用项目标准键名）
@@ -563,14 +561,14 @@ class JazzCashAutoPayout:
             # - 账号冷却期配置: 'easypaisa_paymentid_cooldown_seconds'
             # - 紧急停机标记: 'easypaisa_emergency_stop' (全局控制)
         }
-        
+
         # 操作日志记录开关
         self.operation_logs_enabled = True
         self._verify_operation_logs_table()
-        
+
         # 兼容 success_df 函数需要的属性
         self.qr_id = None  # 当前处理的 payment_id，在调用 success_df 前需要设置
-    
+
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
         if hasattr(self.log_handler, 'get_stats'):
@@ -582,18 +580,18 @@ class JazzCashAutoPayout:
                 'is_running': not getattr(self.log_handler, '_shutdown', False)
             }
         return None
-    
+
     # ========== 从BaseHandler复制的核心方法（同步版本） ==========
-    
+
     def get_cache_result(self, table, keys, condition=None):
         """获取缓存数据（复制自BaseHandler.get_cache_result，同步版本）"""
         try:
             if not condition:
                 condition = {'id': 1}
-            
+
             redis_key = f'cache_info_{table}_{condition["id"]}'
             data_info = self.redis.get(redis_key)
-            
+
             if data_info:
                 # 缓存命中
                 data_info = simplejson.loads(data_info, parse_float=Decimal)
@@ -611,7 +609,7 @@ class JazzCashAutoPayout:
                         charset='utf8mb4',
                         cursorclass=pymysql.cursors.DictCursor
                     )
-                    
+
                     try:
                         # 构建WHERE条件 (对于sys_info表，默认查询id=1)
                         where_conditions = []
@@ -619,10 +617,10 @@ class JazzCashAutoPayout:
                         for key, value in condition.items():
                             where_conditions.append(f"{key} = %s")
                             where_values.append(value)
-                        
+
                         where_clause = " AND ".join(where_conditions)
                         sql = f"SELECT * FROM {table} WHERE {where_clause}"
-                        
+
                         with connection.cursor() as cur:
                             cur.execute(sql, where_values)
                             result = cur.fetchone()
@@ -633,21 +631,21 @@ class JazzCashAutoPayout:
                                 self.logger.info(f"缓存数据已更新： {table} {condition}")
                     finally:
                         connection.close()
-                        
+
                 except Exception as e:
                     self.logger.error(f"查询缓存数据失败: table={table}, condition={condition}, error={e}")
                     data_info = {}
-            
+
             # 返回指定字段
             if data_info:
                 data_info = data_info if keys == ['*'] else {key: data_info[key] for key in keys if key in data_info}
-            
+
             return data_info
-            
+
         except Exception as e:
             self.logger.error(f"获取缓存数据失败: table={table}, keys={keys}, condition={condition}, error={e}")
             return {}
-    
+
     def _format_sql(self, cur, sql, params=None):
         """格式化SQL用于日志显示（兼容PyMySQL版本）"""
         try:
@@ -677,7 +675,7 @@ class JazzCashAutoPayout:
         sql_select_vip = "select vip,conditions from vip"
         sql_update_vip = "update partner set vip=%s where id = %s"
         sql_select_orders = f"SELECT merchant_code FROM orders_df WHERE code = '{code}' UNION SELECT merchant_code FROM orders_ds WHERE code = '{code}'"
-        
+
         try:
             # 步骤1: 获取变更前余额
             params_1 = (user_id,)
@@ -687,11 +685,11 @@ class JazzCashAutoPayout:
                 self.logger.error(f"步骤1失败: 查询变更前余额执行失败")
                 self.logger.error(f"失败SQL: {self._format_sql(cur, sql_select, params_1)}")
                 return False
-            
+
             user_before = (cur.fetchall())[0]
             balance_before = user_before['balance']
             self.logger.info(f"步骤1成功: 变更前余额={balance_before}")
-            
+
             # 步骤2: 更新余额
             params_2 = (amount, user_id)
             self.logger.info(f"步骤2: 准备更新{table}用户{user_id}余额，变更金额={amount}")
@@ -700,9 +698,9 @@ class JazzCashAutoPayout:
                 self.logger.error(f"步骤2失败: 更新余额执行失败")
                 self.logger.error(f"失败SQL: {self._format_sql(cur, sql_update, params_2)}")
                 return False
-            
+
             self.logger.info(f"步骤2成功: 更改金额{self._format_sql(cur, sql_update, params_2)}")
-            
+
             # 步骤3: 获取变更后余额
             params_3 = (user_id,)
             self.logger.info(f"步骤3: 准备查询{table}用户{user_id}的变更后余额")
@@ -711,22 +709,22 @@ class JazzCashAutoPayout:
                 self.logger.error(f"步骤3失败: 查询变更后余额执行失败")
                 self.logger.error(f"失败SQL: {self._format_sql(cur, sql_select, params_3)}")
                 return False
-            
+
             user_after = (cur.fetchall())[0]
             balance_after = user_after['balance']
             self.logger.info(f"步骤3成功: 变更后余额={balance_after}")
-            
+
             # 步骤4: 检查余额是否足够（码商最低余额为0）
             partner_balance = 0
             if Decimal(balance_after) < partner_balance:
                 self.logger.error(f"步骤4失败: 余额不足，user_id={user_id}, balance_after={balance_after}, 最低要求={partner_balance}")
                 return False
             self.logger.info(f"步骤4成功: 余额检查通过")
-            
+
             # 步骤5: 确定用户类型
             user_type = 0 if table == 'partner' else 1
             self.logger.info(f"步骤5: 用户类型确定为 {user_type} ({'码商' if user_type == 0 else '商户'})")
-            
+
             # 步骤6: 获取商户订单号
             self.logger.info(f"步骤6: 处理商户订单号，当前merchant_code={merchant_code}")
             if merchant_code is None:
@@ -740,7 +738,7 @@ class JazzCashAutoPayout:
                     self.logger.info(f"步骤6: 未找到merchant_code，保持为None")
             else:
                 self.logger.info(f"步骤6: merchant_code已存在，无需查询")
-            
+
             # 步骤7: 插入流水记录
             params_7 = (code, user_type, user_id, balance_before, amount, balance_after, record_type, remark, merchant_code)
             self.logger.info(f"步骤7: 准备插入流水记录")
@@ -750,9 +748,9 @@ class JazzCashAutoPayout:
                 self.logger.error(f"步骤7失败: 插入流水记录执行失败")
                 self.logger.error(f"失败SQL: {self._format_sql(cur, sql_insert, params_7)}")
                 return False
-            
+
             self.logger.info(f"步骤7成功: 新增流水{self._format_sql(cur, sql_insert, params_7)}")
-            
+
             # 步骤8: VIP 等级更新（仅对码商且金额为正数）
             if table == 'partner' and amount > Decimal(0):
                 self.logger.info(f"步骤8: 开始处理VIP等级更新")
@@ -764,13 +762,13 @@ class JazzCashAutoPayout:
                     return False
                 vips = cur.fetchall()
                 self.logger.info(f"查询到{len(vips)}个VIP等级配置")
-                
+
                 for i in vips:
                     if balance_after >= i['conditions']:
                         _vip = i['vip']
-                
+
                 self.logger.info(f"VIP等级计算: 当前余额={balance_after}, 应达到VIP={_vip}, 原VIP={user_before['vip']}")
-                
+
                 if int(_vip) > user_before['vip']:
                     self.logger.info(f"需要升级VIP: {user_before['vip']} -> {_vip}")
                     self.logger.info(f"执行SQL: {sql_update_vip} 参数: ({_vip}, {user_id})")
@@ -784,10 +782,10 @@ class JazzCashAutoPayout:
                     self.logger.info(f"步骤8: VIP等级无需更新")
             else:
                 self.logger.info(f"步骤8: 跳过VIP更新（table={table}, amount={amount}）")
-            
+
             self.logger.info(f"🎉 全部步骤完成: 用户{user_id}余额从{balance_before}变更为{balance_after}（变更{amount}）")
             return True
-            
+
         except Exception as e:
             import traceback
             self.logger.error(f"🚨 异常发生: {type(e).__name__}: {e}")
@@ -798,15 +796,15 @@ class JazzCashAutoPayout:
             except:
                 self.logger.error(f"无法获取最后执行的SQL")
             return False
-    
+
     def handle_payout_success(self, connection, cur, order_data, result):
         """处理代付成功逻辑（复制success_df的核心功能）"""
         try:
             amount = Decimal(order_data['amount'])
             order_code = order_data['code']
-            
+
             # 注意：主流程已经获取了订单锁，这里不需要重复获取
-            
+
             # 1. 订单类型判断（复制success_df逻辑）
             # 1=常规订单，2=拆单主单，3=拆单子单
             order_type = -1
@@ -816,9 +814,9 @@ class JazzCashAutoPayout:
                 order_type = 2  # 拆单主单
             if order_data.get('parent_id'):
                 order_type = 3  # 拆单子单
-            
+
             self.logger.info(f"[{order_code}] 订单类型: {order_type} (1=常规, 2=拆单主单, 3=拆单子单)")
-            
+
             # 2. 扣商户余额（过期订单，复制success_df逻辑）
             # #328 & 382, 主单不会走这个逻辑，子单不会直接影响商户金额
             if order_type in [1]:
@@ -826,28 +824,28 @@ class JazzCashAutoPayout:
                     self.logger.info(f"[{order_code}] 准备扣除商户 {order_data['merchant_id']} 过期订单金额 {order_data['realpay']}。")
                     if not self.change_balance(connection, cur, 'merchant', order_data['merchant_id'], -order_data['realpay'], order_code, 0):
                         return False
-            
+
             # 3. 商户代理费用计算（复制success_df逻辑）
             # #328 & 382, 主单不会走这个逻辑，子单不会直接影响商户金额
             earn_merchant = Decimal(0)
             if order_type in [1] and order_data.get('earn_merchant', 0) > Decimal(0):
                 sql_select_rates = """select id,rate_df from (select @orgId id, (select rate_df from merchant where id=@orgId) rate_df,
-                                    (select @orgId:=pid from merchant where id=@orgId) pid from 
+                                    (select @orgId:=pid from merchant where id=@orgId) pid from
                                     (select @orgId:=%s) vars,merchant) t where id is not null order by pid desc"""
                 if not cur.execute(sql_select_rates, (order_data['merchant_id'],)):
                     self.logger.error(f"未找到商户{order_data['merchant_id']}的代理费率信息")
                     return False
                 merchant_prates = cur.fetchall()
-                
+
                 for k, v in enumerate(merchant_prates):
                         if not k == 0 and v['rate_df']:
                             _amount = amount * (merchant_prates[k - 1]['rate_df'] - v['rate_df'])
                             if _amount == 0:
                                 self.logger.info(
                                     '代付订单{code}没有代付费用差,上级商户{id}费率{rate_df} ,本级商户{id2}费率{rate_df2}'.format(
-                                        code=order_code, 
+                                        code=order_code,
                                         id=merchant_prates[k - 1]['id'],
-                                        rate_df=merchant_prates[k - 1]['rate_df'], 
+                                        rate_df=merchant_prates[k - 1]['rate_df'],
                                         id2=v['id'],
                                         rate_df2=v['rate_df']
                                     ))
@@ -859,17 +857,17 @@ class JazzCashAutoPayout:
                             if not self.change_balance(connection, cur, 'merchant', v['id'], _amount, order_code, 3):
                                 return False
                             earn_merchant += _amount
-            
+
             # 4. 码商余额（复制success_df逻辑）
             # #328 & 382，主单不会走这个逻辑
             if order_type in [1, 3]:
                 partner_id = order_data['partner_id']
-                
+
                 # 码商代付金额
                 self.logger.info(f"[{order_code}] 准备为码商 {partner_id} 增加代付金额 {amount}。")
                 if not self.change_balance(connection, cur, 'partner', partner_id, amount, order_code, 1):
                     return False
-            
+
             # 5. 码商佣金（复制success_df逻辑）
             # #328 & 382, 主单 & 子单 不会走这个逻辑
             if order_type in [1]:
@@ -879,14 +877,14 @@ class JazzCashAutoPayout:
                     self.logger.info(f"[{order_code}] 准备为码商 {partner_id} 增加佣金 {earn_partner_self}。")
                     if not self.change_balance(connection, cur, 'partner', partner_id, earn_partner_self, order_code, 3):
                         return False
-            
+
             # 6. 代付优惠计算（复制success_df逻辑）
-            # #328 & 382, 主单 & 子单 不会走这个逻辑  
+            # #328 & 382, 主单 & 子单 不会走这个逻辑
             disprice = Decimal(0)
             if order_type in [1]:
                 cache_result = self.get_cache_result('sys_info', ['range_df'])
                 range_df = cache_result.get('range_df') if cache_result else None
-                
+
                 if range_df:
                     import json
                     range_df = json.loads(range_df)
@@ -898,19 +896,19 @@ class JazzCashAutoPayout:
                                 disprice = Decimal(range_df.get('disprice' + str(i), 0))
                                 self.logger.info(f'代付优惠 disprice:{disprice} rangemin:{rangemin} rangemax:{rangemax} amount:{amount} merchant_id:{order_data["merchant_id"]}')
                                 break
-                
+
                 # 代付优惠入库
                 if disprice > 0:
                     partner_id = order_data['partner_id']
                     self.logger.info(f"[{order_code}] 准备为码商 {partner_id} 增加代付优惠 {disprice}。")
                     if not self.change_balance(connection, cur, 'partner', partner_id, disprice, order_code, 10):
                         return False
-            
+
             # 7. 更新系统余额
             sql_update_payment = "UPDATE payment SET sys_balance=sys_balance+%s WHERE id=%s"
             cur.execute(sql_update_payment, (-amount, self.qr_id))
             self.logger.info(f"更新支付账户{self.qr_id}系统余额: {self._format_sql(cur, sql_update_payment, (-amount, self.qr_id))}")
-            
+
             # 8. 更新订单信息（状态status=3已在转账成功时更新）
             # 获取付款手机号用于更新utr字段（如果之前未更新）
             payer_phone = result.get('payer_phone', '')
@@ -918,46 +916,48 @@ class JazzCashAutoPayout:
                 self.logger.warning(f"订单{order_code}未获取到付款手机号，utr字段保持原值")
             else:
                 self.logger.info(f"订单{order_code}付款手机号: {payer_phone}")
-            
+
             # 🔥 优化：只更新earn_merchant字段，status=3已在转账成功时更新
             sql_update = "UPDATE orders_df SET earn_merchant=%s WHERE code=%s"
             cur.execute(sql_update, (earn_merchant, order_code))
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
-            
+
             # 9. 重新接单（复制success_df逻辑）
-            if self.qr_id and self.runtime_service.requeue_df_if_online(self.qr_id):
+            if self.qr_id and self.redis.sismember('payment_online_df', self.qr_id):
+                self.redis.lrem('payment_active_df', 0, self.qr_id)
+                self.redis.rpush('payment_active_df', self.qr_id)
                 self.logger.info(f"代付账户{self.qr_id}重新进入活跃轮询队列")
-            
+
             # 10. Redis通知
             self.redis.publish('order_df_notify', order_code)
-            
+
             self.logger.info(f'订单{order_code}代付成功处理完成')
-            
+
             # 11.新增：标记冷却期成功
             self.mark_order_cooldown_success(order_code)
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f'订单{order_code}success处理异常: {e}')
             self.logger.error(traceback.format_exc())
             return False
-    
-    def reject_order_with_refund(self, order_data: Dict, connection, reason: str, 
+
+    def reject_order_with_refund(self, order_data: Dict, connection, reason: str,
                                  selected_account: Dict) -> Dict:
         """
         驳回订单并退回商户余额
-        
+
         ⚠️ 重要说明：
         1. 此函数不会提交或回滚事务，由调用方统一管理事务
         2. 此函数不会放回账号到活跃列表，由调用方在commit成功后执行
-        
+
         前置条件（由调用方保证）：
         - status 一定是 1（刚从0更新为1）
         - order_type 一定是 1（常规订单）
         - selected_account 一定存在
         - 调用方已在同一事务中更新了 payment_id
-        
+
         返回：
         - {'success': False, 'reject': True, 'message': ...} 驳回操作完成（待提交）
         - {'success': False, 'reject': False, 'message': ...} 驳回操作失败
@@ -966,7 +966,7 @@ class JazzCashAutoPayout:
         # 截断 remark 避免超过数据库字段长度（按字节计算，balance_record.remark 为 varchar(64)）
         # 直接使用 reason（通常是 API 返回的 msg），保留更多有用信息
         max_remark_bytes = 64
-        
+
         # 按字节截断 reason
         reason_bytes = reason.encode('utf-8')
         if len(reason_bytes) > max_remark_bytes:
@@ -976,29 +976,29 @@ class JazzCashAutoPayout:
             sys_remark = sys_remark.rstrip('(:：')
         else:
             sys_remark = reason
-        
+
         self.logger.warning(f'⚠️ 开始驳回订单: {order_code}, 原因: {reason}')
-        
+
         try:
             cur = connection.cursor()
-            
+
             # 1. 查询流水记录（只查商户流水，status=1时还没有码商流水）
             sql_select_record = """
-                SELECT amount, user_type, user_id 
-                FROM balance_record 
+                SELECT amount, user_type, user_id
+                FROM balance_record
                 WHERE code=%s AND user_type=1
             """
             cur.execute(sql_select_record, (order_code,))
             mer_records = cur.fetchall()
-            
+
             self.logger.info(f'订单{order_code}商户流水记录: {len(mer_records)}条')
-            
+
             # 2. 退回商户余额（status=1，码商还没实际付款，只退商户）
             for record in mer_records:
                 if not self.change_balance(
-                    connection, cur, 'merchant', record['user_id'], 
+                    connection, cur, 'merchant', record['user_id'],
                     -record['amount'],  # 反向操作
-                    order_code, 
+                    order_code,
                     record_type=9,  # 9=代付驳回
                     remark=sys_remark
                 ):
@@ -1006,35 +1006,35 @@ class JazzCashAutoPayout:
                     # 不回滚，由调用方决定
                     return {'success': False, 'reject': False, 'message': 'Refund failed'}
                 self.logger.info(f'订单{order_code}已退回商户{record["user_id"]}金额: {record["amount"]}')
-            
+
             # 3. 更新订单状态为-2（驳回）
             sql_update_cancel = """
-                UPDATE orders_df 
+                UPDATE orders_df
                 SET status = -2, sys_remark = %s
                 WHERE code = %s AND status = 1
                 LIMIT 1
             """
             cur.execute(sql_update_cancel, (sys_remark, order_code))
             affected_rows = cur.rowcount
-            
+
             if affected_rows == 0:
                 self.logger.warning(f'订单{order_code}状态不是1，驳回更新失败')
                 # 不回滚，由调用方决定
                 return {'success': False, 'reject': False, 'message': 'Status update failed'}
-            
+
             self.logger.info(f'✅ 订单{order_code}驳回操作已完成（待提交），status: 1→-2')
-            
+
             return {
                 'success': False,
                 'reject': True,  # 标记为驳回
                 'message': f'Order rejected: {reason}'
             }
-            
+
         except Exception as e:
             self.logger.exception(f'驳回订单{order_code}异常: {e}')
             # 不回滚，由调用方决定
             return {'success': False, 'reject': False, 'message': f'Exception: {str(e)}'}
-    
+
     def _verify_operation_logs_table(self):
         """验证操作日志表是否存在"""
         try:
@@ -1045,33 +1045,33 @@ class JazzCashAutoPayout:
                 db=conf['mysql_database'],
                 charset='utf8mb4'
             )
-            
+
             with connection.cursor() as cur:
                 cur.execute("SHOW TABLES LIKE 'easypaisa_operation_logs'")
                 result = cur.fetchone()
-                
+
                 if not result:
                     self.logger.warning("⚠️ easypaisa_operation_logs表不存在，操作日志功能将被禁用")
                     self.operation_logs_enabled = False
                 else:
                     self.logger.info("✅ easypaisa_operation_logs表验证成功")
                     self.operation_logs_enabled = True
-                    
+
         except Exception as e:
             self.logger.error(f"验证操作日志表失败: {e}")
             self.operation_logs_enabled = False
         finally:
             if 'connection' in locals():
                 connection.close()
-    
+
     def log_operation(self, operation_type: str, **kwargs):
         """记录JazzCash操作日志到数据库
-        
+
         Args:
             operation_type: 操作类型
             **kwargs: 其他参数，包括：
                 - order_code: 订单号
-                - from_payment_id: 转出方payment_id  
+                - from_payment_id: 转出方payment_id
                 - from_account_number: 转出方JazzCash手机号
                 - to_account_number: 转入账号
                 - to_account_name: 收款人姓名
@@ -1094,7 +1094,7 @@ class JazzCashAutoPayout:
             # 表不存在时，只记录到文件日志
             self.logger.debug(f"操作日志(仅文件): {operation_type} - {kwargs.get('order_code', '')} - {kwargs.get('status', '')}")
             return
-        
+
         try:
             connection = pymysql.connect(
                 host=conf['mysql_host'],
@@ -1104,7 +1104,7 @@ class JazzCashAutoPayout:
                 charset='utf8mb4',
                 autocommit=True  # 日志记录使用自动提交
             )
-            
+
             with connection.cursor() as cur:
                 sql = """
                     INSERT INTO easypaisa_operation_logs (
@@ -1118,10 +1118,10 @@ class JazzCashAutoPayout:
                         ip_address, user_agent, server_process_id, trace_id, process_log
                     ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """
-                
+
                 # 从API响应中提取requestId作为transaction_id（安全处理）
                 transaction_id = kwargs.get('transaction_id')  # 先取原有的transaction_id
-                
+
                 # 安全地尝试从API响应中提取requestId
                 try:
                     api_response = kwargs.get('api_response')
@@ -1134,26 +1134,26 @@ class JazzCashAutoPayout:
                 except Exception as e:
                     # 如果提取requestId出错，继续使用原有的transaction_id，不影响主流程
                     self.logger.debug(f"提取requestId时出错，使用原有transaction_id: {e}")
-                
+
                 # 序列化JSON数据
                 api_request_json = None
                 api_response_json = None
-                
+
                 if kwargs.get('api_request'):
                     try:
                         api_request_json = json.dumps(kwargs['api_request'], ensure_ascii=False)
                     except Exception:
                         api_request_json = str(kwargs['api_request'])
-                
+
                 if kwargs.get('api_response'):
                     try:
                         api_response_json = json.dumps(kwargs['api_response'], ensure_ascii=False)
                     except Exception:
                         api_response_json = str(kwargs['api_response'])
-                
+
                 # 获取trace_id
                 trace_id = kwargs.get('trace_id') or getattr(trace_id_filter, 'trace_id', 'default')
-                
+
                 cur.execute(sql, (
                     kwargs.get('from_payment_id'),                      # from_payment_id
                     kwargs.get('from_account_number'),                  # from_account_number
@@ -1185,15 +1185,15 @@ class JazzCashAutoPayout:
                     trace_id,                                            # trace_id
                     kwargs.get('process_log')                           # process_log
                 ))
-                
+
                 # 记录日志信息
                 if transaction_id:
                     self.logger.debug(f"✅ 操作日志已记录: {operation_type} - {kwargs.get('order_code', '')} - {kwargs.get('status', '')} - transaction_id: {transaction_id}")
                 else:
                     self.logger.debug(f"✅ 操作日志已记录: {operation_type} - {kwargs.get('order_code', '')} - {kwargs.get('status', '')}")
-                
+
                 return
-                
+
         except Exception as e:
             # 日志记录失败不应该影响主业务，只记录到文件日志
             self.logger.warning(f"记录操作日志失败: {e}")
@@ -1201,14 +1201,14 @@ class JazzCashAutoPayout:
         finally:
             if 'connection' in locals():
                 connection.close()
-    
-    def log_complete_transaction(self, order_data: dict, account_info: dict, api_request: dict, 
-                               api_response: dict, status: str, error_message: str = None, 
-                               transaction_id: str = None, start_time: float = None, 
+
+    def log_complete_transaction(self, order_data: dict, account_info: dict, api_request: dict,
+                               api_response: dict, status: str, error_message: str = None,
+                               transaction_id: str = None, start_time: float = None,
                                before_balance: float = None, after_balance: float = None,
                                process_details: dict = None):
         """记录完整的交易记录（一笔交易一条记录）
-        
+
         Args:
             order_data: 订单数据
             account_info: 账号信息
@@ -1222,12 +1222,12 @@ class JazzCashAutoPayout:
             after_balance: 转账后余额
         """
         process_time = int((time.time() - start_time) * 1000) if start_time else None
-        
+
         # 提取转入方信息
         to_account = order_data.get('payment_account', '')
         to_name = order_data.get('payment_name', '')
         ifsc_code = order_data.get('ifsc', '')
-        
+
         # 判断转账类型
         is_pakistan_mobile = self._is_pakistan_mobile_number(to_account)
         if is_pakistan_mobile and ifsc_code.lower() == 'jazzcash':
@@ -1242,18 +1242,18 @@ class JazzCashAutoPayout:
             raw_code = order_data.get('bank_code', ifsc_code)
             to_bank_code = self._convert_to_bank_code(raw_code) if raw_code else ifsc_code
             to_bank_name = self._get_bank_name_by_ifsc(ifsc_code) if ifsc_code else None
-        
+
         # 提取错误代码
         error_code = None
         if api_response and api_response.get('code'):
             error_code = str(api_response.get('code', ''))
-        
+
         # 构建完整的流程日志
         process_log_json = None
         if process_details:
             try:
                 from datetime import datetime
-                
+
                 # 辅助函数：安全转换数值类型为JSON可序列化的格式
                 def safe_numeric(value):
                     """安全转换数值类型，处理Decimal等不可JSON序列化的类型"""
@@ -1267,23 +1267,23 @@ class JazzCashAutoPayout:
                         return float(value)
                     except (ValueError, TypeError):
                         return str(value)
-                
+
                 def _calculate_safe_balance_change(after_balance, before_balance):
                     """安全计算余额变化，避免类型错误"""
                     try:
                         if after_balance is None or before_balance is None:
                             return None
-                        
+
                         # 确保两个值都转换为Decimal类型进行计算
                         after_decimal = Decimal(str(after_balance)) if not isinstance(after_balance, Decimal) else after_balance
                         before_decimal = Decimal(str(before_balance)) if not isinstance(before_balance, Decimal) else before_balance
-                        
+
                         balance_change = after_decimal - before_decimal
                         return float(balance_change)
                     except (ValueError, TypeError, Decimal.InvalidOperation) as e:
                         self.logger.warning(f"计算余额变化失败: after_balance={after_balance} ({type(after_balance)}), before_balance={before_balance} ({type(before_balance)}), error={e}")
                         return None
-                
+
                 def safe_dict(data):
                     """递归安全转换字典中的所有Decimal类型"""
                     if data is None:
@@ -1296,13 +1296,13 @@ class JazzCashAutoPayout:
                         return float(data)
                     else:
                         return data
-                
+
                 self.logger.debug("开始构建process_log...")
                 process_log = {
                     'order_code': order_data.get('code'),
                     'process_start': process_details.get('process_start_time', datetime.now().isoformat()),
                     'total_duration_ms': process_details.get('total_duration_ms', 0),
-                    
+
                     # 业务流程步骤
                     'order_received': {
                         'timestamp': process_details.get('order_received_time', datetime.now().isoformat()),
@@ -1315,13 +1315,13 @@ class JazzCashAutoPayout:
                             'to_bankcode': order_data.get('payment_bankcode')
                         }
                     },
-                    
+
                     'risk_check': {
                         'timestamp': process_details.get('risk_check_time', datetime.now().isoformat()),
                         'status': process_details.get('risk_check_status', 'success'),
                         'details': safe_dict(process_details.get('risk_check_details', {}))
                     },
-                    
+
                     'account_selection': {
                         'timestamp': process_details.get('account_selection_time', datetime.now().isoformat()),
                         'status': process_details.get('account_selection_status', 'success'),
@@ -1331,7 +1331,7 @@ class JazzCashAutoPayout:
                             'selection_criteria': process_details.get('account_selection_criteria', 'auto')
                         }
                     },
-                    
+
                     'before_balance_check': {
                         'timestamp': process_details.get('before_balance_time', datetime.now().isoformat()),
                         'status': process_details.get('before_balance_status', 'success'),
@@ -1341,7 +1341,7 @@ class JazzCashAutoPayout:
                         },
                         'error': process_details.get('before_balance_error')
                     },
-                    
+
                     'transfer_api_call': {
                         'timestamp': process_details.get('transfer_api_time', datetime.now().isoformat()),
                         'status': status,
@@ -1354,7 +1354,7 @@ class JazzCashAutoPayout:
                         },
                         'error': error_message if status != 'success' else None
                     },
-                    
+
                     'after_balance_check': {
                         'timestamp': process_details.get('after_balance_time', datetime.now().isoformat()),
                         'status': process_details.get('after_balance_status', 'success'),
@@ -1364,13 +1364,13 @@ class JazzCashAutoPayout:
                         },
                         'error': process_details.get('after_balance_error')
                     },
-                    
+
                     'lock_release': {
                         'timestamp': process_details.get('lock_release_time', datetime.now().isoformat()),
                         'status': process_details.get('lock_release_status', 'success'),
                         'details': safe_dict(process_details.get('lock_release_details', {}))
                     },
-                    
+
                     'final_status': {
                         'timestamp': datetime.now().isoformat(),
                         'status': status,
@@ -1383,7 +1383,7 @@ class JazzCashAutoPayout:
                             'after_balance': safe_numeric(after_balance)
                         }
                     },
-                    
+
                     # 统计信息
                     'summary': {
                         'total_steps': 8,
@@ -1400,13 +1400,13 @@ class JazzCashAutoPayout:
                         'final_status': status
                     }
                 }
-                
+
                 # 序列化前的详细检查和日志
                 self.logger.debug("准备序列化process_log...")
                 self.logger.debug(f"before_balance类型: {type(before_balance)}, 值: {before_balance}")
                 self.logger.debug(f"after_balance类型: {type(after_balance)}, 值: {after_balance}")
                 self.logger.debug(f"order_amount类型: {type(order_data.get('amount'))}, 值: {order_data.get('amount')}")
-                
+
                 # 检查process_log中的关键数值字段
                 for section_name, section in process_log.items():
                     if isinstance(section, dict) and 'details' in section:
@@ -1414,22 +1414,22 @@ class JazzCashAutoPayout:
                         for key, value in details.items():
                             if value is not None and isinstance(value, Decimal):
                                 self.logger.warning(f"发现未转换的Decimal类型: {section_name}.details.{key} = {value} (类型: {type(value)})")
-                
+
                 process_log_json = json.dumps(process_log, ensure_ascii=False, separators=(',', ':'))
                 self.logger.debug("process_log序列化成功")
-                
+
             except Exception as e:
                 # 详细的错误诊断
                 self.logger.error(f"构建流程日志失败: {e}")
                 self.logger.error(f"错误类型: {type(e).__name__}")
-                
+
                 # 逐个检查可能导致序列化失败的字段
                 problematic_fields = []
-                
+
                 # 检查主要数值字段
                 for field_name, field_value in [
                     ('before_balance', before_balance),
-                    ('after_balance', after_balance), 
+                    ('after_balance', after_balance),
                     ('order_amount', order_data.get('amount')),
                     ('total_duration_ms', process_details.get('total_duration_ms') if process_details else None)
                 ]:
@@ -1438,20 +1438,20 @@ class JazzCashAutoPayout:
                         self.logger.error(f"字段检查 - {field_name}: {field_value} (类型: {field_type})")
                         if isinstance(field_value, Decimal):
                             problematic_fields.append(f"{field_name}=Decimal({field_value})")
-                
+
                 # 检查process_details中的字段
                 if process_details:
                     for key, value in process_details.items():
                         if value is not None and isinstance(value, Decimal):
                             problematic_fields.append(f"process_details.{key}=Decimal({value})")
                             self.logger.error(f"process_details中的Decimal字段: {key} = {value}")
-                
+
                 error_details = f"构建流程日志失败: {str(e)}"
                 if problematic_fields:
                     error_details += f" | 可能的问题字段: {', '.join(problematic_fields)}"
-                
+
                 process_log_json = json.dumps({'error': error_details}, ensure_ascii=False)
-        
+
         # 记录完整的交易信息
         self.log_operation(
             operation_type=operation_type,
@@ -1478,16 +1478,16 @@ class JazzCashAutoPayout:
             retry_count=order_data.get('retry_count', 0),  # 添加重试次数
             process_log=process_log_json  # 添加流程日志
         )
-    
-    
+
+
     def _is_pakistan_mobile_number(self, phone_number: str) -> bool:
         """判断是否为巴基斯坦手机号"""
         if not phone_number:
             return False
-        
+
         # 移除所有非数字字符
         clean_number = ''.join(filter(str.isdigit, phone_number))
-        
+
         # 巴基斯坦手机号特征：
         # - 以92开头（国际格式）或者03开头（本地格式）
         # - 总长度通常是11位（本地）或13位（国际）
@@ -1495,19 +1495,19 @@ class JazzCashAutoPayout:
             (clean_number.startswith('92') and len(clean_number) == 13) or
             (clean_number.startswith('03') and len(clean_number) == 11)
         )
-    
+
     def _convert_to_bank_code(self, raw_input: str) -> str:
         """
         将银行名称、BIC codes、简称等转换为 JazzCash 数字 bankCode
-        
+
         Args:
             raw_input: 原始输入（可能是银行名称、BIC code、简称等）
-            
+
         Returns:
             str: JazzCash bankCode（数字字符串，如 "59", "60"）
                  空字符串表示 JazzCash 同行转账，不需要 bankCode
                  如果找不到映射，返回原始输入
-        
+
         Examples:
             >>> _convert_to_bank_code('EasyPaisa')
             '59'
@@ -1520,14 +1520,14 @@ class JazzCashAutoPayout:
         """
         if not raw_input:
             return ''
-        
+
         # 规范化输入：小写，移除空格和特殊字符
         import re
         normalized = re.sub(r'[^a-z0-9]', '', str(raw_input).lower())
-        
+
         # 查找映射
         bank_code = BANK_CODE_MAPPING.get(normalized, raw_input)
-        
+
         # 记录转换日志（仅当发生转换时）
         if bank_code != raw_input:
             self.logger.info(f"银行代码映射: '{raw_input}' -> '{bank_code}'")
@@ -1535,31 +1535,31 @@ class JazzCashAutoPayout:
             # 未找到映射，记录警告
             if normalized not in BANK_CODE_MAPPING:
                 self.logger.warning(f"未找到银行代码映射: '{raw_input}' (规范化: '{normalized}')，将使用原始值")
-        
+
         return bank_code
-    
+
     def _get_bank_name_by_ifsc(self, ifsc_code: str) -> str:
         """根据IFSC代码获取银行名称"""
         if not ifsc_code:
             return None
-        
+
         # 简单的银行代码映射，可以根据需要扩展
         bank_mapping = {
             'HBL': 'Habib Bank Limited',
-            'NBP': 'National Bank of Pakistan', 
+            'NBP': 'National Bank of Pakistan',
             'MCB': 'Muslim Commercial Bank',
             'UBL': 'United Bank Limited',
             'ABL': 'Allied Bank Limited',
             'EASYPAISA': 'EasyPaisa',
             'JAZZCASH': 'JazzCash'
         }
-        
+
         # 提取前3-4位作为银行代码
         bank_code = ifsc_code[:4].upper()
         for code, name in bank_mapping.items():
             if bank_code.startswith(code):
                 return name
-        
+
         return f'Bank ({ifsc_code})'  # 未知银行，返回代码
 
     def init_function(self, exist_logger):
@@ -1634,7 +1634,7 @@ class JazzCashAutoPayout:
     @asynccontextmanager
     async def async_session_context(self, timeout=30):
         """异步会话上下文管理器
-        
+
         Args:
             timeout: 超时时间（秒），默认30秒
         """
@@ -1747,37 +1747,37 @@ class JazzCashAutoPayout:
     async def retry_make_request_query(self, *args, **kwargs):
         """查询请求方法 - 失败时重试一次"""
         res = await self.make_request(*args, **kwargs)
-        
+
         # 如果返回None或HTTP状态码不成功，重试一次
         if res is None or not (200 <= res.status_code < 300):
             status_info = f"状态码:{res.status_code}" if res else "返回None"
             self.logger.warning(f"第一次查询请求失败({status_info})，准备重试")
             self.logger.info(f"make_request() second try, args: {args}, kwargs: {kwargs}")
-            
+
             # 重试一次
             res = await self.make_request(*args, **kwargs)
-            
+
             # 记录重试结果
             if res is None:
                 self.logger.warning(f"第二次查询请求仍失败（返回None），不再重试")
             elif not (200 <= res.status_code < 300):
                 self.logger.warning(f"第二次查询请求仍失败（状态码:{res.status_code}），不再重试")
-        
+
         return res
 
     async def retry_make_request(self, *args, **kwargs):
         """HTTP请求方法 - 不重试，直接返回结果"""
         res = await self.make_request(*args, **kwargs)
-        
+
         # 如果返回None（网络异常：TimeoutError/ClientError/Exception），直接返回
         if res is None:
             self.logger.warning(f"网络请求失败（超时或连接错误），不重试")
             return None
-        
+
         # 如果HTTP状态码不成功，也直接返回，不重试
         if not (200 <= res.status_code < 300):
             self.logger.warning(f"HTTP状态码异常: {res.status_code}，不重试，直接返回")
-        
+
         return res
 
     # 添加多进程分片和并发处理方法
@@ -1824,7 +1824,7 @@ class JazzCashAutoPayout:
 
         # 使用一致性哈希分配members
         allocated_members = []
-        
+
         # 🔍 调试信息：显示活跃进程列表
         active_processes = self.redis.keys("active_processes_auto_payout:*")
         active_pids = []
@@ -1836,13 +1836,13 @@ class JazzCashAutoPayout:
                 continue
         active_pids.sort()
         self.logger.info(f"🔍 调试 - 活跃进程PIDs: {active_pids}, 当前PID: {os.getpid()}")
-        
+
         for member in members:
             member_id = member.decode()
             # 使用MD5哈希确保相同member总是分配给同一进程
             hash_value = int(hashlib.md5(member_id.encode()).hexdigest(), 16)
             assigned_index = hash_value % total_processes
-            
+
             # 🔍 调试信息：显示每个订单的分配结果
             self.logger.info(f"🔍 调试 - 订单{member_id}: hash={hash_value}, assigned_index={assigned_index}, current_index={current_index}")
 
@@ -1906,14 +1906,14 @@ class JazzCashAutoPayout:
             # EasyPaisa自动代付系统采用数据库轮询模式，而非Redis Set模式
             # 1. 获取按时间排序的待处理订单
             orders = asyncio.run(self.get_pending_orders_by_time())
-            
+
             if not orders:
                 self.logger.info("数据库中暂无待处理订单")
                 time.sleep(2)
                 return
 
             self.logger.info(f"数据库轮询发现 {len(orders)} 个待处理订单")
-            
+
             # 2. 转换为member格式以适配框架
             members = [f"{order['code']}_{order['amount']}".encode() for order in orders]
 
@@ -1958,20 +1958,20 @@ class JazzCashAutoPayout:
                 charset='utf8mb4',
                 autocommit=False
             )
-            
+
             with connection.cursor() as cur:
                 sql = """
                     SELECT code, amount, payment_id, payment_account, payment_name, remark, time_create, retry_count
-                    FROM orders_df 
-                    WHERE status = 0 
+                    FROM orders_df
+                    WHERE status = 0
                       AND time_create >= DATE_SUB(NOW(), INTERVAL 3 DAY)
                     ORDER BY time_create ASC
                     LIMIT 100
                 """
-                
+
                 cur.execute(sql)
                 rows = cur.fetchall()
-                
+
                 orders = []
                 for row in rows:
                     orders.append({
@@ -1984,48 +1984,48 @@ class JazzCashAutoPayout:
                         'time_create': row[6],
                         'retry_count': row[7]
                     })
-                
+
                 self.logger.info(f"从数据库获取到 {len(orders)} 个待处理订单")
-                
+
                 # 🔥 新增：批量过滤冷却期内的订单
                 if orders:
                     filtered_orders = self.filter_cooldown_orders(orders)
                     cooldown_count = len(orders) - len(filtered_orders)
                     if cooldown_count > 0:
                         self.logger.info(f"过滤掉 {cooldown_count} 个冷却期内的订单，剩余 {len(filtered_orders)} 个可处理")
-                    
+
                     # 新增：检查可用账号余额是否满足最小订单金额
                     if filtered_orders:
                         min_order_amount = min(order['amount'] for order in filtered_orders)
                         self.logger.info(f"当前待处理订单最小金额: {min_order_amount}")
-                        
+
                         # 从有序集合获取高余额账号（余额 >= 最小订单金额）
                         available_accounts = self.get_top_balance_accounts(min_balance=min_order_amount, count=20)
-                        
+
                         if not available_accounts:
                             self.logger.warning(f"⚠️ 无余额满足要求的账号（最小金额:{min_order_amount}），跳过本轮处理")
                             return []
-                        
+
                         # 检查最大可用余额
                         max_available_balance = max(
                             account.get('balance', 0) for account in available_accounts
                         )
-                        
+
                         self.logger.info(f"可用账号最大余额: {max_available_balance}, 最小订单金额: {min_order_amount}")
-                        
+
                         if max_available_balance < min_order_amount:
                             self.logger.warning(
                                 f"⚠️ 所有可用账号余额({max_available_balance})均小于最小订单金额({min_order_amount})，"
                                 f"跳过本轮处理，待处理订单数: {len(filtered_orders)}"
                             )
                             return []
-                        
+
                         self.logger.info(f"✅ 存在可用账号余额满足要求，继续处理 {len(filtered_orders)} 个订单")
-                    
+
                     return filtered_orders
                 else:
                     return orders
-                
+
         except Exception as e:
             self.logger.error(f"获取待处理订单失败: {e}")
             return []
@@ -2039,13 +2039,13 @@ class JazzCashAutoPayout:
         """初始化函数"""
         try:
 
-            
+
             # 重新设置logger
             self.logger = exist_logger
-            
+
             # 检测是否联通，如果断联需重新连接
             self.check_redis_connection()
-            
+
             self.logger.debug("init_function 初始化完成")
         except Exception as e:
             tb_str = traceback.format_exc()
@@ -2053,9 +2053,9 @@ class JazzCashAutoPayout:
             self.logger.error('init_function 脚本运行错误{}\n{}\n'.format(e, error_message))
 
 
-    
+
     # ========== Redis防护机制 ==========
-    
+
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
         防护机制1: 检查账号在线状态 - API优先，Redis同步
@@ -2070,58 +2070,67 @@ class JazzCashAutoPayout:
                 # redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
                 # return bool(redis_online)
                 return False
-            
+
             phone = payment_info['phone']
             self.logger.debug(f"payment_id {payment_id} 对应手机号: {phone}")
-            
+
             # 策略1: 先通过API实时验证账号状态（使用手机号）
             api_result = await self._check_account_online_via_api(phone)
-            
+
             if api_result is not None:
+                # API检查成功，根据结果同步Redis状态（使用payment_id作为键）
+                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+
                 if api_result:
-                    if not self.runtime_service.is_df_order_online(payment_id):
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但runtime不允许代付，跳过处理")
+                    # API显示在线
+                    if not redis_online:
+                        # 🔥 修改逻辑：API在线但Redis中不存在，认为账号不在线，跳过处理
+                        # Redis中不存在，添加到Redis（使用payment_id）
+                        # self.redis.sadd(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+                        # self.logger.info(f"账号payment_id:{payment_id} phone:{phone} API检查在线，已添加到Redis")
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但Redis中不存在，认为不在线，跳过处理")
                         return False  # 返回False表示账号不可用
-                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，runtime状态一致")
+                    else:
+                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，Redis状态一致")
                 else:
-                    if self.runtime_service.is_df_order_online(payment_id):
-                        self.runtime_service.force_offline(
-                            payment_id,
-                            phone=phone,
-                            source="jazzcash_auto_payout.account_online_check",
-                            reason="api_reported_offline",
-                        )
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从runtime下线")
-                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线")
-                
+                    # API显示离线
+                    if redis_online:
+                        # Redis中存在，从Redis移除（使用payment_id）
+                        self.redis.srem(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已从Redis移除")
+                    else:
+                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，Redis状态一致")
+
                 return api_result
             else:
-                runtime_online = self.runtime_service.is_df_order_online(payment_id)
-                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用runtime状态: {runtime_online}")
-                return bool(runtime_online)
-                
+                # API检查失败，降级使用Redis状态（使用payment_id）
+                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用Redis状态: {redis_online}")
+                return bool(redis_online)
+
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}在线状态失败: {e}")
             # 异常时也降级使用Redis状态
             try:
-                return bool(self.runtime_service.is_df_order_online(payment_id))
+                redis_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+                return bool(redis_online)
             except:
                 return False
-    
+
     async def _check_account_online_via_api(self, account_id: str) -> Optional[bool]:
         """
         通过JazzCash API实时检查账号在线状态
-        
+
         Returns:
             True: 在线
-            False: 离线  
+            False: 离线
             None: API检查失败
         """
         try:
             # 构建isLogined请求
             import uuid
             request_uuid = str(uuid.uuid4())
-            
+
             inner_payload = {
                 "id": request_uuid,
                 "action": "isLogined",
@@ -2129,23 +2138,23 @@ class JazzCashAutoPayout:
                     "account_id": account_id
                 }
             }
-            
+
             self.logger.info(f"账号{account_id} 开始API在线状态检查，请求UUID: {request_uuid}")
-            
+
             # 调用API查询方法
             response = await self._call_jazzcash_api_query(inner_payload, account_id)
-            
+
             # 打印完整的API响应
             self.logger.info(f"账号{account_id} isLogined API响应: {response}")
-            
+
             if response:
                 code = response.get('code')
                 data = response.get('data')
                 msg = response.get('msg', '')
-                
+
                 # 打印具体的code和data值
                 self.logger.info(f"账号{account_id} API响应解析: code={code}, data={data}, msg={msg}")
-                
+
                 if code == 200 and data is True:
                     self.logger.info(f"账号{account_id} API检查结果：在线")
                     return True
@@ -2158,15 +2167,15 @@ class JazzCashAutoPayout:
             else:
                 self.logger.warning(f"账号{account_id} API检查无响应")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"账号{account_id} API在线状态检查异常: {e}")
             return None
-    
+
     def _is_pakistan_mobile_number(self, account_number: str) -> bool:
         """
         判断是否为巴基斯坦手机号（JazzCash/EasyPaisa账号格式）
-        
+
         巴基斯坦手机号格式：
         - 以 03 开头
         - 总共11位数字
@@ -2174,54 +2183,54 @@ class JazzCashAutoPayout:
         """
         if not account_number:
             return False
-            
+
         # 移除所有非数字字符
         clean_number = ''.join(filter(str.isdigit, account_number))
-        
+
         # 检查格式：11位数字，以03开头
         if len(clean_number) == 11 and clean_number.startswith('03'):
             self.logger.debug(f"账号{account_number} 识别为巴基斯坦手机号")
             return True
-        
+
         self.logger.debug(f"账号{account_number} 识别为银行账号（长度:{len(clean_number)}, 开头:{clean_number[:2] if len(clean_number) >= 2 else clean_number}）")
         return False
-    
+
     def get_phone_by_payment_id(self, payment_id):
         """通过payment_id查询手机号和相关信息"""
         import time
-        
+
         start_time = time.time()
         self.logger.info(f"[AutoPayout] 开始查询payment_id: {payment_id} 的详细信息")
-        
+
         try:
             self.logger.info(f"[AutoPayout] 连接数据库: {conf['mysql_host']}:{conf.get('mysql_port', 3306)}")
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     sql = """
                         SELECT phone, account, name, bank_type, partner_id, status, certified,
                                account_accno
-                        FROM payment 
+                        FROM payment
                         WHERE id = %s AND status = 1 AND certified = 1
                           AND bank_type = 98
                     """
                     self.logger.info(f"[AutoPayout] 执行SQL查询: payment_id={payment_id}")
                     self.logger.info(f"[AutoPayout] SQL语句: {sql.strip()}")
                     self.logger.info(f"[AutoPayout] 查询条件: status=1 AND certified=1 AND bank_type=98 (只查询JazzCash可用账号)")
-                    
+
                     query_start = time.time()
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
                     query_time = time.time() - query_start
-                    
+
                     if result:
                         self.logger.info(f"[AutoPayout] 查询成功! payment_id={payment_id}, 查询耗时: {query_time:.3f}s")
                         self.logger.info(f"[AutoPayout] 查询结果:")
@@ -2235,7 +2244,7 @@ class JazzCashAutoPayout:
                         return result
                     else:
                         self.logger.warning(f"[AutoPayout] payment_id {payment_id} 查询无结果")
-                        
+
                         # 检查是否存在但状态不符合条件
                         check_sql = "SELECT status, certified FROM payment WHERE id = %s"
                         self.logger.info(f"[AutoPayout] 检查payment_id是否存在但状态不合规...")
@@ -2251,14 +2260,14 @@ class JazzCashAutoPayout:
                 connection.close()
                 total_time = time.time() - start_time
                 self.logger.info(f"[AutoPayout] 数据库连接已关闭, 总耗时: {total_time:.3f}s")
-                
+
         except Exception as e:
             total_time = time.time() - start_time
             self.logger.error(f"[AutoPayout] 查询payment_id {payment_id} 失败: {e}, 耗时: {total_time:.3f}s")
             import traceback
             self.logger.error(f"[AutoPayout] 详细错误信息: {traceback.format_exc()}")
             return None
-    
+
     def get_account_from_active_list(self) -> Optional[Dict]:
         """
         防护机制2: 从活跃列表轮询获取账号，返回包含payment_id和phone的字典
@@ -2268,7 +2277,7 @@ class JazzCashAutoPayout:
             payment_id_bytes = self.redis.lpop(self.REDIS_KEYS['jazzcash_active_df'])
             if payment_id_bytes:
                 payment_id = payment_id_bytes.decode()
-                
+
                 # 🔥 查询数据库获取手机号
                 payment_info = self.get_phone_by_payment_id(payment_id)
                 if payment_info and payment_info.get('phone'):
@@ -2290,7 +2299,7 @@ class JazzCashAutoPayout:
         except Exception as e:
             self.logger.error(f"从活跃列表获取账号失败: {e}")
             return None
-    
+
     def return_account_to_active_list(self, account_info):
         """
         防护机制3: 将账号重新加入活跃列表
@@ -2304,12 +2313,17 @@ class JazzCashAutoPayout:
             else:
                 payment_id = str(account_info)
                 phone = 'UNKNOWN'
-            
-            if self.runtime_service.requeue_df_if_online(payment_id):
+
+            # 只有在线的账号才重新加入活跃列表（使用payment_id检查）
+            is_online = self.redis.sismember(self.REDIS_KEYS['jazzcash_online_df'], payment_id)
+            if is_online:
+                # 先删除可能的重复项，再加入列表末尾
+                self.redis.lrem(self.REDIS_KEYS['jazzcash_active_df'], 0, payment_id)
+                self.redis.rpush(self.REDIS_KEYS['jazzcash_active_df'], payment_id)
                 self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 重新加入活跃列表")
         except Exception as e:
             self.logger.error(f"账号重新加入活跃列表失败: {e}, account_info: {account_info}")
-    
+
     # async def check_account_concurrent_orders(self, payment_id: str) -> bool:
     #     """
     #     防护机制4: 检查账号是否有并发处理中的订单
@@ -2325,12 +2339,12 @@ class JazzCashAutoPayout:
     #             charset='utf8mb4',
     #             cursorclass=pymysql.cursors.DictCursor
     #         )
-    #         
+    #
     #         try:
     #             with connection.cursor() as cur:
     #                 # 检查是否有处理中的订单（状态1或2）且重试次数小于4
     #                 sql = """
-    #                     SELECT code FROM orders_df 
+    #                     SELECT code FROM orders_df
     #                     WHERE payment_id = %s AND status IN (1, 2) AND retry_count < 4
     #                     LIMIT 1
     #                 """
@@ -2342,11 +2356,11 @@ class JazzCashAutoPayout:
     #                 return True
     #         finally:
     #             connection.close()
-    #             
+    #
     #     except Exception as e:
     #         self.logger.error(f"检查账号payment_id:{payment_id} 并发订单失败: {e}")
     #         return True  # 检查失败时放行
-    
+
     async def check_account_amount_limits(self, payment_id: str, amount: Decimal) -> Dict:
         """
         防护机制5: 检查账号的金额限制和接单限额
@@ -2362,97 +2376,97 @@ class JazzCashAutoPayout:
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     # ===== 旧代码：查询全局风控配置参数 (已注释) =====
                     # sql = """
                     #     SELECT min_amount, max_amount, daily_total_amount as daily_limit_amount, daily_order_count as daily_limit_count
-                    #     FROM auto_payout_risk_config 
+                    #     FROM auto_payout_risk_config
                     #     WHERE id = 1
                     # """
                     # cur.execute(sql)
                     # account_limits = cur.fetchone()
-                    # 
+                    #
                     # if not account_limits:
                     #     return {'passed': False, 'reason': 'risk_config_not_found'}
-                    
+
                     # ===== 新代码：查询payment表现有的限额字段（包括接单限额） =====
                     sql = """
                         SELECT amount_top, balance_limit
-                        FROM payment 
+                        FROM payment
                         WHERE id = %s
                     """
                     cur.execute(sql, payment_id)
                     payment_info = cur.fetchone()
-                    
+
                     if not payment_info:
                         return {'passed': False, 'reason': 'payment_not_found'}
-                    
+
                     # ===== 旧代码：检查单笔金额限制 (已注释，payment表无对应字段) =====
                     # if amount < Decimal(str(account_limits.get('min_amount', 0))):
                     #     return {'passed': False, 'reason': 'amount_too_small'}
-                    # 
+                    #
                     # if amount > Decimal(str(account_limits.get('max_amount', 999999))):
                     #     return {'passed': False, 'reason': 'amount_too_large'}
-                    
+
                     # ===== 单笔金额限制：payment表无对应字段，跳过检查 =====
-                    
+
                     # 检查今日额度限制
                     today_sql = """
                         SELECT COUNT(*) as today_count, COALESCE(SUM(amount), 0) as today_amount
-                        FROM orders_df 
-                        WHERE payment_id = %s 
+                        FROM orders_df
+                        WHERE payment_id = %s
                           AND DATE(time_create) = CURDATE()
                           AND status IN (3, 4)
                     """
                     cur.execute(today_sql, payment_id)
                     today_stats = cur.fetchone()
-                    
+
                     # ===== 旧代码：使用全局配置的限制 (已注释) =====
                     # daily_limit_count = account_limits.get('daily_limit_count', 999999)
                     # daily_limit_amount = account_limits.get('daily_limit_amount', 999999999)
-                    # 
+                    #
                     # if today_stats['today_count'] >= daily_limit_count:
                     #     return {'passed': False, 'reason': 'daily_count_exceeded'}
-                    # 
+                    #
                     # if Decimal(str(today_stats['today_amount'])) + amount > Decimal(str(daily_limit_amount)):
                     #     return {'passed': False, 'reason': 'daily_amount_exceeded'}
-                    
+
                     # ===== 新代码：使用payment表现有字段 (0或空不控制) =====
                     # 每日金额限制：使用 amount_top 字段
                     amount_top = payment_info.get('amount_top') or 0
-                    
+
                     # 每日金额限制：只有设置了大于0的值才检查
                     if amount_top and amount_top > 0:
                         if Decimal(str(today_stats['today_amount'])) + amount > Decimal(str(amount_top)):
                             return {'passed': False, 'reason': 'daily_amount_exceeded'}
-                    
+
                     # 接单限额检查：单笔最高金额限制
                     balance_limit = payment_info.get('balance_limit') or 0
-                    
+
                     # 如果 balance_limit 设置了大于0的值，检查订单金额是否超限
                     if balance_limit and balance_limit > 0:
                         if amount > Decimal(str(balance_limit)):
                             return {
-                                'passed': False, 
+                                'passed': False,
                                 'reason': 'balance_limit_exceeded',
                                 'amount': amount,
                                 'balance_limit': balance_limit,
                                 'message': f'订单金额{amount}超过接单限额{balance_limit}'
                             }
-                    
+
                     # 每日次数限制：payment表无对应字段，跳过检查
-                    
+
                     return {'passed': True}
-                    
+
             finally:
                 connection.close()
-                
+
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}金额限制失败: {e}")
             return {'passed': True}  # 检查失败时放行
-    
+
     def check_account_release_time(self, account_id: str) -> bool:
         """
         防护机制6: 检查账号释放时间
@@ -2461,22 +2475,22 @@ class JazzCashAutoPayout:
         try:
             release_key = f"jazzcash_release:{account_id}"
             release_time_str = self.redis.hget(self.REDIS_KEYS['jazzcash_release_time'], release_key)
-            
+
             if release_time_str:
                 release_time = datetime.fromisoformat(release_time_str.decode())
                 if datetime.now() < release_time:
                     self.logger.debug(f"账号{account_id}仍在释放期内，释放时间: {release_time}")
                     return False
-            
+
             return True
         except Exception as e:
             self.logger.error(f"检查账号{account_id}释放时间失败: {e}")
             return True
-    
+
     def set_account_release_time(self, account_id: str, release_seconds: int = None):
         """
         设置账号释放时间
-        
+
         Args:
             account_id: 账号ID
             release_seconds: 释放时间（秒），如果为None则从配置读取
@@ -2495,27 +2509,27 @@ class JazzCashAutoPayout:
                 except Exception as e:
                     self.logger.error(f"读取冷却配置失败: {e}，使用默认值300秒")
                     release_seconds = 300
-            
+
             release_key = f"jazzcash_release:{account_id}"
             release_time = datetime.now() + timedelta(seconds=release_seconds)
             self.redis.hset(
-                self.REDIS_KEYS['jazzcash_release_time'], 
-                release_key, 
+                self.REDIS_KEYS['jazzcash_release_time'],
+                release_key,
                 release_time.isoformat()
             )
             self.logger.debug(f"设置账号{account_id}释放时间: {release_time} ({release_seconds}秒)")
         except Exception as e:
             self.logger.error(f"设置账号{account_id}释放时间失败: {e}")
-    
+
     # ========== 账号使用记录相关方法（支持动态冷却期） ==========
-    
+
     def record_account_usage(self, payment_id: str):
         """记录账号使用，支持动态冷却期配置"""
         try:
             import time
             usage_key = f"{self.REDIS_KEYS['jazzcash_account_used_prefix']}{payment_id}"
             current_time = int(time.time())
-            
+
             # 从Redis读取动态配置的冷却时间，如果没有配置则使用默认5分钟
             # 注意：与 EasyPaisa 共用此配置，admin 统一设置
             try:
@@ -2529,12 +2543,12 @@ class JazzCashAutoPayout:
             except Exception as config_e:
                 cooldown_seconds = 300  # 读取配置失败时使用默认值
                 self.logger.warning(f"读取冷却期配置失败，使用默认值300秒: {config_e}")
-            
+
             # 设置动态冷却期
             self.redis.setex(usage_key, cooldown_seconds, current_time)
             cooldown_minutes = cooldown_seconds / 60
             self.logger.info(f"记录账号{payment_id}使用时间: {current_time}, 冷却期: {cooldown_minutes:.1f}分钟")
-            
+
         except Exception as e:
             self.logger.error(f"记录账号{payment_id}使用失败: {e}")
 
@@ -2543,7 +2557,7 @@ class JazzCashAutoPayout:
         try:
             usage_key = f"{self.REDIS_KEYS['jazzcash_account_used_prefix']}{payment_id}"
             return self.redis.exists(usage_key)
-            
+
         except Exception as e:
             self.logger.error(f"检查账号{payment_id}使用记录失败: {e}")
             return False  # 检查失败时假设未使用过
@@ -2553,62 +2567,62 @@ class JazzCashAutoPayout:
         try:
             usage_key = f"{self.REDIS_KEYS['jazzcash_account_used_prefix']}{payment_id}"
             usage_time_str = self.redis.get(usage_key)
-            
+
             if usage_time_str:
                 return int(usage_time_str.decode())
             return None
-            
+
         except Exception as e:
             self.logger.error(f"获取账号{payment_id}使用时间失败: {e}")
             return None
-    
+
     # ========== 有序集合余额相关方法 ==========
-    
+
     def get_top_balance_accounts(self, min_balance: Decimal = Decimal('1000'), count: int = 50) -> List[Dict]:
         """
         从有序集合获取余额最高的账号列表
-        
+
         Args:
             min_balance: 最低余额要求
             count: 获取账号数量
-        
+
         Returns:
             List[Dict]: 包含payment_id、partner_id、手机号、账号、姓名和余额的账号列表
         """
         try:
             balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-            
+
             # 🔥 添加详细调试日志
             self.logger.info(f"开始从有序集合获取高余额账号")
             self.logger.info(f"查询参数: 集合={balance_sorted_set}, 最小余额={min_balance}, 数量={count}")
-            
+
             # 先检查集合是否存在
             exists = self.redis.exists(balance_sorted_set)
             card = self.redis.zcard(balance_sorted_set) if exists else 0
             self.logger.info(f"有序集合状态: 存在={exists}, 大小={card}")
-            
+
             if not exists:
                 self.logger.error(f"❌ 有序集合 {balance_sorted_set} 不存在")
                 return []
-            
+
             # 获取余额大于min_balance的前count个账号（按余额降序）
             self.logger.info(f"执行Redis查询: ZREVRANGEBYSCORE {balance_sorted_set} +inf {float(min_balance)} LIMIT 0 {count}")
             accounts_with_balance = self.redis.zrevrangebyscore(
-                balance_sorted_set, 
-                "+inf", 
-                float(min_balance), 
-                start=0, 
+                balance_sorted_set,
+                "+inf",
+                float(min_balance),
+                start=0,
                 num=count,
                 withscores=True
             )
-            
+
             self.logger.info(f"Redis查询返回原始结果数量: {len(accounts_with_balance)}")
-            
+
             # 显示前几个原始结果
             for i, (payment_id_bytes, balance) in enumerate(accounts_with_balance[:5]):
                 payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
                 self.logger.info(f"原始结果[{i+1}]: payment_id={payment_id}, balance={balance}")
-            
+
             if not accounts_with_balance:
                 self.logger.info(f"有序集合中无余额>{min_balance}的账号")
                 # 🔥 添加更多调试信息
@@ -2619,16 +2633,16 @@ class JazzCashAutoPayout:
                     payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
                     self.logger.info(f"更低阈值结果: payment_id={payment_id}, balance={balance}")
                 return []
-            
+
             # 转换为标准格式并获取手机号
             result_accounts = []
             self.logger.info(f"开始处理{len(accounts_with_balance)}个账号的详细信息")
-            
+
             for i, (payment_id_bytes, balance) in enumerate(accounts_with_balance):
                 payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
-                
+
                 self.logger.info(f"处理账号[{i+1}/{len(accounts_with_balance)}]: payment_id={payment_id}, balance={balance}")
-                
+
                 # 通过payment_id查询手机号和partner_id
                 payment_info = self.get_phone_by_payment_id(payment_id)
                 if payment_info and payment_info.get('phone'):
@@ -2646,11 +2660,11 @@ class JazzCashAutoPayout:
                     self.logger.info(f"账号{payment_id}信息完整: partner_id={payment_info.get('partner_id')}, phone={payment_info['phone'][:4]}****")
                 else:
                     self.logger.warning(f"payment_id {payment_id} 无法获取手机号，跳过（payment_info={payment_info}）")
-            
+
             self.logger.info(f"最终结果: 从{len(accounts_with_balance)}个原始账号中筛选出{len(result_accounts)}个有效账号")
             self.logger.info(f"从有序集合获取到 {len(result_accounts)} 个高余额账号")
             return result_accounts
-            
+
         except Exception as e:
             self.logger.error(f"从有序集合获取高余额账号失败: {e}")
             self.logger.error(f"调试信息: min_balance={min_balance}, count={count}")
@@ -2667,21 +2681,21 @@ class JazzCashAutoPayout:
         except Exception as e:
             self.logger.error(f"从有序集合获取账号{payment_id}余额失败: {e}")
             return None
-    
+
     async def get_available_accounts(self, amount: Decimal, target_account: str = None) -> List[Dict]:
         """
         账号获取：双策略方案，加入20分钟使用间隔筛选
-        
+
         策略1: 优先从有序集合获取高余额账号（按余额降序）
         策略2: 如果策略1未找到，fallback到活跃列表逐个检查
-        
+
         Args:
             amount: 转账金额
             target_account: 目标收款账号，用于过滤相同账号
         """
         available_accounts = []
         back_key = []  # 需要重新加入活跃列表的账号
-        
+
         # 统计各种检查结果
         check_stats = {
             'sorted_set_attempts': 0,
@@ -2700,49 +2714,49 @@ class JazzCashAutoPayout:
             'recently_used_count': 0,
             'available_count': 0
         }
-        
+
         try:
             self.logger.info(f"======== 开始JazzCash账号筛选（双策略+使用间隔） ========")
             self.logger.info(f"筛选条件: 金额要求 >= {amount}")
-            
+
             # 🔥 策略1: 优先从有序集合获取高余额账号
             self.logger.info(f"策略1: 从有序集合获取高余额账号（余额>={amount}）")
             high_balance_accounts = self.get_top_balance_accounts(min_balance=amount, count=20)
-            
+
             if high_balance_accounts:
                 self.logger.info(f"从有序集合获取到 {len(high_balance_accounts)} 个高余额账号")
-                
+
                 # 对高余额账号进行防护检查（跳过余额检查）
                 passed_accounts = []
-                
+
                 for account_info in high_balance_accounts:
                     payment_id = account_info['payment_id']
                     phone = account_info['phone']
                     balance = account_info['balance']
-                    
+
                     check_stats['sorted_set_attempts'] += 1
                     check_stats['total_attempted'] += 1
 
                     self.logger.info(f"检查高余额账号: payment_id:{payment_id} phone:{phone} 余额:{balance}")
-                    
+
                     # 🔥 新增：检查收付款账号是否相同
                     if target_account and phone == target_account:
                         self.logger.warning(f"账号{payment_id} - 付款账号与收款账号相同 [{phone}]，跳过")
                         check_stats['same_account_count'] = check_stats.get('same_account_count', 0) + 1
                         continue
-                    
+
                     # 检查1: 在线状态
                     if not await self.check_account_online_status(payment_id):
                         check_stats['offline_count'] += 1
                         self.logger.info(f"账号{payment_id} - 不在线，跳过")
                         continue
-                    
+
                     # 检查2: 释放时间
                     if not self.check_account_release_time(payment_id):
                         check_stats['release_time_count'] += 1
                         self.logger.info(f"账号{payment_id} - 在释放期内，跳过")
                         continue
-                    
+
                     # 🔥 检查3: 重复订单检测（直接查询Hash表）
                     self.logger.error(f"准备检查重复订单: payment_id={payment_id}, target_account={target_account}, amount={amount}")
                     if target_account:
@@ -2753,7 +2767,7 @@ class JazzCashAutoPayout:
                             to_account=target_account,
                             time_window=1200  # 20分钟
                         )
-                        
+
                         if duplicate_check['has_duplicate']:
                             # ❌ 检测到重复，跳过此账号
                             check_stats['duplicate_failure_count'] += 1
@@ -2769,20 +2783,20 @@ class JazzCashAutoPayout:
                     else:
                         # 收款账号为空，无法做重复检测
                         self.logger.error(f"账号{payment_id}收款账号为空，跳过重复检测")
-                    
+
                     # 检查4: 并发订单 (已注释，由payment_id_lock机制处理)
                     # if not await self.check_account_concurrent_orders(payment_id):
                     #     check_stats['concurrent_orders_count'] += 1
                     #     self.logger.info(f"账号{payment_id} - 并发订单超限，跳过")
                     #     continue
-                    
+
                     # 新增：payment_id 锁检查（防止选中已被其他进程占用的账号）
                     lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
                     if self.redis.exists(lock_key):
                         check_stats['payment_id_locked_count'] += 1
                         self.logger.info(f"账号{payment_id} - payment_id已被锁定，跳过")
                         continue
-                    
+
                     # 检查5: 金额限制和接单限额
                     amount_check = await self.check_account_amount_limits(payment_id, amount)
                     if not amount_check['passed']:
@@ -2793,23 +2807,23 @@ class JazzCashAutoPayout:
                             check_stats['amount_limit_count'] += 1
                             self.logger.info(f"账号{payment_id} - 金额限制: {amount_check['reason']}，跳过")
                         continue
-                    
+
                     # 🔥 余额检查已通过（从有序集合获取时已确保余额足够）
                     # 通过基础检查的账号
                     passed_accounts.append(account_info)
                     self.logger.info(f"✅ 账号{payment_id}通过基础检查")
-                
+
                 # 🔥 新增：20分钟使用间隔筛选
                 if passed_accounts:
                     self.logger.info(f"开始20分钟使用间隔筛选，候选账号数: {len(passed_accounts)}")
-                    
+
                     # 筛选出20分钟内未使用的账号
                     unused_accounts = []
                     recently_used_accounts = []
-                    
+
                     for account_info in passed_accounts:
                         payment_id = account_info['payment_id']
-                        
+
                         if self.is_account_recently_used(payment_id):
                             # 获取使用时间用于日志
                             last_usage = self.get_account_last_usage_time(payment_id)
@@ -2824,7 +2838,7 @@ class JazzCashAutoPayout:
                         else:
                             self.logger.info(f"账号{payment_id} - 20分钟内未使用，可优先选择")
                             unused_accounts.append(account_info)
-                    
+
                     # 🔥 关键逻辑：如果有未使用的账号，优先使用；否则使用最近使用的账号
                     if unused_accounts:
                         self.logger.info(f"✅ 选择20分钟内未使用的账号: {len(unused_accounts)}个可选")
@@ -2839,47 +2853,47 @@ class JazzCashAutoPayout:
                             selected_account = recently_used_accounts[0]
                             check_stats['available_count'] += 1
                             self.logger.info(f"🎯 最终选择账号: payment_id={selected_account['payment_id']} phone={selected_account['phone']}, 余额={selected_account['balance']} (虽然20分钟内使用过，但无其他选择)")
-            
+
             # 🔥 策略2: fallback到活跃列表（如果策略1未找到）
             if not available_accounts:
                 self.logger.info(f"策略2: 有序集合未找到可用账号，fallback到活跃列表方式")
-                
+
                 # 保持原有逻辑，但优化余额检查
                 for attempt in range(10):  # 减少尝试次数，因为前面已经尝试过高余额账号
                     account_info = self.get_account_from_active_list()
-                    
+
                     if not account_info:
                         self.logger.info(f"活跃列表为空，停止查找")
                         break
-                    
+
                     check_stats['active_list_attempts'] += 1
                     check_stats['total_attempted'] += 1
-                    
+
                     payment_id = account_info['payment_id']
                     phone = account_info['phone']
-                    
+
                     self.logger.info(f"第{attempt + 1}次尝试: 检查账号 payment_id:{payment_id} phone:{phone}")
-                    
+
                     # 🔥 新增：检查收付款账号是否相同
                     if target_account and phone == target_account:
                         self.logger.warning(f"账号{payment_id} - 付款账号与收款账号相同 [{phone}]，跳过")
                         check_stats['same_account_count'] = check_stats.get('same_account_count', 0) + 1
                         continue
-                    
+
                     # 执行完整的防护检查
                     # 检查1: 在线状态
                     if not await self.check_account_online_status(payment_id):
                         check_stats['offline_count'] += 1
                         self.logger.info(f"账号{payment_id} - 不在线，跳过")
                         continue
-                    
+
                     # 检查2: 释放时间
                     if not self.check_account_release_time(payment_id):
                         check_stats['release_time_count'] += 1
                         self.logger.info(f"账号{payment_id} - 在释放期内，重新入队")
                         back_key.append(account_info)
                         continue
-                    
+
                     # 🔥 检查3: 重复订单检测（直接查询Hash表）
                     self.logger.error(f"准备检查重复订单: payment_id={payment_id}, target_account={target_account}, amount={amount}")
                     if target_account:
@@ -2890,7 +2904,7 @@ class JazzCashAutoPayout:
                             to_account=target_account,
                             time_window=1200  # 20分钟
                         )
-                        
+
                         if duplicate_check['has_duplicate']:
                             # ❌ 检测到重复，重新入队
                             check_stats['duplicate_failure_count'] += 1
@@ -2907,14 +2921,14 @@ class JazzCashAutoPayout:
                     else:
                         # 收款账号为空，无法做重复检测
                         self.logger.error(f"账号{payment_id}收款账号为空，跳过重复检测")
-                    
+
                     # 检查4: 并发订单 (已注释，由payment_id_lock机制处理)
                     # if not await self.check_account_concurrent_orders(payment_id):
                     #     check_stats['concurrent_orders_count'] += 1
                     #     self.logger.info(f"账号{payment_id} - 并发订单超限，重新入队")
                     #     back_key.append(account_info)
                     #     continue
-                    
+
                     # 新增：payment_id 锁检查（防止选中已被其他进程占用的账号）
                     lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
                     if self.redis.exists(lock_key):
@@ -2922,7 +2936,7 @@ class JazzCashAutoPayout:
                         self.logger.info(f"账号{payment_id} - payment_id已被锁定，重新入队")
                         back_key.append(account_info)
                         continue
-                    
+
                     # 检查5: 金额限制
                     amount_check = await self.check_account_amount_limits(payment_id, amount)
                     if not amount_check['passed']:
@@ -2930,7 +2944,7 @@ class JazzCashAutoPayout:
                         self.logger.info(f"账号{payment_id} - 金额限制: {amount_check['reason']}，重新入队")
                         back_key.append(account_info)
                         continue
-                    
+
                     # 🔥 余额检查：优先从有序集合获取
                     balance = self.get_account_balance_from_sorted_set(payment_id)
                     if balance is None:
@@ -2943,7 +2957,7 @@ class JazzCashAutoPayout:
                             # 重新获取余额
                             self.logger.info(f"账号{payment_id} - 余额缓存不存在，尝试重新获取")
                             balance_result = await self.fetch_balance_from_api(account_info)
-                            
+
                             if balance_result and balance_result.get('success'):
                                 balance = Decimal(str(balance_result['balance']))
                                 # 同时更新传统缓存和有序集合
@@ -2958,7 +2972,7 @@ class JazzCashAutoPayout:
                                 self.logger.warning(f"账号{payment_id} - 重新获取余额失败: {error_msg}，重新入队")
                                 back_key.append(account_info)
                                 continue
-                    
+
                     if balance >= amount:
                         # 检查20分钟使用间隔
                         if self.is_account_recently_used(payment_id):
@@ -2966,7 +2980,7 @@ class JazzCashAutoPayout:
                             self.logger.info(f"账号{payment_id} - 20分钟内使用过，重新入队")
                             back_key.append(account_info)
                             continue
-                        
+
                         check_stats['available_count'] += 1
                         account_info.update({
                             'balance': balance,
@@ -2979,7 +2993,7 @@ class JazzCashAutoPayout:
                         check_stats['insufficient_balance_count'] += 1
                         self.logger.info(f"账号{payment_id} - 余额不足（{balance} < {amount}），重新入队")
                         back_key.append(account_info)
-            
+
             # 如果两个策略都未找到可用账号，记录详细原因
             if not available_accounts:
                 self.logger.warning(f"❌ 两个策略都未找到可用账号")
@@ -3001,9 +3015,9 @@ class JazzCashAutoPayout:
                     self.logger.error(f"   - 20分钟内使用过: {check_stats['recently_used_count']}")
                     self.logger.error(f"   - 余额不足账号: {check_stats['insufficient_balance_count']}")
                     self.logger.error(f"   - 无缓存账号: {check_stats['no_balance_cache_count']}")
-                    
+
                 self.logger.error(f"活跃列表尝试情况: {check_stats['active_list_attempts']}次尝试")
-            
+
             # 将不符合条件的账号重新加入活跃列表
             if back_key:
                 self.logger.info(f"重新入队账号处理: 共{len(back_key)}个账号")
@@ -3012,7 +3026,7 @@ class JazzCashAutoPayout:
                     payment_id = account_info['payment_id']
                     phone = account_info.get('phone', 'UNKNOWN')
                     self.logger.info(f"账号payment_id:{payment_id} phone:{phone} 已重新入队到活跃列表")
-            
+
             # 输出详细统计
             self.logger.info(f"======== JazzCash账号筛选完成 ========")
             self.logger.info(f"筛选统计:")
@@ -3032,14 +3046,14 @@ class JazzCashAutoPayout:
             self.logger.info(f"  🕐 20分钟内使用过: {check_stats['recently_used_count']}")
             self.logger.info(f"  ✅ 可用账号数: {check_stats['available_count']}")
             self.logger.info(f"  🔄 重新入队数: {len(back_key)}")
-            
+
             if available_accounts:
                 self.logger.info(f"🎯 筛选结果: 成功找到{len(available_accounts)}个可用账号")
             else:
                 self.logger.info(f"⚠️ 筛选结果: 暂无可用账号")
-            
+
             return available_accounts
-            
+
         except Exception as e:
             self.logger.error(f"======== JazzCash账号筛选异常 ========")
             self.logger.error(f"异常详情: {e}")
@@ -3048,7 +3062,7 @@ class JazzCashAutoPayout:
             self.logger.error(f"  有序集合尝试: {check_stats['sorted_set_attempts']}")
             self.logger.error(f"  活跃列表尝试: {check_stats['active_list_attempts']}")
             self.logger.error(f"  待重新入队数: {len(back_key)}")
-            
+
             # 异常时也要将账号重新入队
             if back_key:
                 self.logger.info(f"异常处理: 重新入队{len(back_key)}个账号")
@@ -3057,13 +3071,13 @@ class JazzCashAutoPayout:
                     payment_id = account_info['payment_id']
                     phone = account_info.get('phone', 'UNKNOWN')
                     self.logger.info(f"异常处理: 账号payment_id:{payment_id} phone:{phone}已重新入队")
-            
+
             self.logger.error(f"🚨 筛选结果: 因异常返回空列表")
             return []
-    
+
 
     # ========== 原有的锁机制保持不变 ==========
-    
+
     def get_lock(self, order_code):
         """获取订单锁（保持原有逻辑）"""
         try:
@@ -3103,7 +3117,7 @@ class JazzCashAutoPayout:
         except Exception as e:
             self.logger.error(f'del_lock 脚本运行错误{order_code}\n{e}')
             return False
-    
+
     def get_payment_id_lock(self, payment_id):
         """获取payment_id锁 - 确保每个payment_id只能处理一个订单"""
         try:
@@ -3111,42 +3125,42 @@ class JazzCashAutoPayout:
             if payment_id is None or payment_id == '':
                 self.logger.error(f"Payment ID 无效: {payment_id}，拒绝处理")
                 return False
-            
+
             # 🔥 注释：失败冷却期的精确检查已移到账号筛选阶段（get_available_accounts）
             # 在筛选阶段已经通过 check_duplicate_failure() 做了精确的重复订单检测
             # 如果账号能通过筛选到这里，说明：
             #   1. 不在冷却期，或者
             #   2. 虽在冷却期但不是重复订单（失败的是其他订单）
             # 因此这里不再重复检查，避免误判
-            # 
+            #
             # failed_key = f'{self.REDIS_KEYS["payment_id_failed_prefix"]}{payment_id}'
             # if self.redis.exists(failed_key):
             #     self.logger.warning(f"Payment ID {payment_id} 在冷却期内，拒绝处理")
             #     return False
-            
+
             # 获取payment_id处理锁
             lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
             _value = secrets.token_hex(8)
             _lock = self.redis.setnx(lock_key, _value)
-            
+
             if not _lock:
-                # 防止死锁 
+                # 防止死锁
                 _ttl = self.redis.ttl(lock_key)
                 self.logger.info(f"Payment ID {payment_id} 锁剩余时间 {_ttl}s")
                 if _ttl and int(_ttl) > 300:  # 5分钟超时
                     self.redis.delete(lock_key)
                     self.logger.error(f"Payment ID {payment_id} 死锁并删除")
                 return False
-            
+
             # 设置5分钟超时
             self.redis.expire(lock_key, 300)
             self.logger.info(f"Payment ID {payment_id} 获取锁成功，value: {_value}")
             return _value
-            
+
         except Exception as e:
             self.logger.error(f'获取payment_id锁失败: {e}')
             return False
-    
+
     def del_payment_id_lock(self, payment_id, value):
         """删除payment_id锁"""
         try:
@@ -3159,15 +3173,15 @@ class JazzCashAutoPayout:
         except Exception as e:
             self.logger.error(f'删除payment_id锁失败: {e}')
             return False
-    
+
     def update_account_balance_after_transfer(self, payment_id: str, transfer_amount: Decimal):
         """
         转账成功后更新Redis中的账号余额（仅扣减金额）
-        
+
         Args:
             payment_id: 账号ID
             transfer_amount: 转账金额（正数）
-        
+
         Returns:
             bool: 更新成功返回True，失败返回False
         """
@@ -3175,17 +3189,17 @@ class JazzCashAutoPayout:
             # 1. 更新有序集合中的余额（使用 ZINCRBY 原子操作扣减）
             balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
             new_balance = self.redis.zincrby(balance_sorted_set, -float(transfer_amount), payment_id)
-            
+
             # 如果余额变为负数，设置为0（但不移除）
             if new_balance is not None and float(new_balance) < 0:
                 self.redis.zadd(balance_sorted_set, {payment_id: 0})
                 self.logger.info(f"账号{payment_id}余额扣减后为负({new_balance})，已设置为0")
                 new_balance = 0
-            
+
             # 2. 更新普通缓存的余额（不设置过期时间，由monitor负责）
             balance_key = f"{self.REDIS_KEYS['jazzcash_balance_prefix']}{payment_id}"
             cached_balance = self.redis.get(balance_key)
-            
+
             if cached_balance:
                 old_balance = Decimal(cached_balance.decode())
                 new_balance_value = old_balance - transfer_amount
@@ -3197,15 +3211,15 @@ class JazzCashAutoPayout:
                 self.logger.info(f"账号{payment_id}余额已扣减: -{transfer_amount}, 新余额: {new_balance_value}")
             else:
                 self.logger.info(f"账号{payment_id}普通缓存无余额记录，仅更新有序集合")
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"更新账号{payment_id}余额失败: {e}")
             import traceback
             self.logger.error(f"异常堆栈: {traceback.format_exc()}")
             return False
-    
+
     async def fetch_balance_from_api(self, account_info):
         """
         从API重新获取账号余额（参考easypaisa_monitor.py的实现）
@@ -3216,39 +3230,39 @@ class JazzCashAutoPayout:
         import uuid
         import json
         import time
-        
+
         try:
             payment_id = account_info['payment_id']
             phone = account_info.get('phone')
-            
+
             # 检查必要信息
             if not phone:
                 return {
                     'success': False,
                     'error': f'账号{payment_id}缺少手机号信息'
                 }
-            
+
             # 🔥 JazzCash 余额查询只需要 account_id（与 EasyPaisa 不同，不需要 account_accno）
             # 构造payload数据
             payload_data = {
                 "account_id": phone  # 手机号
             }
             self.logger.info(f"payment_id {payment_id} JazzCash余额查询，account_id={phone}")
-            
+
             # 构造内层payload（按照JazzCash文档格式）
             inner_payload = {
                 "id": str(uuid.uuid4()),  # 生成UUID
                 "action": "queryBalance",
                 "payload": payload_data
             }
-            
+
             # 构造FormBody格式（按照EasyPaisa文档）- 安全序列化
             try:
                 data_b64 = base64.b64encode(json.dumps(inner_payload).encode()).decode()
             except TypeError as e:
                 # 如果有Decimal类型导致序列化失败，使用安全转换
                 self.logger.warning(f"余额查询JSON序列化失败，使用安全转换: {e}")
-                
+
                 def safe_convert(obj):
                     if isinstance(obj, Decimal):
                         return float(obj)
@@ -3258,37 +3272,37 @@ class JazzCashAutoPayout:
                         return [safe_convert(item) for item in obj]
                     else:
                         return obj
-                
+
                 safe_payload = safe_convert(inner_payload)
                 data_b64 = base64.b64encode(json.dumps(safe_payload).encode()).decode()
-            
+
             # 计算MD5签名（使用全局配置）
             secret_key = JAZZCASH_SECRET_KEY
             user_id = JAZZCASH_USER_ID
             api_url = JAZZCASH_API_URL
-            
+
             if not all([secret_key, user_id, api_url]):
                 return {
                     'success': False,
                     'error': 'JazzCash API配置不完整'
                 }
-            
+
             sign_string = data_b64 + secret_key
             sign = hashlib.md5(sign_string.encode()).hexdigest()
-            
+
             form_data = {
                 'user_id': user_id,
                 'data': data_b64,
                 'sign': sign
             }
-            
+
             self.logger.info(f"🔄 为账号{payment_id}({phone})重新获取余额")
-            
+
             # 发起API请求
             headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-            
+
             start_time = time.time()
-            
+
             # 使用aiohttp发起异步请求
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -3298,25 +3312,25 @@ class JazzCashAutoPayout:
                     timeout=aiohttp.ClientTimeout(total=30)
                 ) as response:
                     response_time = time.time() - start_time
-                    
+
                     if not 200 <= response.status < 300:
                         return {
                             'success': False,
                             'error': f'HTTP错误: {response.status}',
                             'response_time': response_time
                         }
-                    
+
                     # 解析响应
                     result = await response.json()
-                    
+
                     if result.get('code') == 200:
                         # 🔥 根据JazzCash文档，余额在 data.data.avaliableBalance 字段
                         data = result.get('data', {})
                         inner_data = data.get('data', {}) if isinstance(data, dict) else {}
                         balance = inner_data.get('avaliableBalance', inner_data.get('availableBalance', 0))
-                        
+
                         self.logger.info(f"✅ 账号{payment_id}({phone})余额获取成功: {balance}")
-                        
+
                         return {
                             'success': True,
                             'balance': balance,
@@ -3326,7 +3340,7 @@ class JazzCashAutoPayout:
                     elif result.get('code') == 501:
                         # 501 AccountInvalid - 账号无效
                         error_msg = result.get('msg', result.get('message', '账号无效(501)'))
-                        
+
                         return {
                             'success': False,
                             'error': error_msg,
@@ -3339,20 +3353,20 @@ class JazzCashAutoPayout:
                             'error': result.get('msg', result.get('message', 'API返回错误')),
                             'response_time': response_time
                         }
-                        
+
         except Exception as e:
             self.logger.error(f"重新获取账号{payment_id}余额异常: {e}")
-            
+
             return {
                 'success': False,
                 'error': str(e),
                 'response_time': 0
             }
 
-    
+
     def set_payment_id_failed(self, payment_id, reason="处理失败", order_data=None, status=1):
         """设置payment_id失败状态 - 20分钟冷却期
-        
+
         Args:
             payment_id: Payment ID
             reason: 失败原因
@@ -3361,7 +3375,7 @@ class JazzCashAutoPayout:
         """
         try:
             import time
-            
+
             # 安全转换数值类型为JSON可序列化格式
             def safe_numeric(value):
                 """安全转换数值类型，处理Decimal等不可JSON序列化的类型"""
@@ -3375,9 +3389,9 @@ class JazzCashAutoPayout:
                     return float(value)
                 except (ValueError, TypeError):
                     return str(value)
-            
+
             failed_key = f'{self.REDIS_KEYS["payment_id_failed_prefix"]}{payment_id}'
-            
+
             # 构造JSON格式的Value
             failed_info = {
                 'payment_id': payment_id,
@@ -3386,7 +3400,7 @@ class JazzCashAutoPayout:
                 'expire_time': time.time() + 1200,  # 20分钟后过期
                 'status': status
             }
-            
+
             # 如果有订单数据，添加到JSON中
             if order_data:
                 failed_info.update({
@@ -3399,40 +3413,40 @@ class JazzCashAutoPayout:
                     'user_id': order_data.get('user_id'),
                     'channel_id': order_data.get('channel_id')
                 })
-            
+
             # 设置20分钟冷却期，Value为JSON格式
             self.redis.setex(failed_key, 1200, json.dumps(failed_info, ensure_ascii=False))  # 1200秒 = 20分钟
-            
+
             self.logger.info(f"Payment ID {payment_id} 设置失败冷却期20分钟: {reason}")
-            
+
             # 使用动态冷却期，Value为JSON格式
             #self.redis.setex(failed_key, cooldown_seconds, json.dumps(failed_info, ensure_ascii=False))
-            
+
             # 日志显示实际冷却时间
             #cooldown_minutes = cooldown_seconds / 60
             #self.logger.info(f"Payment ID {payment_id} 设置失败冷却期{cooldown_minutes:.1f}分钟({cooldown_seconds}秒): {reason}")
             #if order_data:
             #   self.logger.info(f"存储订单信息: {order_data.get('code')} - {order_data.get('amount')}")
-            
+
             return True
         except Exception as e:
             self.logger.error(f'设置payment_id失败状态失败: {e}')
             return False
 
     # ========== 失败记录管理（统一Hash存储） ==========
-    
-    def record_payment_failure(self, payment_id: str, amount: Decimal, 
+
+    def record_payment_failure(self, payment_id: str, amount: Decimal,
                               to_account: str, reason: str, order_code: str):
         """
         记录失败信息到统一Hash
-        
+
         Args:
             payment_id: 支付账号ID
             amount: 订单金额
             to_account: 收款账号
             reason: 失败原因
             order_code: 订单号
-        
+
         Redis结构:
             Hash: jazzcash_failures
             Field: {payment_id}:{timestamp}
@@ -3440,10 +3454,10 @@ class JazzCashAutoPayout:
         """
         try:
             import time
-            
+
             timestamp = int(time.time())
             field = f"{payment_id}:{timestamp}"
-            
+
             failure_info = {
                 'payment_id': payment_id,
                 'amount': float(amount),
@@ -3452,33 +3466,33 @@ class JazzCashAutoPayout:
                 'order_code': order_code,
                 'timestamp': timestamp
             }
-            
+
             # 存储到统一Hash
             self.redis.hset(
                 self.REDIS_KEYS['jazzcash_failures'],
                 field,
                 json.dumps(failure_info, ensure_ascii=False)
             )
-            
+
             self.logger.info(
                 f"记录失败: payment_id={payment_id}, "
                 f"金额={amount}, 收款账号={to_account}, 原因={reason}"
             )
-            
+
         except Exception as e:
             self.logger.error(f"记录失败信息失败: {e}")
-    
-    def check_duplicate_failure(self, payment_id: str, amount: Decimal, 
+
+    def check_duplicate_failure(self, payment_id: str, amount: Decimal,
                                 to_account: str, time_window: int = 1200) -> dict:
         """
         检查时间窗口内是否有相同金额和收款账号的失败
-        
+
         Args:
             payment_id: 支付账号ID
             amount: 订单金额
             to_account: 收款账号
             time_window: 时间窗口（秒），默认1200=20分钟
-        
+
         Returns:
             {
                 'has_duplicate': bool,  # 是否有重复
@@ -3489,19 +3503,19 @@ class JazzCashAutoPayout:
         """
         try:
             import time
-            
+
             current_time = int(time.time())
             cutoff_time = current_time - time_window
-            
+
             # 扫描该payment_id的所有失败记录
             pattern = f"{payment_id}:*"
             cursor = 0
             matching_failures = []
             expired_fields = []
-            
+
             # 添加调试日志
             self.logger.debug(f"开始检查重复失败: payment_id={payment_id}, amount={amount}, to_account={to_account}, time_window={time_window}秒")
-            
+
             while True:
                 cursor, fields = self.redis.hscan(
                     self.REDIS_KEYS['jazzcash_failures'],
@@ -3509,61 +3523,61 @@ class JazzCashAutoPayout:
                     match=pattern,
                     count=100
                 )
-                
+
                 # 添加调试日志
                 if fields:
                     self.logger.debug(f"扫描到{len(fields)}条记录，pattern={pattern}")
-                
+
                 for field, value in fields.items():
                     field_str = field.decode() if isinstance(field, bytes) else field
-                    
+
                     # 解析时间戳
                     parts = field_str.split(':')
                     if len(parts) >= 2:
                         try:
                             field_timestamp = int(parts[1])
-                            
+
                             # 检查是否过期
                             if field_timestamp < cutoff_time:
                                 expired_fields.append(field)
                                 continue
-                            
+
                             # 解析失败信息
                             value_str = value.decode() if isinstance(value, bytes) else value
                             failure_info = json.loads(value_str)
-                            
+
                             # 添加调试日志
                             self.logger.debug(f"检查记录: field={field_str}, amount={failure_info['amount']}, to_account={failure_info['to_account']}")
-                            
+
                             # 检查金额和收款账号是否匹配
                             amount_match = abs(failure_info['amount'] - float(amount)) < 0.01
                             account_match = failure_info['to_account'] == to_account
-                            
+
                             # 添加调试日志
                             self.logger.debug(f"匹配结果: amount_match={amount_match} ({failure_info['amount']} vs {amount}), account_match={account_match} ({failure_info['to_account']} vs {to_account})")
-                            
+
                             if amount_match and account_match:
                                 matching_failures.append(failure_info)
                                 self.logger.debug(f"找到匹配的失败记录！")
-                                
+
                         except (ValueError, json.JSONDecodeError) as e:
                             self.logger.error(f"解析失败记录错误: {field_str}, {e}")
-                
+
                 if cursor == 0:
                     break
-            
+
             # 清理过期记录
             if expired_fields:
                 self.redis.hdel(self.REDIS_KEYS['jazzcash_failures'], *expired_fields)
                 self.logger.debug(f"清理{len(expired_fields)}条过期失败记录")
-            
+
             return {
                 'has_duplicate': len(matching_failures) > 0,
                 'duplicate_count': len(matching_failures),
                 'last_failure_time': max([f['timestamp'] for f in matching_failures]) if matching_failures else None,
                 'failures': matching_failures
             }
-            
+
         except Exception as e:
             self.logger.error(f"检查重复失败错误: {e}")
             return {
@@ -3574,18 +3588,18 @@ class JazzCashAutoPayout:
             }
 
     # ========== 订单冷却期管理机制 ==========
-    
+
     def is_order_in_cooldown(self, order_code: str) -> bool:
         """检查订单是否在冷却期内"""
         try:
             # 直接使用 EasyPaisa 的订单冷却期Hash表（因为抢同一个订单表）
             hash_key = 'easypaisa_order_cooldown'
             cooldown_info_str = self.redis.hget(hash_key, order_code)
-            
+
             if cooldown_info_str:
                 cooldown_info = json.loads(cooldown_info_str.decode())
                 current_time = time.time()
-                
+
                 if current_time < cooldown_info['expire_time']:
                     # 仍在冷却期内
                     remaining_minutes = (cooldown_info['expire_time'] - current_time) / 60
@@ -3598,16 +3612,16 @@ class JazzCashAutoPayout:
                         self.redis.hset(hash_key, order_code, json.dumps(cooldown_info, ensure_ascii=False))
                         self.logger.info(f"订单{order_code}冷却期已过期，标记为可处理状态（等级{cooldown_info.get('cooldown_level', 0)}）")
                     return False
-            
+
             return False
         except Exception as e:
             self.logger.error(f"检查订单{order_code}冷却期异常: {e}")
             return False  # 异常时允许处理
-    
-    def set_order_cooldown(self, order_code: str, payment_id: str, reason: str, 
+
+    def set_order_cooldown(self, order_code: str, payment_id: str, reason: str,
                           order_data: dict, status: int = 1):
         """设置订单冷却期（支持累加）
-        
+
         Args:
             payment_id: payment_id，如果没有可用账号可传入None或"no_account"
             status: 1=明确失败, 2=按成功处理, 3=超限异常按成功处理
@@ -3617,10 +3631,10 @@ class JazzCashAutoPayout:
             # 直接使用 EasyPaisa 的订单冷却期Hash表（因为抢同一个订单表）
             hash_key = 'easypaisa_order_cooldown'
             current_time = time.time()
-            
+
             # 尝试获取现有记录
             existing_info_str = self.redis.hget(hash_key, order_code)
-            
+
             if existing_info_str:
                 # 存在历史记录，累加冷却等级
                 existing_info = json.loads(existing_info_str.decode())
@@ -3634,7 +3648,7 @@ class JazzCashAutoPayout:
                 total_failures = 1
                 failure_history = []
                 first_failure_time = current_time
-            
+
             # 计算冷却时间
             if status == 3:  # 超限异常按成功处理，不设置实际冷却期
                 cooldown_minutes = 0
@@ -3642,7 +3656,7 @@ class JazzCashAutoPayout:
             else:
                 cooldown_minutes = self.calculate_cooldown_minutes(cooldown_level)
                 expire_time = current_time + (cooldown_minutes * 60)
-            
+
             # 添加到失败历史
             failure_history.append({
                 "time": current_time,
@@ -3650,14 +3664,14 @@ class JazzCashAutoPayout:
                 "cooldown_minutes": cooldown_minutes,
                 "retry_count": order_data.get('retry_count', 0)
             })
-            
+
             # 限制历史记录数量（避免无限增长）
             if len(failure_history) > 10:
                 failure_history = failure_history[-10:]
-            
+
             # 处理payment_id为None的情况（如没有可用账号）
             safe_payment_id = payment_id if payment_id is not None else "no_account"
-            
+
             cooldown_info = {
                 'order_code': order_code,
                 'payment_id': safe_payment_id,
@@ -3675,27 +3689,27 @@ class JazzCashAutoPayout:
                 'current_retry_count': order_data.get('retry_count', 0),
                 'record_type': status  # 1=明确失败, 2=按成功处理, 3=超限异常按成功处理
             }
-            
+
             # 存储到Hash表
             self.redis.hset(hash_key, order_code, json.dumps(cooldown_info, ensure_ascii=False))
-            
+
             if status == 3:
                 self.logger.info(f"订单{order_code}超限终结记录: 等级{cooldown_level}, 总失败{total_failures}次, payment_id={safe_payment_id}, 仅用于统计: {reason}")
             else:
                 self.logger.info(f"订单{order_code}设置冷却期: 等级{cooldown_level}, 时长{cooldown_minutes}分钟, 总失败{total_failures}次, payment_id={safe_payment_id}: {reason}")
-            
+
         except Exception as e:
             self.logger.error(f"设置订单{order_code}冷却期异常: {e}")
 
 
     def calculate_cooldown_minutes(self, level: int) -> int:
         """根据冷却等级计算时间（支持动态配置，不限等级数量）
-        
+
         规则：
         - 如果 level 在配置范围内，使用对应配置
         - 如果 level 超过配置数量，使用最后一个配置的时间（循环冷却）
         - 读取配置失败时使用默认值
-        
+
         配置变更影响：
         - 已在冷却期的订单：不受影响（expire_time已固定）
         - 下一次失败的订单：使用新配置
@@ -3705,15 +3719,15 @@ class JazzCashAutoPayout:
             # 从 Redis 读取配置（使用EasyPaisa的配置，管理员统一设置）
             import json
             config_str = self.redis.get('easypaisa_order_cooldown_config')
-            
+
             if config_str:
                 # 处理 bytes 类型（Redis 可能返回 bytes 或 str）
                 if isinstance(config_str, bytes):
                     config_str = config_str.decode('utf-8')
-                
+
                 config = json.loads(config_str)
                 levels_config = config.get('levels', [])
-                
+
                 if levels_config:
                     # 查找匹配的等级配置
                     for level_config in levels_config:
@@ -3721,7 +3735,7 @@ class JazzCashAutoPayout:
                             minutes = level_config['minutes']
                             self.logger.info(f"[订单冷却期] 使用配置: 等级{level} = {minutes}分钟")
                             return minutes
-                    
+
                     # 🔥 关键：超过最大等级，使用最后一个配置（支持无限等级）
                     max_configured_level = max([lc['level'] for lc in levels_config])
                     if level > max_configured_level:
@@ -3732,12 +3746,12 @@ class JazzCashAutoPayout:
                             f"使用最后一级配置: {minutes}分钟"
                         )
                         return minutes
-        
+
         except json.JSONDecodeError as e:
             self.logger.warning(f"[订单冷却期] JSON解析失败，使用默认值: {e}")
         except Exception as e:
             self.logger.warning(f"[订单冷却期] 读取配置失败，使用默认值: {e}")
-        
+
         # 🔥 默认值（向后兼容）- 使用统一逻辑
         default_levels = [
             {"level": 1, "minutes": 30},
@@ -3745,13 +3759,13 @@ class JazzCashAutoPayout:
             {"level": 3, "minutes": 360},
             {"level": 4, "minutes": 1440}
         ]
-        
+
         # 查找匹配的默认等级
         for default_level in default_levels:
             if default_level['level'] == level:
                 self.logger.info(f"[订单冷却期] 使用默认配置: 等级{level} = {default_level['minutes']}分钟")
                 return default_level['minutes']
-        
+
         # 超出默认配置范围，使用最后一个默认值（统一逻辑）
         last_default_minutes = default_levels[-1]['minutes']
         self.logger.info(f"[订单冷却期] 等级{level}超出默认范围，使用最后一级默认值: {last_default_minutes}分钟")
@@ -3764,16 +3778,16 @@ class JazzCashAutoPayout:
             # 直接使用 EasyPaisa 的订单冷却期Hash表（因为抢同一个订单表）
             hash_key = 'easypaisa_order_cooldown'
             cooldown_info_str = self.redis.hget(hash_key, order_code)
-            
+
             if cooldown_info_str:
                 # 订单有失败历史，更新状态为成功
                 cooldown_info = json.loads(cooldown_info_str.decode())
                 cooldown_info['status'] = 'success'
                 cooldown_info['success_time'] = time.time()
-                
+
                 # 更新记录状态，但不删除（用于统计分析）
                 self.redis.hset(hash_key, order_code, json.dumps(cooldown_info, ensure_ascii=False))
-                
+
                 self.logger.info(f"订单{order_code}成功处理，更新冷却记录状态为success（等级{cooldown_info.get('cooldown_level', 0)}）")
             else:
                 # 订单没有失败历史（正常情况），无需冷却记录
@@ -3786,7 +3800,7 @@ class JazzCashAutoPayout:
         """判断是否为明确的失败原因"""
         if not message:
             return False
-            
+
         # API错误码（明确的失败原因，除了402都是明确失败）
         api_error_codes = [
             'code=401',  # SessionInvalid - 账号Session失效
@@ -3797,7 +3811,7 @@ class JazzCashAutoPayout:
             'code=503'   # NetworkError - 服务器网络问题
             # 注意：code=402不在此列表中，因为它按成功处理，不需要冷却期
         ]
-        
+
         # 传统的失败原因模式
         known_patterns = [
             '余额不足', 'insufficient balance', 'low balance',
@@ -3809,13 +3823,13 @@ class JazzCashAutoPayout:
             '账号锁定失败', 'account lock failed', 'lock failed',           # 并发竞争问题
             '风控拦截', 'risk control', 'risk blocked'                      # 风控问题
         ]
-        
+
         message_lower = message.lower()
-        
+
         # 检查API错误码
         if any(code.lower() in message_lower for code in api_error_codes):
             return True
-            
+
         # 检查传统失败原因
         return any(pattern.lower() in message_lower for pattern in known_patterns)
 
@@ -3823,7 +3837,7 @@ class JazzCashAutoPayout:
         """批量过滤冷却期内的订单"""
         if not orders:
             return orders
-            
+
         try:
             import time
             # 直接使用 EasyPaisa 的订单冷却期Hash表（因为抢同一个订单表）
@@ -3831,26 +3845,26 @@ class JazzCashAutoPayout:
             current_time = time.time()
             filtered_orders = []
             cooldown_details = []
-            
+
             # 批量获取所有订单的冷却信息
             order_codes = [order['code'] for order in orders]
-            
+
             # 使用Redis pipeline提高批量查询性能
             pipe = self.redis.pipeline()
             for order_code in order_codes:
                 pipe.hget(hash_key, order_code)
-            
+
             cooldown_results = pipe.execute()
-            
+
             # 检查每个订单的冷却状态
             for i, order in enumerate(orders):
                 order_code = order['code']
                 cooldown_info_str = cooldown_results[i]
-                
+
                 if cooldown_info_str:
                     try:
                         cooldown_info = json.loads(cooldown_info_str.decode())
-                        
+
                         # 超限终结记录不参与冷却期检查
                         if cooldown_info.get('status') == 'max_retry_final':
                             # 这些记录仅用于统计，不影响订单处理
@@ -3870,22 +3884,22 @@ class JazzCashAutoPayout:
                             if cooldown_info.get('status') != 'expired':
                                 cooldown_info['status'] = 'expired'
                                 self.redis.hset(hash_key, order_code, json.dumps(cooldown_info, ensure_ascii=False))
-                    
+
                     except (json.JSONDecodeError, KeyError) as e:
                         # JSON解析错误，删除异常记录，允许处理
                         self.logger.warning(f"订单{order_code}冷却期记录格式异常，删除记录: {e}")
                         self.redis.hdel(hash_key, order_code)
-                
+
                 # 添加到可处理订单列表
                 filtered_orders.append(order)
-            
+
             # 记录冷却期详情（debug级别）
             if cooldown_details:
                 for detail in cooldown_details:
                     self.logger.debug(f"订单{detail['order_code']}在冷却期内({detail['remaining_minutes']:.1f}分钟)，等级{detail['level']}: {detail['reason']}")
-            
+
             return filtered_orders
-            
+
         except Exception as e:
             # Redis访问异常时，返回原始订单列表（降级处理）
             self.logger.error(f"批量检查订单冷却期异常，返回原始订单列表: {e}")
@@ -3896,7 +3910,7 @@ class JazzCashAutoPayout:
         try:
             lock_key = f"{self.REDIS_KEYS['jazzcash_account_lock_prefix']}{account_id}"
             lock_value = f"{order_code}_{secrets.token_hex(8)}"
-            
+
             if self.redis.setnx(lock_key, lock_value):
                 self.redis.expire(lock_key, 300)  # 5分钟
                 self.logger.info(f"账号{account_id}锁获取成功: {lock_value}")
@@ -3904,7 +3918,7 @@ class JazzCashAutoPayout:
             else:
                 self.logger.debug(f"账号{account_id}锁获取失败")
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"获取账号{account_id}锁失败: {e}")
             return None
@@ -3921,14 +3935,14 @@ class JazzCashAutoPayout:
             self.logger.error(f"释放账号{account_id}锁失败: {e}")
 
     # ========== 调度引擎 ==========
-    
+
     async def prepare_account_and_locks(self, order_data: Dict) -> Dict:
         """
         为订单准备账号并获取必要的锁
-        
+
         参数：
             order_data: 订单数据
-            
+
         返回：
             {
                 'success': True/False,
@@ -3944,7 +3958,7 @@ class JazzCashAutoPayout:
         order_code = order_data['code']
         amount = Decimal(str(order_data['amount']))
         target_account = order_data.get('payment_account', '')
-        
+
         # 初始化变量，用于异常时的清理
         selected_account = None
         order_lock_value = None
@@ -3952,7 +3966,7 @@ class JazzCashAutoPayout:
         payment_id_lock_value = None
         account_id = None
         payment_id = None
-        
+
         try:
             # 1. 获取可用账号
             self.logger.info(f"订单{order_code} 开始选择可用账号，金额: {amount}")
@@ -3969,23 +3983,23 @@ class JazzCashAutoPayout:
                 target_payment_filtered_accounts = [account for account in accounts if account['payment_id'] not in target_payment_key.split(',')]
             accounts = target_payment_filtered_accounts
             # ===================== 新增代付专卡专户过滤结束 =====================
-            
+
             if not accounts:
                 return {
                     'success': False,
                     'message': f'订单{order_code} 暂无可用账号'
                 }
-            
+
             # 2. 选择最优账号
             selected_account = accounts[0]
             account_id = selected_account['phone']
             payment_id = selected_account['payment_id']
-            
+
             self.logger.info(
                 f"订单{order_code} 选择账号: {account_id}, "
                 f"payment_id: {payment_id}, 余额: {selected_account.get('balance', 'N/A')}"
             )
-            
+
             # 🔥 3. 获取订单锁（有可用账号后才获取）
             order_lock_value = self.get_lock(order_code)
             if not order_lock_value:
@@ -3994,9 +4008,9 @@ class JazzCashAutoPayout:
                     'success': False,
                     'message': f'订单{order_code} 未抢到订单锁'
                 }
-            
+
             self.logger.info(f"订单{order_code} 成功获取订单锁")
-            
+
             # 4. 获取账号锁
             account_lock = await self.acquire_account_lock(account_id, order_code)
             if not account_lock:
@@ -4007,9 +4021,9 @@ class JazzCashAutoPayout:
                     'success': False,
                     'message': f'订单{order_code} 账号{account_id}被锁定'
                 }
-            
+
             self.logger.info(f"订单{order_code} 成功获取账号锁: {account_id}")
-            
+
             # 5. 获取 payment_id 锁
             payment_id_lock_value = self.get_payment_id_lock(payment_id)
             if not payment_id_lock_value:
@@ -4021,9 +4035,9 @@ class JazzCashAutoPayout:
                     'success': False,
                     'message': f'订单{order_code} Payment ID {payment_id} 锁定失败'
                 }
-            
+
             self.logger.info(f"订单{order_code} 成功获取 payment_id 锁: {payment_id}")
-            
+
             # 6. 成功返回
             return {
                 'success': True,
@@ -4034,36 +4048,36 @@ class JazzCashAutoPayout:
                 'account_id': account_id,
                 'payment_id': payment_id
             }
-            
+
         except Exception as e:
             self.logger.error(f"订单{order_code} 准备账号和锁异常: {e}")
-            
+
             # 清理已获取的锁
             if payment_id_lock_value and payment_id:
                 try:
                     self.del_payment_id_lock(payment_id, payment_id_lock_value)
                 except:
                     pass
-            
+
             if account_lock and account_id:
                 try:
                     self.release_account_lock(account_id, account_lock)
                 except:
                     pass
-            
+
             if order_lock_value:
                 try:
                     self.del_lock(order_code, order_lock_value)
                     self.logger.info(f"订单{order_code} 异常时释放订单锁")
                 except Exception as lock_e:
                     self.logger.error(f"释放订单锁失败: {lock_e}")
-            
+
             if selected_account:
                 try:
                     self.return_account_to_active_list(selected_account)
                 except:
                     pass
-            
+
             return {
                 'success': False,
                 'message': f'订单{order_code} 准备失败: {str(e)}'
@@ -4077,21 +4091,21 @@ class JazzCashAutoPayout:
             emergency_stop = self.redis.get('easypaisa_emergency_stop')
             if emergency_stop == b"1" or emergency_stop == "1":
                 return {'passed': False, 'reason': 'emergency_stop', 'message': '系统紧急停机'}
-            
+
             amount = Decimal(str(order_data['amount']))
-            
+
             # 基础金额检查
             if amount < Decimal('0.1'):    # 单笔少于0.1
                 return {'passed': False, 'reason': 'amount_too_small', 'message': '单笔金额过小'}
-            
+
             # 检查系统负载
             active_orders_key = 'jazzcash_active_orders_count'
             active_count = self.redis.get(active_orders_key)
             if active_count and int(active_count.decode()) > 100:  # 超过100个活跃订单
                 return {'passed': False, 'reason': 'system_overload', 'message': '系统负载过高'}
-            
+
             return {'passed': True}
-            
+
         except Exception as e:
             self.logger.error(f"风控检查异常: {e}")
             return {'passed': True, 'message': '风控检查异常，放行处理'}
@@ -4101,13 +4115,13 @@ class JazzCashAutoPayout:
         """代付订单处理"""
         order_code = order_data['code']
         amount = Decimal(str(order_data['amount']))
-        
+
         self.logger.info(f"开始处理代付订单: {order_code}, 金额: {amount}")
-        
+
         # 🔥 使用外部传入的账号
         account_id = selected_account['phone']
         payment_id = selected_account['payment_id']
-        
+
         try:
             # 1. 风控检查
             risk_result = await self.check_payout_risk(order_data)
@@ -4115,24 +4129,24 @@ class JazzCashAutoPayout:
                 # 记录操作日志（风控拦截）
                 try:
                     self.log_complete_transaction(
-                        order_data, 
-                        {'phone': 'risk_blocked', 'payment_id': None}, 
-                        {}, 
-                        {}, 
-                        "risk_blocked", 
-                        error_message=f"风控拦截: {risk_result.get('message', risk_result['reason'])}", 
+                        order_data,
+                        {'phone': 'risk_blocked', 'payment_id': None},
+                        {},
+                        {},
+                        "risk_blocked",
+                        error_message=f"风控拦截: {risk_result.get('message', risk_result['reason'])}",
                         start_time=time.time(),
-                        before_balance=None, 
+                        before_balance=None,
                         process_details={'risk_check_result': risk_result, 'block_stage': 'risk_check'}
                     )
                 except Exception as log_e:
                     self.logger.warning(f"记录风控拦截日志失败: {log_e}")
-                
+
                 return {
                     'success': False,
                     'message': f"风控拦截: {risk_result.get('message', risk_result['reason'])}"
                 }
-            
+
             # 🔥 以下代码已移到 process_single_order_async 中执行
             # # 2. 获取可用账号 (传入收款账号用于过滤)
             # target_account = order_data.get('payment_account', '')
@@ -4140,62 +4154,62 @@ class JazzCashAutoPayout:
             # if not accounts:
             #     # 没有可用账号时，等待下次轮询处理
             #     self.logger.info(f"订单 {order_code} 暂无可用账号，等待下次轮询")
-            #     
+            #
             #     # 记录操作日志（无可用账号）
             #     try:
             #         self.log_complete_transaction(
-            #             order_data, 
-            #             {'phone': 'no_account_available', 'payment_id': None}, 
-            #             {}, 
-            #             {}, 
-            #             "no_available_account", 
-            #             error_message="暂无可用账号，等待下次轮询", 
+            #             order_data,
+            #             {'phone': 'no_account_available', 'payment_id': None},
+            #             {},
+            #             {},
+            #             "no_available_account",
+            #             error_message="暂无可用账号，等待下次轮询",
             #             start_time=time.time(),
-            #             before_balance=None, 
+            #             before_balance=None,
             #             process_details={'block_stage': 'account_selection', 'required_amount': float(amount)}
             #         )
             #     except Exception as log_e:
             #         self.logger.warning(f"记录无可用账号日志失败: {log_e}")
-            #     
+            #
             #     return {
             #         'success': False,
             #         'message': '暂无可用账号，等待下次轮询',
             #         'retry': True
             #     }
-            # 
+            #
             # # 3. 选择最优账号
             # selected_account = accounts[0]
             # account_id = selected_account['phone']  # 🔥 修复: 使用phone作为EasyPaisa的account_id
-            # 
+            #
             # # 4. 获取账号锁
             # # account_lock = await self.acquire_account_lock(account_id, order_code)
             # if not account_lock:
             #     # 账号被锁定，将账号重新入队
             #     self.return_account_to_active_list(selected_account)  # 🔥 修复: 传入完整账号信息
-            #     
+            #
             #     # 记录操作日志（账号锁定失败）
             #     try:
             #         self.log_complete_transaction(
-            #             order_data, 
-            #             selected_account, 
-            #             {}, 
-            #             {}, 
-            #             "account_lock_failed", 
-            #             error_message=f"账号{account_id}被锁定，已重新排队", 
+            #             order_data,
+            #             selected_account,
+            #             {},
+            #             {},
+            #             "account_lock_failed",
+            #             error_message=f"账号{account_id}被锁定，已重新排队",
             #             start_time=time.time(),
-            #             before_balance=None, 
+            #             before_balance=None,
             #             process_details={'block_stage': 'account_lock', 'account_id': account_id, 'payment_id': selected_account.get('payment_id')}
             #         )
             #     except Exception as log_e:
             #         self.logger.warning(f"记录账号锁定失败日志失败: {log_e}")
-            #     
+            #
             #     return {
             #         'success': False,
             #         'message': f'账号{account_id}被锁定，已重新排队',
             #         'payment_id': selected_account.get('payment_id'),
             #         'partner_id': selected_account.get('partner_id')
             #     }
-            # 
+            #
             # # 5. 获取payment_id锁（在账号锁之后）
             # # payment_id = selected_account['payment_id']
             # payment_id_lock_value = None  # 在外部定义，确保finally块可以访问
@@ -4204,48 +4218,48 @@ class JazzCashAutoPayout:
             #     # payment_id锁定失败，释放账号锁并重新入队
             #     self.release_account_lock(account_id, account_lock)
             #     self.return_account_to_active_list(selected_account)
-            #     
+            #
             #     # 记录操作日志（Payment ID锁定失败）
             #     try:
             #         self.log_complete_transaction(
-            #             order_data, 
-            #             selected_account, 
-            #             {}, 
-            #             {}, 
-            #             "payment_id_lock_failed", 
-            #             error_message=f"Payment ID {payment_id} 锁定失败，已重新排队", 
+            #             order_data,
+            #             selected_account,
+            #             {},
+            #             {},
+            #             "payment_id_lock_failed",
+            #             error_message=f"Payment ID {payment_id} 锁定失败，已重新排队",
             #             start_time=time.time(),
-            #             before_balance=None, 
+            #             before_balance=None,
             #             process_details={'block_stage': 'payment_id_lock', 'account_id': account_id, 'payment_id': payment_id}
             #         )
             #     except Exception as log_e:
             #         self.logger.warning(f"记录Payment ID锁定失败日志失败: {log_e}")
-            #     
+            #
             #     return {
             #         'success': False,
             #         'message': f'Payment ID {payment_id} 锁定失败，已重新排队',
             #         'payment_id': payment_id,  # 返回payment_id用于失败记录
             #         'partner_id': selected_account.get('partner_id')  # 返回partner_id用于失败记录
             #     }
-            
+
             try:
                 # 6. 执行JazzCash转账
                 transfer_result = await self._execute_jazzcash_transfer(order_data, selected_account)
-                
+
                 if transfer_result and transfer_result['success']:
                     # 🔥 转账成功，记录账号使用时间（动态冷却期）
                     self.record_account_usage(selected_account['payment_id'])
-                    
+
                     # 转账成功后立即扣减Redis余额
                     self.update_account_balance_after_transfer(
                         payment_id=selected_account['payment_id'],
                         transfer_amount=amount
                     )
-                    
+
                     # 转账成功，设置账号释放时间（从配置读取）
                     self.set_account_release_time(selected_account['payment_id'])
                     self.return_account_to_active_list(selected_account)  # 🔥 修复: 传入完整账号信息
-                    
+
                     return {
                         'success': True,
                         'message': '转账成功',
@@ -4260,10 +4274,10 @@ class JazzCashAutoPayout:
                     # Python异常（如连接异常、JSON解析错误等）按成功处理
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
                     self.return_account_to_active_list(selected_account)  # 🔥 修复: 传入完整账号信息
-                    
+
                     return {
                         'success': False,  # 🔥 修复: 不是真正成功
-                        'treat_as_success': False, 
+                        'treat_as_success': False,
                         'message': 'Python异常，按成功处理避免重复代付',
                         'account_used': account_id,
                         'payment_id': selected_account['payment_id'],
@@ -4274,26 +4288,14 @@ class JazzCashAutoPayout:
                     message = transfer_result.get('message', '')
                     error_code = transfer_result.get('code')
                     is_reject = transfer_result.get('reject', False)
-                    
+
                     # 放回账号到活跃列表（包括驳回情况）
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
                     self.return_account_to_active_list(selected_account)  # 🔥 修复: 传入完整账号信息
-                    
+
                     # 🔥 驳回情况：直接返回，由外层处理
                     if is_reject:
                         return transfer_result  # 直接返回驳回结果，包含 reject=True
-                    
-                    if transfer_result.get('pending_check'):
-                        return {
-                            'success': False,
-                            'pending_check': True,
-                            'treat_as_success': False,
-                            'message': f"JazzCash转账结果待核查(code={error_code}): {message}",
-                            'code': error_code,
-                            'account_used': account_id,
-                            'payment_id': selected_account['payment_id'],
-                            'partner_id': selected_account.get('partner_id')
-                        }
 
                     # ✅ code=402 (转账失败) 特殊处理：放回订单池重试
                     if error_code == 402:
@@ -4315,34 +4317,34 @@ class JazzCashAutoPayout:
                             'payment_id': selected_account['payment_id'],
                             'partner_id': selected_account.get('partner_id')
                         }
-                        
+
             finally:
                 # 注意：锁的释放统一在外层 process_single_order_async 的 finally 块中处理
                 # 这里不需要释放锁，避免引用外层作用域的变量
                 pass
-                
+
         except asyncio.TimeoutError:
             # 会议决策：超时当成功处理
             self.logger.warning(f"订单{order_code}API超时，按成功处理")
-            
+
             # 记录操作日志（早期异常 - 超时）
             try:
                 # 如果selected_account未定义，使用默认值
                 account_info = locals().get('selected_account', {'phone': 'unknown', 'payment_id': None})
                 self.log_complete_transaction(
-                    order_data, 
-                    account_info, 
-                    {}, 
-                    {}, 
-                    "early_exception_timeout", 
-                    error_message="订单处理超时，按成功处理避免重复代付", 
+                    order_data,
+                    account_info,
+                    {},
+                    {},
+                    "early_exception_timeout",
+                    error_message="订单处理超时，按成功处理避免重复代付",
                     start_time=time.time(),
-                    before_balance=None, 
+                    before_balance=None,
                     process_details={'exception_type': 'asyncio.TimeoutError', 'exception_stage': 'process_payout_order'}
                 )
             except Exception as log_e:
                 self.logger.warning(f"记录超时异常日志失败: {log_e}")
-            
+
             # 获取selected_account信息（如果存在）
             if 'selected_account' in locals():
                 return {
@@ -4362,25 +4364,25 @@ class JazzCashAutoPayout:
         except Exception as e:
             # 会议决策：异常当成功处理
             self.logger.error(f"订单{order_code}处理异常: {e}")
-            
+
             # 记录操作日志（早期异常 - 通用异常）
             try:
                 # 如果selected_account未定义，使用默认值
                 account_info = locals().get('selected_account', {'phone': 'unknown', 'payment_id': None})
                 self.log_complete_transaction(
-                    order_data, 
-                    account_info, 
-                    {}, 
-                    {}, 
-                    "early_exception", 
-                    error_message=f"订单处理异常，按成功处理避免重复代付: {str(e)}", 
+                    order_data,
+                    account_info,
+                    {},
+                    {},
+                    "early_exception",
+                    error_message=f"订单处理异常，按成功处理避免重复代付: {str(e)}",
                     start_time=time.time(),
-                    before_balance=None, 
+                    before_balance=None,
                     process_details={'exception_type': type(e).__name__, 'exception_stage': 'process_payout_order', 'exception_detail': str(e)}
                 )
             except Exception as log_e:
                 self.logger.warning(f"记录处理异常日志失败: {log_e}")
-            
+
             # 获取selected_account信息（如果存在）
             if 'selected_account' in locals():
                 return {
@@ -4406,7 +4408,7 @@ class JazzCashAutoPayout:
         inner_payload = {}
         before_balance = None
         process_details = {}
-        
+
         try:
             order_code = order_data['code']
             amount = str(order_data['amount'])
@@ -4414,11 +4416,11 @@ class JazzCashAutoPayout:
             payment_name = order_data.get('payment_name', '')  # 收款人姓名
             ifsc_code = order_data.get('ifsc', '')  # IFSC 就是银行名称（如 "United Bank Limited"）
             bank_ifsc = order_data.get('bank_ifsc', ifsc_code)  # bank_ifsc 字段（如果有的话）
-            
+
             # 从传入的账号信息中获取数据（在早期获取，避免后续使用时未定义）
             payment_id = account_info.get('payment_id')
             phone_number = account_info.get('phone')
-            
+
             # 判断是否为巴基斯坦手机号（JazzCash/EasyPaisa账号格式）
             is_pakistan_mobile = self._is_pakistan_mobile_number(to_account)
 
@@ -4438,7 +4440,7 @@ class JazzCashAutoPayout:
                 # 3. bank_name 仍使用原始的 bank_ifsc
                 to_bankname = bank_ifsc  # bank_ifsc 就是银行名称
                 transfer_type = "JazzCash跨行转账"
-            
+
             # 记录流程开始时间和详细信息
             process_start_time = time.time()
             process_details = {
@@ -4448,7 +4450,7 @@ class JazzCashAutoPayout:
                 'account_selection_status': 'success',
                 'account_selection_criteria': 'auto_selected'
             }
-            
+
             self.logger.info(f"开始执行JazzCash转账:")
             self.logger.info(f"  订单号: {order_code}")
             self.logger.info(f"  转出账号: {phone_number} (JazzCash钱包)")
@@ -4460,7 +4462,7 @@ class JazzCashAutoPayout:
             if to_bankcode:
                 self.logger.info(f"  银行代码(bank_code): {to_bankcode}")
                 self.logger.info(f"  银行名称(bank_name): {to_bankname}")
-            
+
             # 记录风险检查（这里简化为成功）
             process_details.update({
                 'risk_check_time': datetime.now().isoformat(),
@@ -4471,30 +4473,30 @@ class JazzCashAutoPayout:
                     'frequency_check': 'passed'
                 }
                         })
-            
+
                         # 生成请求UUID
             request_uuid = str(uuid.uuid4())
             self.logger.info(f"  请求UUID: {request_uuid}")
-            
+
             # 记录转账尝试开始时间
             start_time = time.time()
-            
+
             self.logger.info(f"  账号信息: payment_id={payment_id}, phone={phone_number}")
-            
+
             # 获取转账前余额
             before_balance = None
             balance_start_time = time.time()
             process_details['before_balance_time'] = datetime.now().isoformat()
-            
+
             try:
                 if account_info and account_info.get('payment_id'):
                     balance_result = await self.fetch_balance_from_api(account_info)
                     balance_duration = int((time.time() - balance_start_time) * 1000)
-                    
+
                     if balance_result and balance_result.get('success'):
                         before_balance = balance_result.get('balance')
                         self.logger.info(f"  转账前余额: {before_balance}")
-                        
+
                         process_details.update({
                             'before_balance_status': 'success',
                             'before_balance_duration': balance_duration
@@ -4502,7 +4504,7 @@ class JazzCashAutoPayout:
                     else:
                         error_msg = balance_result.get('error', '未知错误') if balance_result else 'API调用失败'
                         self.logger.warning(f"  无法获取转账前余额: {error_msg}")
-                        
+
                         process_details.update({
                             'before_balance_status': 'failed',
                             'before_balance_error': error_msg,
@@ -4511,7 +4513,7 @@ class JazzCashAutoPayout:
                 else:
                     error_msg = '账号信息不完整'
                     self.logger.warning(f"  账号信息不完整，跳过余额查询")
-                    
+
                     process_details.update({
                         'before_balance_status': 'skipped',
                         'before_balance_error': error_msg
@@ -4521,18 +4523,18 @@ class JazzCashAutoPayout:
                 self.logger.warning(f"  获取转账前余额异常: {e}")
                 before_balance = None
                 balance_duration = int((time.time() - balance_start_time) * 1000)
-                
+
                 process_details.update({
                     'before_balance_status': 'exception',
                     'before_balance_error': error_msg,
                     'before_balance_duration': balance_duration
                 })
-            
+
             # 判断转账类型：JazzCash同行转账 vs 跨行转账
             if to_bankcode:
                 # 跨行转账到银行卡 - JazzCash 需要 bank_code 和 bank_name
                 action = "transferToCard"
-                
+
                 # 🔥 JazzCash 跨行转账参数
                 # bank_ifsc 字段就是银行名称（如 "United Bank Limited"）
                 # bank_code 是银行代码（如 "60"），如果订单中没有则使用 ifsc
@@ -4544,10 +4546,10 @@ class JazzCashAutoPayout:
                     "amount": amount,
                     "remark": order_code  # 使用订单号作为备注
                 }
-                
+
                 # 🔥 JazzCash 跨行转账不需要 from_accno 参数（与 EasyPaisa 不同）
                 self.logger.info(f"JazzCash跨行转账参数: bank_code={to_bankcode}, bank_name={to_bankname}")
-                
+
                 self.logger.info(f"转账类型: JazzCash跨行转账 (transferToCard)")
             else:
                 # JazzCash同行转账
@@ -4558,57 +4560,57 @@ class JazzCashAutoPayout:
                     "amount": amount,
                     "remark": order_code  # 使用订单号作为备注
                 }
-                
+
                 # 🔥 JazzCash 同行转账不需要 from_accno 参数（与 EasyPaisa 不同）
                 self.logger.info(f"JazzCash同行转账: 从{phone_number}转账到{to_account}")
-                
+
                 self.logger.info(f"转账类型: JazzCash同行转账 (transferToAcc)")
-            
+
             # 构建内层payload
             inner_payload = {
                 "id": request_uuid,
                 "action": action,
                 "payload": payload_data
             }
-            
+
             self.logger.info(f"JazzCash API请求载荷: {inner_payload}")
-            
+
             # 调用真实JazzCash API
             self.logger.info(f"开始调用JazzCash API...")
-            
+
             api_start_time = time.time()
             process_details['transfer_api_time'] = datetime.now().isoformat()
-            
+
             # 🔥 转账API使用60秒超时
             api_result = await self._call_jazzcash_api(inner_payload, phone_number, timeout=60)
-            
+
             api_duration = int((time.time() - api_start_time) * 1000)
             process_details['api_duration_ms'] = api_duration
-            
+
             # 记录API完整响应
             self.logger.info(f"JazzCash API响应: {api_result}")
-            
+
             if api_result:
                 code = api_result.get('code')
                 msg = api_result.get('msg', '')
                 data = api_result.get('data', {})
-                
+
                 self.logger.info(f"API响应解析: code={code}, msg={msg}, data={data}")
-                
+
                 if code == 200:
                     # 直接成功
                     transaction_id = self._extract_transaction_id(api_result, action)
                     self.logger.info(f"转账成功! 交易ID: {transaction_id}")
-                    
+
                     # 计算转账后余额（优化：避免额外API调用）
                     after_balance = None
                     process_details['after_balance_time'] = datetime.now().isoformat()
-                    
+
                     if before_balance is not None:
                         try:
                             # 直接用转账金额计算转账后余额
                             after_balance = Decimal(str(before_balance)) - Decimal(str(amount))
-                            
+
                             # 记录余额变化信息
                             try:
                                 before_balance_decimal = Decimal(str(before_balance)) if not isinstance(before_balance, Decimal) else before_balance
@@ -4616,15 +4618,15 @@ class JazzCashAutoPayout:
                             except (ValueError, TypeError, Decimal.InvalidOperation) as e:
                                 self.logger.warning(f"计算余额变化失败: after_balance={after_balance} ({type(after_balance)}), before_balance={before_balance} ({type(before_balance)}), error={e}")
                                 balance_change = -float(amount)  # 使用转账金额作为余额变化
-                            
+
                             self.logger.info(f"  转账后余额: {after_balance} (计算得出)")
                             self.logger.info(f"  余额变化: {balance_change}")
-                            
+
                             process_details.update({
                                 'after_balance_status': 'calculated',
                                 'calculation_method': 'before_balance - amount'
                             })
-                            
+
                         except Exception as e:
                             error_msg = f"计算转账后余额失败: {e}"
                             self.logger.warning(f"  {error_msg}")
@@ -4640,7 +4642,7 @@ class JazzCashAutoPayout:
                             'after_balance_status': 'skipped',
                             'after_balance_error': error_msg
                         })
-                    
+
                     # 添加成功时的流程信息
                     process_details.update({
                         'lock_release_time': datetime.now().isoformat(),
@@ -4651,13 +4653,13 @@ class JazzCashAutoPayout:
                         },
                         'total_duration_ms': int((time.time() - process_start_time) * 1000)
                     })
-                    
+
                     # 记录完整的交易记录（成功）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "success", transaction_id=transaction_id, start_time=start_time,
                                                 before_balance=before_balance, after_balance=after_balance,
                                                 process_details=process_details)
-                    
+
                     return {
                         'success': True,
                         'transaction_id': transaction_id,
@@ -4671,30 +4673,30 @@ class JazzCashAutoPayout:
                     if data and isinstance(data, dict):
                         # 尝试从 data 直接获取 msgCd
                         msg_cd = data.get('msgCd')
-                        
+
                         # 如果没有，尝试从 body 获取
                         if not msg_cd:
                             body = data.get('body', {})
                             if isinstance(body, dict):
                                 msg_cd = body.get('msgCd')
-                    
+
                     self.logger.warning(f"转账失败(可重试): code={code}, msgCd={msg_cd}, msg={msg}")
-                    
+
                     # 🔥 特定 msgCd 需要驳回订单（JazzCash使用与EasyPaisa相同的错误码）
                     reject_msg_codes = ['CIO41915', 'URM00000', 'PWM80422']
                     if msg_cd in reject_msg_codes:
                         self.logger.error(f"⚠️ 检测到需驳回订单的错误码: msgCd={msg_cd}")
-                        
+
                         # 记录失败的交易
                         self.log_complete_transaction(
-                            order_data, account_info, inner_payload, api_result, 
-                            f"rejected_{msg_cd.lower()}", 
-                            error_message=f"msgCd={msg_cd}: {msg}", 
+                            order_data, account_info, inner_payload, api_result,
+                            f"rejected_{msg_cd.lower()}",
+                            error_message=f"msgCd={msg_cd}: {msg}",
                             start_time=start_time,
-                            before_balance=before_balance, 
+                            before_balance=before_balance,
                             process_details=process_details
                         )
-                        
+
                         # 🔥 不再直接调用驳回函数，只返回驳回标记，由外层统一处理事务
                         return {
                             'success': False,
@@ -4702,10 +4704,10 @@ class JazzCashAutoPayout:
                             'reject_reason': msg,  # 直接使用 API 返回的 msg 内容
                             'message': f'Detected rejection error: msgCd={msg_cd}, {msg}'
                         }
-                    
+
                     # 其他 code=402 情况继续按原逻辑处理（可重试）
                     self.logger.warning(f"转账失败(可重试): {msg}")
-                    
+
                     # 添加失败时的流程信息
                     process_details.update({
                         'lock_release_time': datetime.now().isoformat(),
@@ -4717,12 +4719,12 @@ class JazzCashAutoPayout:
                         },
                         'total_duration_ms': int((time.time() - process_start_time) * 1000)
                     })
-                    
+
                     # 记录完整的交易记录（失败）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "failed", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 失败时只有转账前余额
-                    
+
                     return {
                         'success': False,
                         'message': f'EasyPaisa转账失败: {msg}',
@@ -4732,7 +4734,7 @@ class JazzCashAutoPayout:
                 elif code == 501:
                     # AccountInvalid - 账号异常（包括2小时冷却期），立即下线
                     self.logger.error(f"账号异常或冷却期: {msg}")
-                    
+
                     # 添加账号异常时的流程信息
                     process_details.update({
                         'lock_release_time': datetime.now().isoformat(),
@@ -4744,12 +4746,12 @@ class JazzCashAutoPayout:
                         },
                         'total_duration_ms': int((time.time() - process_start_time) * 1000)
                     })
-                    
+
                     # 记录完整的交易记录（账号异常）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "account_invalid", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 账号异常时只有转账前余额
-                    
+
                     return {
                         'success': False,
                         'message': f'EasyPaisa账号异常或冷却期: {msg}',
@@ -4758,12 +4760,12 @@ class JazzCashAutoPayout:
                 elif code == 423:
                     # ServerBusy - 服务器忙，可重试
                     self.logger.warning(f"服务器忙碌: {msg}")
-                    
+
                     # 记录完整的交易记录（服务器忙碌）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "server_busy", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 服务器忙碌时只有转账前余额
-                    
+
                     return {
                         'success': False,
                         'message': f'EasyPaisa服务器忙碌: {msg}',
@@ -4773,69 +4775,42 @@ class JazzCashAutoPayout:
                 elif code == 403:
                     # CheckParam - 参数错误
                     self.logger.error(f"参数错误: {msg}")
-                    
+
                     # 记录完整的交易记录（参数错误）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "param_error", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 参数错误时只有转账前余额
-                    
+
                     return {
                         'success': False,
                         'message': f'EasyPaisa参数错误: {msg}',
                         'can_retry': False,
                         'code': code
                     }
-                elif code == 500:
-                    # JazzCashMerchant v1.6 文档说明转账 code=500 不能直接判定失败。
-                    self.logger.warning(f"JazzCash转账返回500，进入待核查: {msg}")
+                elif code in [500, 503]:
+                    # Error - 服务器严重错误 (500: 业务错误, 503: 服务不可用)
+                    self.logger.error(f"服务器严重错误: {msg}")
 
-                    process_details.update({
-                        'lock_release_time': datetime.now().isoformat(),
-                        'lock_release_status': 'success',
-                        'lock_release_details': {
-                            'account_lock_released': True,
-                            'payment_id_lock_released': True,
-                            'release_reason': 'pending_reconciliation'
-                        },
-                        'total_duration_ms': int((time.time() - process_start_time) * 1000)
-                    })
-                    
-                    # 记录完整的交易记录（待核查）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
-                                                "pending_reconciliation", error_message=msg, start_time=start_time,
-                                                before_balance=before_balance, process_details=process_details)
-                    
-                    return {
-                        'success': False,
-                        'pending_check': True,
-                        'message': f'JazzCash转账返回500，待核查: {msg}',
-                        'can_retry': False,
-                        'code': code
-                    }
-                elif code == 503:
-                    # NetworkError - 服务不可用
-                    self.logger.error(f"JazzCash网络或服务不可用: {msg}")
-                    
                     # 记录完整的交易记录（服务器严重错误）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "server_error", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 服务器错误时只有转账前余额
-                    
+
                     return {
                         'success': False,
-                        'message': f'JazzCash服务器错误: {msg}',
+                        'message': f'EasyPaisa服务器错误: {msg}',
                         'can_retry': False,
                         'code': code
                     }
                 else:
                     # 其他未知错误码
                     self.logger.error(f"未知错误码: code={code}, msg={msg}")
-                    
+
                     # 记录完整的交易记录（未知错误）
-                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result, 
+                    self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "unknown_error", error_message=msg, start_time=start_time,
                                                 before_balance=before_balance, process_details=process_details)  # 未知错误时只有转账前余额
-                    
+
                     return {
                         'success': False,
                         'message': f'JazzCash未知错误: {msg}',
@@ -4844,12 +4819,12 @@ class JazzCashAutoPayout:
                     }
             else:
                 self.logger.error("JazzCash API无响应（网络异常或超时）")
-                
+
                 # 记录完整的交易记录（API无响应）
-                self.log_complete_transaction(order_data, account_info, inner_payload, {}, 
+                self.log_complete_transaction(order_data, account_info, inner_payload, {},
                                             "api_no_response", error_message="API无响应（网络异常）", start_time=start_time,
                                             before_balance=before_balance, process_details=process_details)  # API无响应时只有转账前余额
-                
+
                 return {
                     'success': False,
                     'message': 'JazzCash API无响应（网络异常或超时）',
@@ -4859,22 +4834,22 @@ class JazzCashAutoPayout:
 
         except Exception as e:
             self.logger.error(f"JazzCash转账异常: {e}")
-            
+
             # 记录完整的交易记录（异常）
             account_info = account_info if 'account_info' in locals() else {'phone': 'unknown', 'payment_id': 'unknown'}
             start_time = start_time if 'start_time' in locals() else time.time()
             inner_payload = inner_payload if 'inner_payload' in locals() else {}
             before_balance = before_balance if 'before_balance' in locals() else None
             process_details = process_details if 'process_details' in locals() else {}
-            self.log_complete_transaction(order_data, account_info, inner_payload, {}, 
+            self.log_complete_transaction(order_data, account_info, inner_payload, {},
                                         "exception", error_message=str(e), start_time=start_time,
                                         before_balance=before_balance, process_details=process_details)  # 异常时只有转账前余额
-            
+
             return None
-    
+
     async def _call_jazzcash_api_query(self, inner_payload: Dict, account_id: str, timeout: int = 30) -> Optional[Dict]:
         """调用JazzCash API的底层方法 - 专门用于查询操作（余额查询、账号检查等）
-        
+
         Args:
             inner_payload: API请求载荷
             account_id: 账号ID
@@ -4884,23 +4859,23 @@ class JazzCashAutoPayout:
             import base64
             import hashlib
             import json
-            
+
             # JazzCash API配置 - 从config获取
             api_url = JAZZCASH_API_URL
             user_id = JAZZCASH_USER_ID
             secret_key = JAZZCASH_SECRET_KEY
-            
+
             if not all([api_url, user_id, secret_key]):
                 self.logger.error("JazzCash API配置缺失")
                 return None
-            
+
             # 1. 准备payload - 安全序列化，处理可能的Decimal类型
             try:
                 payload_json = json.dumps(inner_payload, separators=(',', ':'))
             except TypeError as e:
                 # 如果有Decimal类型导致序列化失败，使用安全转换
                 self.logger.warning(f"JSON序列化失败，使用安全转换: {e}")
-                
+
                 def safe_json_convert(obj):
                     """递归转换对象中的Decimal类型"""
                     if isinstance(obj, Decimal):
@@ -4911,39 +4886,39 @@ class JazzCashAutoPayout:
                         return [safe_json_convert(item) for item in obj]
                     else:
                         return obj
-                
+
                 safe_payload = safe_json_convert(inner_payload)
                 payload_json = json.dumps(safe_payload, separators=(',', ':'))
-            
+
             # 2. Base64编码
             payload_b64 = base64.b64encode(payload_json.encode()).decode()
-            
+
             # 3. 生成签名
             sign_str = payload_b64 + secret_key
             sign = hashlib.md5(sign_str.encode()).hexdigest()
-            
+
             # 4. 构建请求数据
             form_data = {
                 'user_id': user_id,
                 'data': payload_b64,
                 'sign': sign
             }
-            
+
             # 5. 发送HTTP请求 - 使用查询专用的请求方法
             # 构造login_data参数（make_request需要）
             login_data = {'id': account_id}
-            
+
             response = await self.retry_make_request_query(
-                login_data, 
-                "POST", 
-                url=api_url, 
-                headers=None, 
-                params=None, 
-                data=form_data, 
+                login_data,
+                "POST",
+                url=api_url,
+                headers=None,
+                params=None,
+                data=form_data,
                 json_data=None,
                 timeout=timeout  # 使用传入的timeout参数
             )
-            
+
             if response and response.status_code == 200:
                 try:
                     result = response.json()
@@ -4956,14 +4931,14 @@ class JazzCashAutoPayout:
                 status_code = response.status_code if response else 'None'
                 self.logger.error(f"JazzCash API查询HTTP错误: {status_code}")
                 return None
-                        
+
         except Exception as e:
             self.logger.error(f"调用JazzCash API查询异常: {e}")
             return None
-    
+
     async def _call_jazzcash_api(self, inner_payload: Dict, account_id: str, timeout: int = 30) -> Optional[Dict]:
         """调用JazzCash API的底层方法
-        
+
         Args:
             inner_payload: API请求载荷
             account_id: 账号ID
@@ -4973,23 +4948,23 @@ class JazzCashAutoPayout:
             import base64
             import hashlib
             import json
-            
+
             # JazzCash API配置 - 从config获取
             api_url = JAZZCASH_API_URL
             user_id = JAZZCASH_USER_ID
             secret_key = JAZZCASH_SECRET_KEY
-            
+
             if not all([api_url, user_id, secret_key]):
                 self.logger.error("JazzCash API配置缺失")
                 return None
-            
+
             # 1. 准备payload - 安全序列化，处理可能的Decimal类型
             try:
                 payload_json = json.dumps(inner_payload, separators=(',', ':'))
             except TypeError as e:
                 # 如果有Decimal类型导致序列化失败，使用安全转换
                 self.logger.warning(f"JSON序列化失败，使用安全转换: {e}")
-                
+
                 def safe_json_convert(obj):
                     """递归转换对象中的Decimal类型"""
                     if isinstance(obj, Decimal):
@@ -5000,39 +4975,39 @@ class JazzCashAutoPayout:
                         return [safe_json_convert(item) for item in obj]
                     else:
                         return obj
-                
+
                 safe_payload = safe_json_convert(inner_payload)
                 payload_json = json.dumps(safe_payload, separators=(',', ':'))
-            
+
             # 2. Base64编码
             payload_b64 = base64.b64encode(payload_json.encode()).decode()
-            
+
             # 3. 生成签名
             sign_str = payload_b64 + secret_key
             sign = hashlib.md5(sign_str.encode()).hexdigest()
-            
+
             # 4. 构建请求数据
             form_data = {
                 'user_id': user_id,
                 'data': payload_b64,
                 'sign': sign
             }
-            
+
             # 5. 发送HTTP请求 - 使用统一的make_request方法
             # 构造login_data参数（make_request需要）
             login_data = {'id': account_id}
-            
+
             response = await self.retry_make_request(
-                login_data, 
-                "POST", 
-                url=api_url, 
-                headers=None, 
-                params=None, 
-                data=form_data, 
+                login_data,
+                "POST",
+                url=api_url,
+                headers=None,
+                params=None,
+                data=form_data,
                 json_data=None,
                 timeout=timeout  # 使用传入的timeout参数
             )
-            
+
             if response and response.status_code == 200:
                 try:
                     result = response.json()
@@ -5045,33 +5020,33 @@ class JazzCashAutoPayout:
                 status_code = response.status_code if response else 'None'
                 self.logger.error(f"EasyPaisa API HTTP错误: {status_code}")
                 return None
-                        
+
         except Exception as e:
             self.logger.error(f"调用EasyPaisa API异常: {e}")
             return None
-    
+
     def _extract_transaction_id(self, api_result: Dict, action: str) -> str:
         """从API响应中提取交易ID"""
         try:
             data = api_result.get('data', {})
-            
+
             # 优先从 data.data.transactionID 提取（JazzCash API 实际返回路径）
             inner_data = data.get('data', {})
             transaction_id = inner_data.get('transactionID', '')
-            
+
             if transaction_id:
                 return transaction_id
-            
+
             # 备用路径：尝试从其他可能的字段提取
             transaction_id = data.get('extOrderNo', '') or data.get('busOrderNo', '')
-            
+
             if transaction_id:
                 return transaction_id
-            
+
             # 如果都没有，记录警告并生成备用ID
             self.logger.warning(f"API响应中未找到交易ID，使用备用方案生成ID")
             return f"JC{uuid.uuid4().hex[:12].upper()}"  # 备用方案，使用JC前缀（JazzCash）
-                
+
         except Exception as e:
             self.logger.error(f"提取交易ID失败: {e}")
             return f"JC{uuid.uuid4().hex[:12].upper()}"
@@ -5079,19 +5054,19 @@ class JazzCashAutoPayout:
     # ========== 数据库操作方法（保持不变） ==========
     # 废弃：已整合到统一事务控制中
     # 以下函数已注释，因为没有被调用且功能已被其他函数替代
-    
+
     # async def _get_order_data(self, order_code: str) -> Optional[Dict]:
     #     """获取订单数据 - 已废弃，使用统一事务控制"""
     #     try:
     #         connection = pymysql.connect(
     #             host=conf['mysql_host'],
-    #             user=conf['mysql_user'], 
+    #             user=conf['mysql_user'],
     #             password=conf['mysql_password'],
     #             db=conf['mysql_database'],
     #             charset='utf8mb4',
     #             cursorclass=pymysql.cursors.DictCursor
     #         )
-    #         
+    #
     #         try:
     #             connection.ping()
     #             with connection.cursor() as cur:
@@ -5101,7 +5076,7 @@ class JazzCashAutoPayout:
     #                 return result
     #         finally:
     #             connection.close()
-    #             
+    #
     #     except Exception as e:
     #         self.logger.error(f"查询订单{order_code}失败: {e}")
     #         return None
@@ -5113,15 +5088,15 @@ class JazzCashAutoPayout:
     #             host=conf['mysql_host'],
     #             user=conf['mysql_user'],
     #             password=conf['mysql_password'],
-    #             db=conf['mysql_database'], 
+    #             db=conf['mysql_database'],
     #             charset='utf8mb4',
     #             cursorclass=pymysql.cursors.DictCursor
     #         )
-    #         
+    #
     #         try:
     #             with connection.cursor() as cur:
     #                 sql = """
-    #                     UPDATE orders_df 
+    #                     UPDATE orders_df
     #                     SET status = %s, time_accept = NOW(), otherpay = 'easypaisa_auto',
     #                         processed_by_auto = 1
     #                     WHERE code = %s
@@ -5130,7 +5105,7 @@ class JazzCashAutoPayout:
     #                 connection.commit()
     #         finally:
     #             connection.close()
-    #             
+    #
     #     except Exception as e:
     #         self.logger.error(f"更新订单{order_code}状态失败: {e}")
 
@@ -5145,22 +5120,22 @@ class JazzCashAutoPayout:
     #             charset='utf8mb4',
     #             cursorclass=pymysql.cursors.DictCursor
     #         )
-    #         
+    #
     #         try:
     #             with connection.cursor() as cur:
     #                 sql = """
-    #                     UPDATE orders_df 
+    #                     UPDATE orders_df
     #                     SET status = 3, time_payed = NOW(), time_success = NOW()
     #                     WHERE code = %s
     #                 """
     #                 cur.execute(sql, (order_code,))
     #                 connection.commit()
-    #                 
+    #
     #             # 发送成功通知到Redis
     #             self.redis.publish('order_df_notify', order_code)
     #         finally:
     #             connection.close()
-    #             
+    #
     #     except Exception as e:
     #         self.logger.error(f"更新订单{order_code}成功状态失败: {e}")
 
@@ -5175,11 +5150,11 @@ class JazzCashAutoPayout:
     #             charset='utf8mb4',
     #             cursorclass=pymysql.cursors.DictCursor
     #         )
-    #         
+    #
     #         try:
     #             with connection.cursor() as cur:
     #                 sql = """
-    #                     UPDATE orders_df 
+    #                     UPDATE orders_df
     #                     SET status = -1, time_payed = NOW()
     #                     WHERE code = %s
     #                 """
@@ -5187,7 +5162,7 @@ class JazzCashAutoPayout:
     #                 connection.commit()
     #         finally:
     #             connection.close()
-    #             
+    #
     #     except Exception as e:
     #         self.logger.error(f"更新订单{order_code}失败状态失败: {e}")
 
@@ -5204,27 +5179,27 @@ class JazzCashAutoPayout:
         account_lock = None  # 账号锁
         account_id = None  # 账号ID
         success_result = False  # 初始化最终结果
-        
+
         try:
             self.logger.info(f'收到订单消息: {order_message}')
-            
+
             # 解析订单消息（格式：{code}_{amount}）
             parts = order_message.split('_')
             if len(parts) < 2:
                 self.logger.error(f"订单消息格式错误: {order_message}")
                 return False
-            
+
             order_code = parts[0]
             amount = parts[1]
-            
+
             # 🚨 处理前再次检查紧急停机状态（使用 EasyPaisa 的配置，全局控制）
             emergency_stop = self.redis.get("easypaisa_emergency_stop")
             if emergency_stop == b"1" or emergency_stop == "1":
                 self.logger.warning(f"⚠️ 订单{order_code}处理前检测到全局紧急停机状态，停止处理")
                 return False
-            
+
             # 🔥 订单锁已移到 prepare_account_and_locks 中获取（有可用账号后才获取）
-            
+
             # 1. 建立数据库连接和事务
             connection = pymysql.connect(
                 host=conf['mysql_host'],
@@ -5235,28 +5210,28 @@ class JazzCashAutoPayout:
                 cursorclass=pymysql.cursors.DictCursor,
                 autocommit=False  # 关闭自动提交，手动控制事务
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     # 2. 查询订单信息（在事务内）
                     sql = 'SELECT * FROM orders_df WHERE code = %s'
                     cur.execute(sql, order_code)
                     order_data = cur.fetchone()
-                    
+
                     if not order_data:
                         self.logger.error(f'订单{order_code}不存在')
                         return False
-                    
+
                     # 检查订单状态
                     if order_data['status'] != 0:
                         self.logger.info(f'订单{order_code}已被处理，状态: {order_data["status"]}')
                         return False
-                    
+
                     # 注意：冷却期检查已在get_pending_orders_by_time中完成
-                    
+
                     # 🔥 3. 准备账号并获取锁（包含：选账号→订单锁→账号锁→payment_id锁）
                     prepare_result = await self.prepare_account_and_locks(order_data)
-                    
+
                     if not prepare_result['success']:
                         # ✅ 无可用账号或锁获取失败：不更新订单状态，直接返回
                         self.logger.info(
@@ -5264,7 +5239,7 @@ class JazzCashAutoPayout:
                             f"不更新订单状态，等待下次轮询"
                         )
                         return False
-                    
+
                     # 提取准备好的资源
                     selected_account = prepare_result['selected_account']
                     order_lock_value = prepare_result['order_lock_value']
@@ -5272,14 +5247,14 @@ class JazzCashAutoPayout:
                     payment_id_lock_value = prepare_result['payment_id_lock_value']
                     account_id = prepare_result['account_id']
                     payment_id = prepare_result['payment_id']
-                    
+
                     self.logger.info(
                         f"订单{order_code} 准备完成: 账号{account_id}, payment_id={payment_id}"
                     )
-                    
+
                     # 🔥 4. 更新订单状态为处理中（确认有可用账号且已锁定后才更新）
                     sql = """
-                        UPDATE orders_df 
+                        UPDATE orders_df
                         SET status = 1, time_accept = NOW()
                         WHERE code = %s AND status = 0
                     """
@@ -5290,23 +5265,23 @@ class JazzCashAutoPayout:
                         return False
                     connection.commit()  # 立即提交，防止其他进程重复查询此订单
                     self.logger.info(f'订单{order_code}状态已更新为处理中(status=1)，事务已提交')
-                    
+
                     # 🔥 5. 执行转账（传入已选择的账号）
                     result = await self.process_payout_order(
-                        order_data, 
+                        order_data,
                         connection,
                         selected_account=selected_account
                     )
-                    
+
                     # 6. 记录处理该订单的 payment_id 和 partner_id（所有情况都记录）
                     # 🔥 payment_id 和 account_id 已经从 prepare_result 中提取（第5214行），用于finally释放锁
                     partner_id = selected_account.get('partner_id')
-                    
+
                     # 更新订单的 payment_id 和 partner_id
                     if partner_id:
                         # 同时设置payment_id和partner_id
                         sql = """
-                            UPDATE orders_df 
+                            UPDATE orders_df
                             SET payment_id = %s, partner_id = %s
                             WHERE code = %s
                         """
@@ -5315,13 +5290,13 @@ class JazzCashAutoPayout:
                     else:
                         # 如果partner_id为空，只设置payment_id
                         sql = """
-                            UPDATE orders_df 
+                            UPDATE orders_df
                             SET payment_id = %s
                             WHERE code = %s
                         """
                         cur.execute(sql, (payment_id, order_code))
                         self.logger.info(f"订单{order_code}已分配账号 payment_id: {payment_id} (partner_id为空)")
-                    
+
                     # 7. 如果处理成功，立即更新订单状态为3
                     if result.get('success', False):
                         self.logger.info(f"订单{order_code}转账成功，payment_id: {payment_id}")
@@ -5329,7 +5304,7 @@ class JazzCashAutoPayout:
                         time_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                         transaction_id = result.get('transaction_id', '')
                         sql_update_status = """
-                            UPDATE orders_df 
+                            UPDATE orders_df
                             SET status = 3, time_payed = %s, time_success = %s, utr = %s
                             WHERE code = %s AND status IN (0, 1)
                         """
@@ -5339,18 +5314,18 @@ class JazzCashAutoPayout:
                             self.logger.info(f"✅ 订单{order_code}转账成功，状态已更新为成功(status=3)，transaction_id: {transaction_id}")
                         else:
                             self.logger.warning(f"⚠️ 订单{order_code}转账成功，但状态已不是0或1，可能已被其他进程处理")
-                    
+
                     # 8. 提交 payment_id 和订单状态更新事务
                     connection.commit()
                     self.logger.info(f'订单{order_code}payment_id已更新: {payment_id}, 订单状态: {result.get("success") and "成功" or "失败"}')
-                    
+
                     # 9. 根据处理结果分别处理（独立事务）
                     if result.get('success', False):
                         # 9.1 代付成功：处理余额、佣金、流水
                         success_connection = None
                         try:
                             self.logger.info(f"订单{order_code}开始处理余额、佣金和流水")
-                            
+
                             # 重新建立连接进行后续处理
                             success_connection = pymysql.connect(
                                 host=conf['mysql_host'],
@@ -5361,23 +5336,23 @@ class JazzCashAutoPayout:
                                 cursorclass=pymysql.cursors.DictCursor,
                                 autocommit=False
                             )
-                            
+
                             try:
                                 with success_connection.cursor() as success_cur:
                                     # 设置 qr_id 用于后续处理
                                     self.qr_id = result.get('payment_id')
-                                    
+
                                     # 🔥 重新查询最新的订单数据（包含已更新的payment_id、partner_id、status等）
                                     sql_refresh = 'SELECT * FROM orders_df WHERE code = %s'
                                     success_cur.execute(sql_refresh, (order_code,))
                                     updated_order_data = success_cur.fetchone()
-                                    
+
                                     if not updated_order_data:
                                         self.logger.error(f"重新查询订单{order_code}失败，数据不存在")
                                         success_result = False
                                     else:
                                         self.logger.info(f"✅ 重新查询订单{order_code}成功：status={updated_order_data.get('status')}, payment_id={updated_order_data.get('payment_id')}, partner_id={updated_order_data.get('partner_id')}")
-                                        
+
                                         # 调用自己的success处理逻辑（使用最新的订单数据）
                                         if self.handle_payout_success(success_connection, success_cur, updated_order_data, result):
                                             success_connection.commit()
@@ -5390,16 +5365,16 @@ class JazzCashAutoPayout:
                             finally:
                                 if success_connection:
                                     success_connection.close()
-                                
+
                         except Exception as e:
                             self.logger.error(f"订单{order_code}调用success处理异常: {e}")
                             self.logger.error(traceback.format_exc())
                             success_result = False
-                    
+
                     elif result.get('reject', False):
                         # 9.2 驳回处理：退款 + status=-1（独立连接）
                         self.logger.warning(f'订单{order_code}需要驳回，开始执行驳回操作: {result.get("reject_reason")}')
-                        
+
                         reject_connection = None
                         try:
                             # 重新建立独立连接进行驳回处理
@@ -5412,7 +5387,7 @@ class JazzCashAutoPayout:
                                 cursorclass=pymysql.cursors.DictCursor,
                                 autocommit=False
                             )
-                            
+
                             # 调用驳回函数（使用独立连接）
                             reject_result = self.reject_order_with_refund(
                                 order_data=order_data,
@@ -5420,12 +5395,12 @@ class JazzCashAutoPayout:
                                 reason=result.get('reject_reason', 'Unknown rejection reason'),
                                 selected_account=selected_account
                             )
-                            
+
                             if reject_result.get('reject', False):
                                 # 驳回成功，提交
                                 reject_connection.commit()
                                 self.logger.info(f'✅ 订单{order_code}驳回成功，payment_id={payment_id}, status=-1，账号已放回活跃列表')
-                                
+
                                 # 🔥 新增：发送驳回通知到Redis
                                 try:
                                     self.redis.publish('order_df_notify', order_code)
@@ -5449,19 +5424,19 @@ class JazzCashAutoPayout:
                                     reject_connection.close()
                                 except:
                                     pass
-                        
+
                         return False
-                    
+
                     else:
                         # 9.3 普通失败：处理重试逻辑
                         success_result = False
-                        
+
                         # 失败：检查是否为紧急停机
                         if 'emergency_stop' in result.get('message', '') or 'system紧急停机' in result.get('message', ''):
                             # 紧急停机：将订单重置为待处理状态（status=1已在第4471行提交，无法回滚）
                             self.logger.warning(f'⚠️ 订单{order_code}遇到紧急停机，重置为待处理状态: {result["message"]}')
                             sql = """
-                                UPDATE orders_df 
+                                UPDATE orders_df
                                 SET status = 0, time_accept = NULL
                                 WHERE code = %s AND status = 1
                             """
@@ -5470,76 +5445,54 @@ class JazzCashAutoPayout:
                             self.logger.info(f'订单{order_code}已重置为待处理状态(status=0)')
                             success_result = False
                             return success_result
-                        elif result.get('pending_check'):
-                            current_retry_count = order_data.get('retry_count', 0)
-                            new_retry_count = current_retry_count + 1
-                            pending_remark = result.get('message', 'JazzCash转账结果待核查')
-                            sql = """
-                                UPDATE orders_df 
-                                SET status = 2, retry_count = %s, sys_remark = %s
-                                WHERE code = %s AND status IN (0, 1)
-                            """
-                            cur.execute(sql, (new_retry_count, pending_remark, order_code))
-                            affected_rows = cur.rowcount
-                            connection.commit()
-                            if affected_rows > 0:
-                                self.logger.warning(
-                                    f'订单{order_code}进入待核查(status=2)，不设置payment_id失败冷却: '
-                                    f'{result["message"]}'
-                                )
-                            else:
-                                self.logger.warning(f'订单{order_code}状态已不是0或1，跳过待核查更新')
-                            
-                            success_result = False
-                            return success_result
                         elif result.get('treat_as_success', True):  # 默认按成功处理
                             # 先增加重试次数
                             current_retry_count = order_data.get('retry_count', 0)
                             new_retry_count = current_retry_count + 1
-                            
+
                             # 🔥 注释掉强制3次限制，改为完全按照冷却期配置处理
                             # if new_retry_count > 3:
                             #     # 重试次数超过3次，设置为异常按成功处理
                             #     sql = """
-                            #         UPDATE orders_df 
+                            #         UPDATE orders_df
                             #         SET status = 5, time_payed = NOW(), time_success = NOW(), retry_count = %s
                             #         WHERE code = %s
                             #     """
                             #     cur.execute(sql, (new_retry_count, order_code,))
                             #     connection.commit()
                             #     self.logger.info(f'订单{order_code}重试次数超过3次，异常按成功处理(status=5)，重试次数: {current_retry_count} -> {new_retry_count}')
-                            #     
+                            #
                             #     # 修改：重试次数超限按成功处理
                             #     # 但记录到订单冷却期Hash用于统计分析
                             #     updated_order_data = order_data.copy()
                             #     updated_order_data['retry_count'] = new_retry_count
-                            #     
+                            #
                             #     # 设置订单冷却期（包括没有可用账号的情况）
                             #     self.set_order_cooldown(
-                            #         order_code, 
+                            #         order_code,
                             #         result.get('payment_id'),  # 可能为None，方法内部会处理
-                            #         result.get('message', '重试次数超过3次'), 
-                            #         updated_order_data, 
+                            #         result.get('message', '重试次数超过3次'),
+                            #         updated_order_data,
                             #         status=3,  # 3: 超限异常按成功处理
                             #         available_payment_ids=result.get('available_payment_ids', [])  # 传入匹配的payment_id列表
                             #     )
                             #     self.logger.info(f'订单{order_code}重试超限，记录到统计分析，不影响payment_id')
-                            #     
+                            #
                             #     success_result = True  # 异常按成功处理
                             # else:
-                            
+
                             # 🔥 新增：检查重试次数是否超过8次
                             if new_retry_count > 8:
                                 # 超过8次，设置为失败状态
                                 sql = """
-                                    UPDATE orders_df 
+                                    UPDATE orders_df
                                     SET status = 2, retry_count = %s
                                     WHERE code = %s AND status IN (0, 1)
                                 """
                                 cur.execute(sql, (new_retry_count, order_code,))
                                 affected_rows = cur.rowcount
                                 connection.commit()
-                                
+
                                 if affected_rows > 0:
                                     self.logger.error(
                                         f'订单{order_code}重试次数超过8次，设置为失败状态(status=2)，'
@@ -5547,7 +5500,7 @@ class JazzCashAutoPayout:
                                     )
                                 else:
                                     self.logger.warning(f'订单{order_code}状态已不是0或1，可能已被其他进程处理为成功(status=3)，跳过更新')
-                                
+
                                 # 记录失败详情
                                 if payment_id:
                                     self.record_payment_failure(
@@ -5557,15 +5510,15 @@ class JazzCashAutoPayout:
                                         reason=f"重试次数超过8次: {result.get('message', '')}",
                                         order_code=order_code
                                     )
-                                
+
                                 success_result = False
                                 return success_result
-                            
+
                             else:
                                 # 未超过8次，继续重试
                                 # 所有失败按成功处理的订单，更新重试次数并重新设为待处理状态，同时清除payment_id和partner_id
                                 sql = """
-                                    UPDATE orders_df 
+                                    UPDATE orders_df
                                     SET retry_count = %s, status = 0, time_accept = NULL, payment_id = NULL, partner_id = NULL
                                     WHERE code = %s AND status IN (0, 1)
                                 """
@@ -5576,22 +5529,22 @@ class JazzCashAutoPayout:
                                     self.logger.info(f'订单{order_code}按成功处理但继续重试，重新设为待处理状态（已清除payment_id和partner_id），重试次数: {current_retry_count} -> {new_retry_count}')
                                 else:
                                     self.logger.warning(f'订单{order_code}状态已不是0或1，可能已被其他进程处理为成功(status=3)，跳过更新')
-                                
+
                                 # 新增：所有按成功处理的失败都设置订单冷却期
                                 failure_message = result.get('message', '')
                                 # 更新订单数据的retry_count用于冷却期计算
                                 updated_order_data = order_data.copy()
                                 updated_order_data['retry_count'] = new_retry_count
-                                
+
                                 self.set_order_cooldown(
-                                    order_code, 
+                                    order_code,
                                     result.get('payment_id'),  # 可能为None，方法内部会处理
-                                    failure_message, 
-                                    updated_order_data, 
+                                    failure_message,
+                                    updated_order_data,
                                     status=1
                                 )
                                 self.logger.info(f'订单{order_code}按成功处理的失败，已设置冷却期: {failure_message}')
-                                
+
                                 success_result = False
                                 return success_result  # 返回False
                         else:
@@ -5599,7 +5552,7 @@ class JazzCashAutoPayout:
                             current_retry_count = order_data.get('retry_count', 0)
                             new_retry_count = current_retry_count + 1
                             sql = """
-                                UPDATE orders_df 
+                                UPDATE orders_df
                                 SET status = 2, retry_count = %s
                                 WHERE code = %s AND status IN (0, 1)
                             """
@@ -5610,16 +5563,16 @@ class JazzCashAutoPayout:
                                 self.logger.error(f'订单{order_code}处理失败，事务已提交: {result["message"]}')
                             else:
                                 self.logger.warning(f'订单{order_code}状态已不是0或1，可能已被其他进程处理为成功(status=3)，跳过更新')
-                            
+
                             # 设置payment_id失败冷却期（只有当有payment_id时才设置）
                             if payment_id:
                                 self.set_payment_id_failed(
-                                    payment_id, 
-                                    result.get('message', '处理失败'), 
-                                    order_data, 
+                                    payment_id,
+                                    result.get('message', '处理失败'),
+                                    order_data,
                                     status=1  # 1: 真正失败
                                 )
-                                
+
                                 # 🔥 记录失败详情到统一Hash（用于重复订单检测）
                                 self.record_payment_failure(
                                     payment_id=payment_id,
@@ -5630,24 +5583,24 @@ class JazzCashAutoPayout:
                                 )
                             else:
                                 self.logger.info(f'订单{order_code}真正失败但无payment_id（如无可用账号），跳过payment_id冷却期设置')
-                            
+
                             # 注意：真正失败的订单不放入订单冷却期Hash，因为不会再重试
-                            
+
                             success_result = False
-                    
+
                     return success_result
-                    
+
             except Exception as e:
                 # 任何异常都需要重置订单状态（status=1已在第4471行提交，无法回滚）
                 self.logger.error(f"订单{order_code}处理异常: {e}")
                 tb_str = traceback.format_exc()
                 self.logger.error(f"详细错误: {tb_str}")
-                
+
                 # 将订单标记为失败状态（status=2），保留time_accept用于追踪
                 try:
                     with connection.cursor() as cur:
                         sql = """
-                            UPDATE orders_df 
+                            UPDATE orders_df
                             SET status = 2
                             WHERE code = %s AND status = 1
                         """
@@ -5656,18 +5609,18 @@ class JazzCashAutoPayout:
                         self.logger.info(f'订单{order_code}异常后已标记为失败状态(status=2)，保留time_accept')
                 except Exception as reset_e:
                     self.logger.error(f'订单{order_code}更新失败状态失败: {reset_e}')
-                
+
                 # 设置payment_id失败冷却期
                 if payment_id:
                     # 在异常情况下，order_data可能不可用，所以只传递已知信息
                     order_info = {'code': order_code} if order_code else None
                     self.set_payment_id_failed(
-                        payment_id, 
-                        f"系统异常: {str(e)}", 
-                        order_info, 
+                        payment_id,
+                        f"系统异常: {str(e)}",
+                        order_info,
                         status=3  # 3: 系统异常
                     )
-                    
+
                     # 🔥 记录失败详情到统一Hash（用于重复订单检测）
                     # 只有在order_data可用时才记录（防止异常发生在查询订单之前）
                     if order_data:
@@ -5678,15 +5631,15 @@ class JazzCashAutoPayout:
                             reason=f"系统异常: {str(e)}",
                             order_code=order_code
                         )
-                    
+
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"处理订单{order_message}初始化异常: {e}")
             tb_str = traceback.format_exc()
             self.logger.error(f"详细错误: {tb_str}")
             return False
-            
+
         finally:
             # 7. 释放所有锁和资源
             if connection:
@@ -5694,15 +5647,15 @@ class JazzCashAutoPayout:
                     connection.close()
                 except:
                     pass
-            
+
             # 释放 payment_id 锁
             if payment_id_lock_value and payment_id:
                 self.del_payment_id_lock(payment_id, payment_id_lock_value)
-            
+
             # 释放账号锁
             if account_lock and account_id:
                 self.release_account_lock(account_id, account_lock)
-                    
+
             # 释放订单锁
             if order_lock_value and order_code:
                 self.del_lock(order_code, order_lock_value)
@@ -5716,7 +5669,7 @@ if __name__ == "__main__":
     try:
         logger.info(f"{'=' * 10}JazzCash自动代付系统启动{'=' * 10}")
         auto_payout = JazzCashAutoPayout("jazzcash_auto_payout")  # 🔥 独立命名，不与monitor和EasyPaisa共享
-        
+
         # 定期输出日志统计（如果使用异步处理器）
         last_stats_time = time.time()
 
@@ -5755,7 +5708,7 @@ if __name__ == "__main__":
             # 注意：已经移除了self.session，无需清理
         except Exception as e:
             logger.error(f"清理Session失败: {e}")
-        
+
         # 确保日志正确关闭
         if hasattr(file_handler, 'close'):
             file_handler.close()

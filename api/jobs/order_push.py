@@ -5,8 +5,7 @@ from decimal import Decimal
 import redis
 import pymysql
 
-from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
-from application.jazzcash_runtime.sync_runtime_service import SyncJazzCashRuntimeService
+from application.payment_eligibility import can_dispatch_df
 from config import get_config
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -40,18 +39,19 @@ def _is_jazzcash_payment(payment):
 def _df_order_online(rds, payment):
     payment_id = payment.get('id')
     if _is_easypaisa_payment(payment):
-        return SyncEasyPaisaRuntimeService(rds).is_df_order_online(payment_id)
-    if _is_jazzcash_payment(payment):
-        return SyncJazzCashRuntimeService(rds).is_df_order_online(payment_id)
+        return can_dispatch_df(payment)
     return rds.sismember('payment_online_df', payment_id)
 
 
 def _requeue_df_if_online(rds, payment):
     payment_id = payment.get('id')
     if _is_easypaisa_payment(payment):
-        return SyncEasyPaisaRuntimeService(rds).requeue_df_if_online(payment_id)
-    if _is_jazzcash_payment(payment):
-        return SyncJazzCashRuntimeService(rds).requeue_df_if_online(payment_id)
+        if not can_dispatch_df(payment):
+            rds.lrem('payment_active_df', 0, payment_id)
+            return False
+        rds.lrem('payment_active_df', 0, payment_id)
+        rds.rpush('payment_active_df', payment_id)
+        return True
     if not rds.sismember('payment_online_df', payment_id):
         rds.lrem('payment_active_df', 0, payment_id)
         return False
@@ -74,7 +74,7 @@ def main():
         logging.exception('连接redis或数据库错误')
         return
     sql_select = """select id from orders_df where code=%s and status=0 limit 1"""
-    sql_select_payment = """select b.id, b.status, b.bank_type, b.bank_type_id, partner_id, p.status, df_min, df_max from payment b left join partner p on
+    sql_select_payment = """select b.id, b.status, b.certified, b.manual_status, b.bank_type, b.bank_type_id, b.payout_status, partner_id, p.status as partner_status, df_min, df_max from payment b left join partner p on
         p.id=b.partner_id and p.status=1 left join vip v on v.vip=p.vip where b.certified=1 and b.status=1 and b.id=%s"""
     sql_update = """update orders_df set status=1,partner_id=%s,payment_id=%s,time_accept=%s where code=%s and status=0"""
     ps = rds.pubsub()

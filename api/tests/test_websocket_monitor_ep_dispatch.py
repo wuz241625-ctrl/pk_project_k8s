@@ -6,7 +6,7 @@ import fakeredis.aioredis
 
 
 class WebsocketMonitorEPDispatchTests(unittest.IsolatedAsyncioTestCase):
-    """EasyPaisa monitor 只能读 MySQL 最终态，不能再写 runtime/legacy Redis 状态。"""
+    """EasyPaisa monitor 只能读 MySQL 最终态，不能再写 旧 Redis 运行状态。"""
 
     async def asyncSetUp(self):
         self.redis = fakeredis.aioredis.FakeRedis()

@@ -59,10 +59,10 @@ def render(source_path, allow_placeholder=False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="渲染 D7pay runtime ConfigMap")
+    parser = argparse.ArgumentParser(description="渲染 D7pay 应用 ConfigMap")
     parser.add_argument(
         "--source",
-        default="ops/tenants/d7pay/k8s/runtime-configmap.yaml",
+        default="ops/tenants/d7pay/k8s/app-configmap.yaml",
         help="源 ConfigMap 模板路径",
     )
     parser.add_argument("--output", default="-", help="输出路径；使用 - 输出到 stdout")

@@ -1,93 +1,18 @@
-# Merchant 构建文档
+# Merchant 构建说明
 
-## 推荐方式
+## 当前口径
 
-从根目录启动：
+- Merchant 不依赖 运行时 模块。
+- D7pay 配置由 `config.example.py` 读取环境变量，K8s 通过 `d7pay-config` 与 `d7pay-secret` 注入。
 
-```bash
-cd /Users/tear/pk_project
-docker compose up -d merchant
-```
-
-如果要从本机浏览器直接验证商户后台，还要确认运行库里的 `merchant.ip` 白名单放行本地入口 IP，常见值包括：
-
-- `172.17.0.1`
-- `172.18.0.1`
-- `127.0.0.1`
-
-否则登录和订单查询会直接返回 `403 ip 禁止登录`。
-
-真实客户端 IP 白名单测试：
+## 构建检查
 
 ```bash
-cd /Users/tear/pk_project_k8s
-python3 -m unittest merchant.tests.test_client_ip -v
-python3 -m py_compile merchant/application/client_ip.py merchant/application/base.py
+PYTHONPATH=merchant python3 -m py_compile main.py router.py application/base.py application/order/order.py application/setting/setting.py
 ```
 
-## 单独运行
-
-`merchant/requirements.txt` 与 `api/requirements.txt` 保持一致，K8s Dockerfile 会直接读取 `merchant/requirements.txt`。
+## 验收测试
 
 ```bash
-cd /Users/tear/pk_project
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r merchant/requirements.txt
-cd merchant
-export RUN_ENV=DEV
-export REDIS_HOST=127.0.0.1
-export MYSQL_HOST=127.0.0.1
-export MYSQL_DATABASE=ospay
-export MYSQL_USER=ospay
-export MYSQL_PASSWORD=ospay123456
-export MERCHANT_API_URL=http://127.0.0.1:9000
-python main.py --port=8000 --logfile=merchant_8000.log
+PYTHONPATH=merchant python3 -m unittest merchant.tests.test_client_ip merchant.tests.test_timezone_policy
 ```
-
-## 关键入口
-
-- [main.py](/Users/tear/pk_project/merchant/main.py)
-- [router.py](/Users/tear/pk_project/merchant/router.py)
-- [config.py](/Users/tear/pk_project/merchant/config.py)
-
-## 线上 K8s
-
-生产环境 Deployment 必须显式设置 `RUN_ENV=PROD`，否则 `config.get_config()` 会按默认值回落到 `DEV`。
-
-```bash
-KUBECONFIG=/etc/kubernetes/admin.conf kubectl exec -n pk deploy/merchant-deploy -- printenv RUN_ENV
-```
-
-## D7pay 后端发布说明
-
-D7pay 商户后端发布边界必须分清：
-
-- D7pay Makefile 只做配置检查、配置渲染、配置应用和线上健康检查。
-- `merchant` 镜像构建、镜像推送、Deployment 镜像更新、rollout 继续走现有后端发布脚本。
-- D7pay 脚本不会改写 `merchant/Dockerfile`，也不会替你执行 Dockerfile 里的打包命令，所以不会和现有 Dockerfile 冲突。
-
-发布前先检查并纠偏公共配置：
-
-```bash
-cd /Users/tear/pk_project_k8s && make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-cd /Users/tear/pk_project_k8s && make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-然后再执行你现有的 `merchant` 镜像构建和发布脚本。该脚本需要保证镜像内的 `merchant/config.py` 来自 `merchant/config.example.py`，运行时配置从 K8s `d7pay-runtime-config` 与 `d7pay-runtime-secret` 注入。
-
-验收重点：
-
-- `RUN_ENV=PROD`
-- `TENANT_CODE=d7pay`
-- `MYSQL_DATABASE=pakistan_d7pay`
-- `MERCHANT_API_URL=http://api:9000`
-
-发布后验收：
-
-```bash
-KUBECONFIG=/etc/kubernetes/admin.conf kubectl -n pk-d7pay exec deploy/merchant-deploy -- printenv RUN_ENV TENANT_CODE MYSQL_DATABASE MERCHANT_API_URL
-cd /Users/tear/pk_project_k8s && make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
-```
-
-正确结果必须是 `RUN_ENV=PROD`、`TENANT_CODE=d7pay`、库名为 `pakistan_d7pay`，且 `MERCHANT_API_URL=http://api:9000`。

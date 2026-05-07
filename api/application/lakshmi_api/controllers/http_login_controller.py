@@ -307,12 +307,8 @@ class VerifyFingerprint(HttpLoginController):
             if bankname == 'easypaisa':
                 easypaisa = EasyPaisa(self)
                 result = await easypaisa.verify_fingerprint_http(data)
-            elif bankname == 'jazzcash':
-                self.logger.info(f"{self.funcName} JazzCash 调用")
-                jazzcash = JazzCash(self)
-                result = await jazzcash.verify_fingerprint_http(data)
             else:
-                raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa, jazzcash')
+                raise NewApiError('10212', f'Unsupported bank type: {bankname}, supported banks: easypaisa')
 
             self.write(result)
         except NewApiError:

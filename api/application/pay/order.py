@@ -51,6 +51,7 @@ class Order(BaseHandler):
             1001: 1010,
             1002: 1012,
             1003: 1013,
+            1010: 10100,
         },
         # 可继续扩展更多支付通道...
     }
@@ -72,7 +73,7 @@ class Order(BaseHandler):
             if ip:
                 await self.update_result('orders_ds', {'player_ip': ip}, {'code': code})
             order_info = await self.get_result_by_condition('orders_ds',
-                                                            ['code', 'channel_code', 'amount', 'auth_code', 'payment_id', 'auth_code', 'callback', 'third_party_name', 'merchant_id', 'time_create', 'original_amount'],
+                                                            ['code', 'channel_code', 'amount', 'auth_code', 'payment_id', 'auth_code', 'callback', 'third_party_name', 'merchant_id', 'time_create', 'original_amount', 'utr'],
                                                             {'code': code})
             
             
@@ -257,6 +258,16 @@ class Order(BaseHandler):
                 order_info['upi'] = order_ds_third_qr
                 order_info['is_show_qr'] = channel_info['is_show_qr']
                 self.logger.info(f"code: {code}，upi：{order_info['upi']}")
+                await self.render(f'order_india.{template_code}.html', **order_info)
+
+            elif channel_code == 1010:
+                order_ds_third_qr = await self.redis.get('order_ds_third_qr_{}'.format(code))
+                if order_ds_third_qr:
+                    order_info['upi'] = order_ds_third_qr
+                order_info['ep_qr_payload'] = order_info.get('upi') or ''
+                order_info['utr'] = order_info.get('utr') or ''
+                order_info['is_show_qr'] = channel_info['is_show_qr']
+                self.logger.info(f"1010 EP scan code: {code}，qr payload exists: {bool(order_info['ep_qr_payload'])}")
                 await self.render(f'order_india.{template_code}.html', **order_info)
 
             elif channel_code == 1003:

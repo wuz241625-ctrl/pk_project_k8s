@@ -73,7 +73,7 @@ def main():
         "ops/tenants/d7pay/scripts/apply-config.sh",
         "ops/tenants/d7pay/scripts/build-flutter-app.sh",
         "ops/tenants/d7pay/scripts/preflight.sh",
-        "ops/tenants/d7pay/scripts/render_runtime_config.py",
+        "ops/tenants/d7pay/scripts/render_app_config.py",
         "ops/tenants/d7pay/scripts/render-config.sh",
         "ops/tenants/d7pay/scripts/healthcheck.sh",
         "ops/tenants/d7pay/scripts/rollback.sh",
@@ -115,7 +115,7 @@ def main():
     require(jenkins, "APP_SIGNING_MODE=shared_release_keystore", "jenkins.env.example")
     require(jenkins, "REQUIRE_RELEASE_SIGNING=true", "jenkins.env.example")
     require(jenkins, "D7PAY_GIT_BRANCH=d7pay", "jenkins.env.example")
-    require(jenkins, "D7PAY_RUNTIME_SECRET_YAML=", "jenkins.env.example")
+    require(jenkins, "D7PAY_SECRET_YAML=", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_NODEPORT=31085", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_SCHEME=http", "jenkins.env.example")
     require(jenkins, "API_WEBSOCKET_ALLOW_HOST=api.d7pay.example.com", "jenkins.env.example")
@@ -186,8 +186,8 @@ def main():
     require(apply_config_script, "load_default_env_file", "apply-config.sh")
     require(apply_config_script, 'PROJECT_DIR="${PROJECT_DIR:-${D7PAY_ROOT}}"', "apply-config.sh")
     require(apply_config_script, "require_customer_domain API_DOMAIN", "apply-config.sh")
-    require(apply_config_script, "D7PAY_RUNTIME_SECRET_YAML", "apply-config.sh")
-    require(apply_config_script, "runtime-configmap.yaml", "apply-config.sh")
+    require(apply_config_script, "D7PAY_SECRET_YAML", "apply-config.sh")
+    require(apply_config_script, "app-configmap.yaml", "apply-config.sh")
     require(apply_config_script, "h5-configmaps.yaml", "apply-config.sh")
     require(apply_config_script, "services.yaml", "apply-config.sh")
     require(apply_config_script, "data-volumes.yaml", "apply-config.sh")
@@ -218,17 +218,17 @@ def main():
     require(preflight_script, "ops.tenants.d7pay.tests.test_config_only_release", "preflight.sh")
     require(preflight_script, "apply-config.sh", "preflight.sh")
     require(preflight_script, "build-flutter-app.sh", "preflight.sh")
-    require(preflight_script, "D7PAY_RUNTIME_SECRET_YAML", "preflight.sh")
+    require(preflight_script, "D7PAY_SECRET_YAML", "preflight.sh")
     require(preflight_script, "replace-in-jenkins", "preflight.sh")
 
     render_script = read("ops/tenants/d7pay/scripts/render-config.sh")
     require(render_script, "nginx-d7pay.conf", "render-config.sh")
-    require(render_script, "runtime-configmap.yaml", "render-config.sh")
+    require(render_script, "app-configmap.yaml", "render-config.sh")
 
-    render_runtime_config = read("ops/tenants/d7pay/scripts/render_runtime_config.py")
-    require(render_runtime_config, "BUSINESS_TIMEZONE 必须保持 UTC", "render_runtime_config.py")
-    require(render_runtime_config, "API_PUBLIC_SCHEME", "render_runtime_config.py")
-    require(render_runtime_config, "API_OSPAY_API_HOST", "render_runtime_config.py")
+    render_app_config = read("ops/tenants/d7pay/scripts/render_app_config.py")
+    require(render_app_config, "BUSINESS_TIMEZONE 必须保持 UTC", "render_app_config.py")
+    require(render_app_config, "API_PUBLIC_SCHEME", "render_app_config.py")
+    require(render_app_config, "API_OSPAY_API_HOST", "render_app_config.py")
 
     healthcheck_script = read("ops/tenants/d7pay/scripts/healthcheck.sh")
     require(healthcheck_script, "kubectl rollout status", "healthcheck.sh")
@@ -238,15 +238,15 @@ def main():
     require(rollback_script, "CONFIRM_D7PAY_ROLLBACK=1", "rollback.sh")
     require(rollback_script, "scale-zero", "rollback.sh")
 
-    configmap = read("ops/tenants/d7pay/k8s/runtime-configmap.yaml")
-    require(configmap, "RUN_ENV: PROD", "runtime-configmap.yaml")
-    require(configmap, "BUSINESS_TIMEZONE: UTC", "runtime-configmap.yaml")
-    require(configmap, "APP_DISPLAY_TIMEZONE: Asia/Karachi", "runtime-configmap.yaml")
-    require(configmap, "MYSQL_DATABASE: pakistan_d7pay", "runtime-configmap.yaml")
-    require(configmap, "API_OSPAY_API_HOST: http://api.d7pay.example.com/api", "runtime-configmap.yaml")
-    forbid(configmap, "awekay.com", "runtime-configmap.yaml")
-    forbid(configmap, "MYSQL_DEFAULT_TIME_ZONE", "runtime-configmap.yaml")
-    forbid(configmap, "TZ: Asia/Karachi", "runtime-configmap.yaml")
+    configmap = read("ops/tenants/d7pay/k8s/app-configmap.yaml")
+    require(configmap, "RUN_ENV: PROD", "app-configmap.yaml")
+    require(configmap, "BUSINESS_TIMEZONE: UTC", "app-configmap.yaml")
+    require(configmap, "APP_DISPLAY_TIMEZONE: Asia/Karachi", "app-configmap.yaml")
+    require(configmap, "MYSQL_DATABASE: pakistan_d7pay", "app-configmap.yaml")
+    require(configmap, "API_OSPAY_API_HOST: http://api.d7pay.example.com/api", "app-configmap.yaml")
+    forbid(configmap, "awekay.com", "app-configmap.yaml")
+    forbid(configmap, "MYSQL_DEFAULT_TIME_ZONE", "app-configmap.yaml")
+    forbid(configmap, "TZ: Asia/Karachi", "app-configmap.yaml")
 
     for service in ("api", "admin", "merchant"):
         config_example = read(f"{service}/config.example.py")
@@ -282,8 +282,8 @@ def main():
 
     for service in ("api", "admin", "merchant"):
         patch = read(f"ops/tenants/d7pay/k8s/{service}-deployment-env.patch.yaml")
-        require(patch, "d7pay-runtime-config", f"{service} patch")
-        require(patch, "d7pay-runtime-secret", f"{service} patch")
+        require(patch, "d7pay-config", f"{service} patch")
+        require(patch, "d7pay-secret", f"{service} patch")
 
     api_patch = read("ops/tenants/d7pay/k8s/api-deployment-env.patch.yaml")
     require(api_patch, "mountPath: /fingerprint", "api patch")

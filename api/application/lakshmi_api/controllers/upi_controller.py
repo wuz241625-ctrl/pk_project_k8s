@@ -5,7 +5,7 @@ import bcrypt
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import update, and_, text, or_, not_
+from sqlalchemy import update, and_, case, text, or_, not_
 from sqlalchemy.orm import joinedload
 
 from application.lakshmi_api.base import BaseHandler, ApiError
@@ -17,12 +17,11 @@ from application.lakshmi_api.schema.payment_schema import *
 from application.lakshmi_api.services.pagination_service import PaginationService
 from application.lakshmi_api.services.payment_services import BANK_SERVICES
 from application.lakshmi_api.services.payments.amazon_pay_service import AmazonService
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
-from application.jazzcash_runtime.reader import JazzCashRuntimeReader
 from application.utils import StringUtils
 from constants import RedisKeys
 from application.lakshmi_api.exceptions.api_error import NewApiError
 from application.app.login.banks.easypaisa import EasyPaisa
+from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
   
 # 各银行输入OTP的位数
 OTP_DIGITS = {
@@ -38,14 +37,6 @@ OTP_DIGITS = {
 }
 PAYMENT_STATUS = {0: 'inactive', 1: 'active'}
 CERTIFIED_STATUS = {'inactive': 0, 'active': 1}
-
-
-def _is_easypaisa_payment_type(bank_type_id=None, bank_type=None):
-    return str(bank_type_id) == '97' or str(bank_type) == '97'
-
-
-def _is_jazzcash_payment_type(bank_type_id=None, bank_type=None):
-    return str(bank_type_id) == '98' or str(bank_type) == '98'
 
 
 class UpiHandler(BaseHandler):
@@ -154,57 +145,28 @@ class UpiHandler(BaseHandler):
             return result_count_orders_df[0]
         return 0
 
-    @staticmethod
-    def _is_easypaisa_payment_type(bank_type_id=None, bank_type=None):
-        return _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type)
-
     async def _check_place_order_status(self, payment_id, bank_type_id=None, bank_type=None):
-        if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-            reader = EasyPaisaRuntimeReader(self.redis)
-            return await reader.is_place_order_online(payment_id)
-        if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-            reader = JazzCashRuntimeReader(self.redis)
-            return await reader.is_place_order_online(payment_id)
-        return await self.redis.sismember('payment_online_df', payment_id)
+        if not getattr(self, "db_orm", None):
+            return False
+        with self.db_orm.sessionmaker() as session:
+            payment = session.query(Payment).filter(Payment.id == payment_id).first()
+            return can_dispatch_df(payment)
 
     async def _check_selling_order_status(self, payment_id, bank_type_id=None, bank_type=None):
-        if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-            reader = EasyPaisaRuntimeReader(self.redis)
-            return await reader.is_selling_order_online(payment_id)
-        if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-            reader = JazzCashRuntimeReader(self.redis)
-            return await reader.is_selling_order_online(payment_id)
-        return await self.redis.sismember('payment_online_ds', payment_id)
+        if not getattr(self, "db_orm", None):
+            return False
+        with self.db_orm.sessionmaker() as session:
+            payment = session.query(Payment).filter(Payment.id == payment_id).first()
+            return can_dispatch_ds(payment)
 
     async def _collection_online_payment_ids(self):
-        easypaisa_reader = EasyPaisaRuntimeReader(self.redis)
-        jazzcash_reader = JazzCashRuntimeReader(self.redis)
-        legacy_ids = set()
-        for value in await self.redis.smembers('payment_online_ds'):
-            if isinstance(value, bytes):
-                value = value.decode("utf-8")
-            legacy_ids.add(str(value).strip())
-        runtime_ids = set(await easypaisa_reader.collection_online_payment_ids())
-        jazzcash_runtime_ids = set(await jazzcash_reader.collection_online_payment_ids())
-        runtime_ids.update(jazzcash_runtime_ids)
-        legacy_ids.difference_update(runtime_ids)
-        payment_ids = set()
-        if legacy_ids:
-            with self.db_orm.sessionmaker() as session:
-                rows = session.query(Payment.id).filter(
-                    Payment.id.in_(legacy_ids),
-                    not_(or_(
-                        Payment.bank_type_id == 97,
-                        Payment.bank_type == 97,
-                        Payment.bank_type == '97',
-                        Payment.bank_type_id == 98,
-                        Payment.bank_type == 98,
-                        Payment.bank_type == '98',
-                    )),
-                ).all()
-                payment_ids.update(str(row[0]) for row in rows)
-        payment_ids.update(runtime_ids)
-        return sorted(payment_id for payment_id in payment_ids if payment_id)
+        if not getattr(self, "db_orm", None):
+            return []
+        with self.db_orm.sessionmaker() as session:
+            rows = session.query(Payment.id).filter(
+                Payment.collection_status == 1,
+            ).all()
+        return sorted(str(row[0]) for row in rows if row[0])
 
     async def _upi_online_status_via_redis(self, bank_name, payment_id):
         # TODO: fix the hardcode, base on php side not match db bank name
@@ -484,6 +446,8 @@ class UpiAccounts(UpiHandler):
         payment = await self._assign_payment(payment_id)
         if payment.bank is None or payment.bank.name != 'EASYPAISA':
             raise NewApiError('10212', f'Unsupported bank type: {payment.bank.name if payment.bank else ""}, supported banks: easypaisa')
+        if int(payment.wallet_status or 0) != 1:
+            raise NewApiError('10301', 'Wallet is not active')
 
         self.logger.info(
             "Request [GET] (/user/upi/%s/accounts), user: %s, name: %s",
@@ -509,6 +473,8 @@ class UpiAccountSelect(UpiHandler):
         payment = await self._assign_payment(payment_id)
         if payment.bank is None or payment.bank.name != 'EASYPAISA':
             raise NewApiError('10212', f'Unsupported bank type: {payment.bank.name if payment.bank else ""}, supported banks: easypaisa')
+        if int(payment.wallet_status or 0) != 1:
+            raise NewApiError('10301', 'Wallet is not active')
 
         params = {'accno': self.get_body_argument('accno', default=None)}
         data = PaymentAccountSelectSchema().load(params)
@@ -712,27 +678,6 @@ class UpiActive(UpiHandler):
 
 
 class UpiSelling(UpiHandler):
-
-    @handle_errors
-    async def post(self):
-        await self.authenticate_current_user()
-        await self.validate_user_active()
-        raw_params = self._get_params(['status'])
-        params = UpiSellingSchema().load({'certified': raw_params['status']})
-        with self.db_orm.sessionmaker() as session:
-            session.execute(
-                update(Payment)
-                .where(Payment.user_id == self.current_user.id)
-                .values(certified=CERTIFIED_STATUS[params['certified']])
-            )
-            session.commit()
-
-            self.write({
-                "data": {
-                    "message": f"all payments are {'activated' if params['certified'] == 'active' else 'deactivated'}"
-                }
-            })
-
     @handle_errors
     async def put(self, payment_id):
         await self.upi_selling(payment_id)

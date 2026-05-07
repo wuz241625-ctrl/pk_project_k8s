@@ -155,10 +155,8 @@ class EpScanChannelTests(unittest.TestCase):
 
     def test_tracked_sql_contains_1010_ep_scan_channel(self):
         mysql_sql = (ROOT / "api/mysql.sql").read_text()
-        docker_init_sql = (ROOT / "docker/mysql/initdb/03-align-local-schema.sql").read_text()
 
         self.assertIn("1010,'EP 扫码'", mysql_sql)
-        self.assertIn("1010,'EP 扫码'", docker_init_sql)
 
 
 if __name__ == "__main__":

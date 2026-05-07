@@ -24,12 +24,12 @@ reject_reserved_domain_value API_WEBSOCKET_ALLOW_HOST
 reject_reserved_domain_value APP_API_BASE_URL
 require_d7pay_namespace_guard
 
-if [ -z "${D7PAY_RUNTIME_SECRET_YAML:-}" ]; then
-  echo "缺少环境变量: D7PAY_RUNTIME_SECRET_YAML" >&2
+if [ -z "${D7PAY_SECRET_YAML:-}" ]; then
+  echo "缺少环境变量: D7PAY_SECRET_YAML" >&2
   exit 1
 fi
-if [ ! -f "${D7PAY_RUNTIME_SECRET_YAML}" ]; then
-  echo "D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在: ${D7PAY_RUNTIME_SECRET_YAML}" >&2
+if [ ! -f "${D7PAY_SECRET_YAML}" ]; then
+  echo "D7PAY_SECRET_YAML 指向的文件不存在: ${D7PAY_SECRET_YAML}" >&2
   exit 1
 fi
 
@@ -39,16 +39,16 @@ print_section "D7pay 合同检查"
 python3 "${TENANT_DIR}/verify_release_contract.py"
 
 print_section "D7pay 应用公共配置"
-runtime_configmap="/tmp/d7pay-runtime-configmap.yaml"
-python3 "${TENANT_DIR}/scripts/render_runtime_config.py" \
-  --source "${TENANT_DIR}/k8s/runtime-configmap.yaml" \
-  --output "${runtime_configmap}" >/dev/null
+app_configmap="/tmp/d7pay-configmap.yaml"
+python3 "${TENANT_DIR}/scripts/render_app_config.py" \
+  --source "${TENANT_DIR}/k8s/app-configmap.yaml" \
+  --output "${app_configmap}" >/dev/null
 
 kubectl apply -f "${TENANT_DIR}/k8s/namespace.yaml"
-kubectl apply -f "${runtime_configmap}"
+kubectl apply -f "${app_configmap}"
 kubectl apply -f "${TENANT_DIR}/k8s/h5-configmaps.yaml"
 kubectl apply -f "${TENANT_DIR}/k8s/services.yaml"
-kubectl apply -f "${D7PAY_RUNTIME_SECRET_YAML}"
+kubectl apply -f "${D7PAY_SECRET_YAML}"
 kubectl apply -f "${TENANT_DIR}/k8s/data-volumes.yaml"
 
 print_section "结果"

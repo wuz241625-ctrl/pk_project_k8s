@@ -6,7 +6,7 @@
 
 - MySQL `now()` 比 `utc_timestamp()` 大 5 小时。
 - D7pay Pod 或 Redis 容器内 `date` 显示 `PKT`。
-- `d7pay-runtime-config` 出现 `TZ=Asia/Karachi` 或 `MYSQL_DEFAULT_TIME_ZONE`。
+- `d7pay-config` 出现 `TZ=Asia/Karachi` 或 `MYSQL_DEFAULT_TIME_ZONE`。
 
 原因：
 
@@ -28,7 +28,7 @@ kubectl -n pk-d7pay rollout status deployment/merchant-deploy --timeout=180s
 验收：
 
 ```bash
-kubectl -n pk-d7pay get cm d7pay-runtime-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
+kubectl -n pk-d7pay get cm d7pay-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
 kubectl -n pk-d7pay exec statefulset/mysql -- mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -NBe 'select @@global.time_zone,@@session.time_zone,@@system_time_zone,now(),utc_timestamp();'
 kubectl -n pk-d7pay exec deploy/api-deploy -- python - <<'PY'
 from application.timezone import get_business_timezone_name, get_display_timezone_name, format_for_display
@@ -128,7 +128,7 @@ bash ops/tenants/d7pay/scripts/apply-config.sh
 # 然后用现有发布脚本重发对应服务
 ```
 
-D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过 `d7pay-runtime-config`、`d7pay-runtime-secret` 注入真实配置。
+D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过 `d7pay-config`、`d7pay-secret` 注入真实配置。
 
 当前职责边界：D7pay 运维脚本只负责检查和应用 ConfigMap/Secret/PVC 等公共配置；镜像构建和滚动发布由现有发布脚本负责。如果容器仍读旧配置，先执行配置应用入口修复 K8s 配置，再用现有发布脚本重发对应服务。
 
@@ -224,7 +224,7 @@ D7pay 线上 `appInfo.json` 不能出现 `ashrafi_merchant` 或 `lakshmi`。
 
 现象：访问 `app.d7pay.net` 看到 Ashrafi 的 H5 title 或 manifest。
 
-原因：该域名不是 D7pay Android App 的交付入口，曾被手工代理到旧 `app-h5` NodePort。
+原因：该域名不是 D7pay Android App 的交付入口，曾被手工代理到旧 `旧移动 H5` NodePort。
 
 处理：从宿主机 nginx 的 D7pay server block 中移除 `app.d7pay.net`，并删除或禁用对应 443 server；D7pay App 只通过 `apkdownload.d7pay.net` 下载 APK，运行时请求 `https://api.d7pay.net`。
 
@@ -269,7 +269,7 @@ make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 现象：
 
 ```text
-D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在
+D7PAY_SECRET_YAML 指向的文件不存在
 ```
 
 原因：Jenkins 或服务器上的真实 Secret YAML 没准备好，或仍包含 `replace-in-jenkins`、`CHANGE_ME` 这类占位值。
@@ -277,9 +277,9 @@ D7PAY_RUNTIME_SECRET_YAML 指向的文件不存在
 处理：
 
 ```bash
-cp ops/tenants/d7pay/k8s/runtime-secret.example.yaml /opt/cicd/secrets/d7pay-runtime-secret.yaml
-chmod 600 /opt/cicd/secrets/d7pay-runtime-secret.yaml
-vi /opt/cicd/secrets/d7pay-runtime-secret.yaml
+cp ops/tenants/d7pay/k8s/app-secret.example.yaml /opt/cicd/secrets/d7pay-secret.yaml
+chmod 600 /opt/cicd/secrets/d7pay-secret.yaml
+vi /opt/cicd/secrets/d7pay-secret.yaml
 ```
 
 替换所有真实密钥后再执行 preflight。

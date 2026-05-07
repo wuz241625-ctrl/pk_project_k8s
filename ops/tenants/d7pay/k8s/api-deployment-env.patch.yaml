@@ -8,9 +8,9 @@ spec:
         - name: api
           envFrom:
             - configMapRef:
-                name: d7pay-runtime-config
+                name: d7pay-config
             - secretRef:
-                name: d7pay-runtime-secret
+                name: d7pay-secret
           volumeMounts:
             - name: fingerprint-storage
               mountPath: /fingerprint

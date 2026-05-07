@@ -7,7 +7,7 @@
 - apkdownload 构建使用 `npm run build:d7pay`，页面读取 `d7pay_merchant` 元信息并指向 `d7pay_merchant_universal_v0.1.8_202605031855.apk`。
 - D7pay 运维脚本只负责配置检查、配置渲染、配置应用和健康检查，不负责构建镜像、推送镜像、改写打包文件或滚动业务 deployment。
 - `ops/tenants/d7pay/jenkins/deploy-d7pay.sh` 只能作为兼容包装器调用 `apply-config.sh`。
-- `ops/tenants/d7pay/scripts/apply-config.sh` 只能应用 namespace、runtime ConfigMap、H5 nginx ConfigMap、Service、真实 Secret 和 PVC。
+- `ops/tenants/d7pay/scripts/apply-config.sh` 只能应用 namespace、应用 ConfigMap、H5 nginx ConfigMap、Service、真实 Secret 和 PVC。
 - D7pay 脚本不得出现 `docker build`、`docker push`、打包文件改写、前端打包命令替换或 image patch 逻辑。
 - apkdownload 的 D7pay 发布只保留 `d7pay_merchant` 元信息和 `/files/android/d7pay` APK 目录，不能暴露 Ashrafi/Lakshmi 下载条目。
 - Flutter 构建使用 `APP_DISPLAY_NAME='D7pay Merchant'` 和 `APP_SHORT_NAME=D7pay`，Android 桌面名称为 `D7pay Merchant`。
@@ -41,7 +41,7 @@
 - `d7pay_app` 账号可连接 `pakistan_d7pay`，并只能作为 D7pay 应用账号使用。
 - `/fingerprint` 挂载到 `d7pay-fingerprint-pvc`，宿主机目录为 `/data/pk-d7pay/fingerprint`。
 - D7pay 合并 APK 链接 `https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk` 返回 `200`，APK 内置 `API_BASE_URL=https://api.d7pay.net`，并同时包含 `armeabi-v7a` 和 `arm64-v8a`。
-- `app.d7pay.net` 不作为 D7pay 交付入口，宿主机 nginx 不应把该域名代理到旧 `app-h5`。
+- `app.d7pay.net` 不作为 D7pay 交付入口，宿主机 nginx 不应把该域名代理到旧 `旧移动 H5`。
 - D7pay 线上 `appInfo.json` 只包含 D7pay 下载项，不包含 `ashrafi_merchant` 或 `lakshmi`。
 - `18088880000 / 123456 / 当前 Google code` 调用 admin 登录接口返回 `code=20000`。
 
@@ -68,7 +68,7 @@
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。
-- K8s 应先应用 `namespace.yaml`、`runtime-configmap.yaml`、真实 Secret、`data-volumes.yaml`。
+- K8s 应先应用 `namespace.yaml`、`app-configmap.yaml`、真实 Secret、`data-volumes.yaml`。
 - K8s 应应用 `h5-configmaps.yaml`，确保 `admin-h5-nginx-conf`、`merchant-h5-nginx-conf`、`download-nginx-conf` 存在于 `pk-d7pay`。
 - K8s 应应用 `services.yaml`，确保 `api/admin/merchant` 内部服务和 D7pay 专属 NodePort 存在。
 - D7pay NodePort 必须为 `apkdownload:31080`、`admin-h5:31081`、`merchant-h5:31082`、`api-public:31085`，不能复用 `pk` 的 `30080-30085`。
@@ -78,7 +78,7 @@
 - `PYTHONPATH=admin python3 -m unittest admin.tests.test_timezone_policy` 必须通过。
 - `PYTHONPATH=merchant python3 -m unittest merchant.tests.test_timezone_policy` 必须通过。
 - 首次部署前必须按 `make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 检查合同、域名、Secret、语法、YAML 和现有集群可读性。
-- 发布前必须按 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 生成 nginx 与 runtime ConfigMap 预览。
+- 发布前必须按 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 生成 nginx 与 应用 ConfigMap 预览。
 - 发布后必须按 `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 验证 rollout 和四个客户域名。
 - 运维不能只拿单个 YAML 或 patch 文件上线。
 

@@ -1588,7 +1588,7 @@ class AutoPayoutMonitor:
                     self.logger.warning(f"账号 {account_id} API健康检查失败但不下线: {status_info.get('error_message')}")
                 else:
                     self.pause_payment_dispatch_for_health_error(account_id, status_info.get('status') or 'health_error')
-                    self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改 runtime 在线态")
+                    self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改在线态")
             
             self.logger.debug(f"账号 {account_id} Redis缓存更新完成")
             return False  # 正常处理，账号未删除
@@ -2183,7 +2183,7 @@ class AutoPayoutMonitor:
             if _on == 1:
                 self.logger.info(f"{login_data['id']}, {self.name} 监控在线：派单态以 MySQL 为准")
                 return True
-            self.logger.error(f"{login_data['id']}, {self.name} 监控离线：不写 runtime")
+            self.logger.error(f"{login_data['id']}, {self.name} 监控离线：不写在线态")
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -2777,7 +2777,7 @@ class AutoPayoutMonitor:
                         if self.restore_online_payment_from_db(payment_data):
                             if hash_existed and set_existed:
                                 skipped_count += 1
-                                self.logger.info(f"⏩ 账号 payment_id:{payment_id} 采集投影已存在，runtime 已按顺序确认")
+                                self.logger.info(f"⏩ 账号 payment_id:{payment_id} 采集投影已存在，采集状态已按顺序确认")
                             else:
                                 added_count += 1
                                 self.logger.info(

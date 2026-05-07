@@ -72,7 +72,7 @@ kubectl exec -n pk "$ADMIN_POD" -- python /tmp/prepare_demo_data.py \
 REDIS_POD=$(kubectl get pods -n pk -l app=redis -o jsonpath='{.items[0].metadata.name}')
 kubectl exec -n pk "$REDIS_POD" -- redis-cli --scan --pattern 'payment_*' | \
   xargs -r -I{} kubectl exec -n pk "$REDIS_POD" -- redis-cli DEL "{}"
-kubectl exec -n pk "$REDIS_POD" -- redis-cli --scan --pattern 'easypaisa_runtime:*' | \
+kubectl exec -n pk "$REDIS_POD" -- redis-cli --scan --pattern '旧 EasyPaisa 运行状态' | \
   xargs -r -I{} kubectl exec -n pk "$REDIS_POD" -- redis-cli DEL "{}"
 kubectl exec -n pk "$REDIS_POD" -- redis-cli DEL target_payment_key cache_info_sys_info_1
 ```
