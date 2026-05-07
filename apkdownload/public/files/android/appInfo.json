@@ -1,16 +1,4 @@
 {
-  "ashrafi_merchant": {
-    "name": "Ashrafi Merchant",
-    "version": "0.1.6",
-    "filename": "ashrafi_v0.1.6_202604280158.apk",
-    "path": "/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk",
-    "size": "68.6 MB",
-    "updateTime": "Apr 28, 2026, 01:58",
-    "compatibility": "Android 8+",
-    "language": "EN",
-    "developer": "Ashrafi Merchant",
-    "introduction": "Ashrafi merchant app for wallet onboarding, fingerprint activation, and payment account management."
-  },
   "d7pay_merchant": {
     "name": "D7pay Merchant",
     "version": "0.1.8",

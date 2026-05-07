@@ -10,11 +10,11 @@ const props = defineProps({
 const baseUrl = window.location.origin;
 const appPath = ref("");
 const filename = ref("");
-const appKey = import.meta.env.VITE_APP_KEY || "ashrafi_merchant";
-const legacyAppKey = import.meta.env.VITE_APP_FALLBACK_KEY || "lakshmi";
+const appKey = import.meta.env.VITE_APP_KEY || "d7pay_merchant";
+const legacyAppKey = import.meta.env.VITE_APP_FALLBACK_KEY || "d7pay_merchant";
 
 const information = ref({
-  name: "Ashrafi Merchant",
+  name: "D7pay Merchant",
   developer: "",
   compatibility: "",
   language: "",
@@ -31,9 +31,9 @@ onMounted(async () => {
   const data = await res.json();
   const appInfo = data[appKey] || data[legacyAppKey] || {};
   appPath.value = appInfo.path ? `${baseUrl}${appInfo.path}` : "";
-  filename.value = appInfo.filename || "AshrafiMerchant.apk";
+  filename.value = appInfo.filename || "D7payMerchant.apk";
   information.value = {
-    name: appInfo.name || "Ashrafi Merchant",
+    name: appInfo.name || "D7pay Merchant",
     developer: appInfo.developer || null,
     compatibility: appInfo.compatibility || null,
     language: appInfo.language || null,

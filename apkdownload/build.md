@@ -22,16 +22,16 @@ public/files/android/<app-name>/<filename>.apk
 public/files/android/appInfo.json
 ```
 
-当前 Ashrafi App 使用 `ashrafi_merchant` 配置键，实际文件指向：
+当前 D7pay App 使用 `d7pay_merchant` 配置键，实际文件指向：
 
 ```text
-public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
+public/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk
 ```
 
 下载页展示名与 Flutter Android 包保持一致：
 
 ```text
-Ashrafi Merchant
+D7pay Merchant
 ```
 
 ## D7pay 下载页构建
@@ -65,12 +65,14 @@ application-label:'D7pay Merchant'
 
 如果后续 `appInfo.json` 中 `d7pay_merchant.path` 为空，页面会显示 `APK Pending`，避免把旧 APK 误交付成 D7pay APK。
 
-下载页 D7pay 模式使用独立 logo，不影响默认 Ashrafi 下载页：
+下载页 D7pay 模式使用独立 logo：
 
 ```text
 src/assets/logo/d7pay-logo-192x192.png
 public/d7pay-logo-192x192.png
 ```
+
+D7pay 分支不再保留旧 Ashrafi/Lakshmi APK 文件。`apkdownload/public/files/android/appInfo.json` 不允许出现 `ashrafi_merchant` 或 `lakshmi` 下载项，`public/files/android/ashrafi/`、`public/files/android/lakshmi/` 不应重新提交 APK。
 
 ## 线上发布
 
@@ -91,6 +93,6 @@ KUBECONFIG=/etc/kubernetes/admin.conf kubectl rollout status deployment/apkdownl
 ## 访问验收
 
 ```bash
-curl -I http://apkdownload.awekay.com/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk
-curl -s http://apkdownload.awekay.com/files/android/appInfo.json
+curl -I https://apkdownload.d7pay.net/files/android/d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk
+curl -s https://apkdownload.d7pay.net/files/android/appInfo.json
 ```

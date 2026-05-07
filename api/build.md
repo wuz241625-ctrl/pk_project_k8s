@@ -7,6 +7,8 @@
 - JazzCashBusiness 业务逻辑参考 `/Users/tear/pk_project`：使用 `application/jazzcash_gateway.py` 的 v1.6 FormBody 封装、MySQL `wallet_status` / `collection_status` / `payout_status` 作为资格源，不再写 Redis 运行时 session/snapshot/index。
 - PayFast 代收、查询和收银台跳转逻辑参考 `/Users/tear/pk_project`。
 - D7pay 配置由 `config.example.py` 读取环境变量，K8s 通过 `d7pay-config` 与 `d7pay-secret` 注入。
+- API 仓库不再保留 `api/docker-compose.yml`、`api/static/v2`、`api/jobs/freecharge-monitor/php/vendor` 和 `*.bak` 备份文件；D7pay 发布以 Jenkins/K8s 为准。
+- `api/application/lakshmi_api` 当前仍承载 App `/v1` 登录、上号、订单和 websocket 相关接口，不属于本轮垃圾清理范围。
 
 ## 构建检查
 

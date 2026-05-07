@@ -43,3 +43,25 @@ PYTHONPATH=api python3 -m py_compile main.py router_lakshmi.py application/pay/p
 rg "旧服务类|旧读取类" api --glob '!*.md'
 PYTHONPATH=api python3 -m py_compile application/jazzcash_gateway.py application/app/login/banks/jazzcash.py application/pay/order.py application/pay/thirdPart.py jobs/jazzcash/jazzcash_auto_payout.py
 ```
+
+## 0.3 明确垃圾制品不能回流
+
+现象：
+
+- 仓库重新出现 `api/jobs/freecharge-monitor/php/vendor`、`api/jobs/easypaisa/auto_payout.py.bak`、`api/docker-compose.yml` 或 `api/static/v2`。
+- D7pay 下载站重新提交 `apkdownload/public/files/android/lakshmi/*.apk` 或 `apkdownload/public/files/android/ashrafi/*.apk`。
+
+处理：
+
+- PHP 依赖应由对应旧项目自行安装，不提交 vendor 目录到 D7pay 分支。
+- 备份文件不进入 Git，需要保留历史时使用 Git commit。
+- D7pay APK 下载页只保留 D7pay 发布项，不携带 Ashrafi/Lakshmi 旧客户 APK。
+- 当前线上发布只走 Jenkins/K8s，不恢复 API 本地 compose。
+
+验证：
+
+```bash
+test "$(git ls-files api/jobs/freecharge-monitor/php/vendor | wc -l | tr -d ' ')" = "0"
+test "$(git ls-files api/static/v2 | wc -l | tr -d ' ')" = "0"
+test -z "$(git ls-files api/jobs/easypaisa/auto_payout.py.bak api/docker-compose.yml apkdownload/public/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk apkdownload/public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk)"
+```

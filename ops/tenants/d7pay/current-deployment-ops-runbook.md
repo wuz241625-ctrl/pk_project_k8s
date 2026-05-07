@@ -165,11 +165,12 @@ webssh.awekay.com      -> 127.0.0.1:8888
 
 ```text
 appInfo.json
-ashrafi/ashrafi_v0.1.6_202604280158.apk
-lakshmi/lakshmi_v1.0.0.202406232042.apk
+d7pay/d7pay_merchant_universal_v0.1.8_202605031855.apk
 ```
 
-`appInfo.json` 只有 `ashrafi_merchant`，线上还没有 `d7pay_merchant` 下载项。
+旧快照中曾存在 Ashrafi/Lakshmi APK，D7pay 分支已清理旧客户 APK。当前 D7pay 发布只允许 `d7pay_merchant` 元信息和 `/files/android/d7pay/` 下的 D7pay APK。
+
+`appInfo.json` 必须只暴露 D7pay 下载项，不能混入 Ashrafi/Lakshmi 客户包。
 
 ## 头脑风暴结论
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import pathlib
 import sys
 
@@ -104,6 +105,33 @@ def main():
 
     apk_view = read("apkdownload/src/views/apkm.vue")
     require(apk_view, "d7pay-logo-192x192.png", "apkdownload apkm.vue")
+    apk_download = read("apkdownload/src/components/Appdownload/index.vue")
+    require(apk_download, 'const appKey = import.meta.env.VITE_APP_KEY || "d7pay_merchant";', "apkdownload Appdownload.vue")
+    require(apk_download, 'const legacyAppKey = import.meta.env.VITE_APP_FALLBACK_KEY || "d7pay_merchant";', "apkdownload Appdownload.vue")
+    forbid(apk_download, '"lakshmi"', "apkdownload Appdownload.vue")
+    forbid(apk_download, "ashrafi_merchant", "apkdownload Appdownload.vue")
+
+    for env_file in ("apkdownload/.env", "apkdownload/.env.d7pay"):
+        env_text = read(env_file)
+        require(env_text, "VITE_APP_KEY=d7pay_merchant", env_file)
+        require(env_text, "VITE_APP_FALLBACK_KEY=d7pay_merchant", env_file)
+        forbid(env_text, "lakshmi", env_file)
+        forbid(env_text, "ashrafi_merchant", env_file)
+
+    for app_info_file in ("apkdownload/public/files/android/appInfo.json", "apkdownload/public/files/android/appInfo.d7pay.json"):
+        app_info = json.loads(read(app_info_file))
+        if set(app_info) != {"d7pay_merchant"}:
+            raise AssertionError(f"{app_info_file} 只能包含 d7pay_merchant")
+        app_info_text = read(app_info_file)
+        forbid(app_info_text, "ashrafi", app_info_file)
+        forbid(app_info_text, "lakshmi", app_info_file)
+
+    for old_apk in (
+        "apkdownload/public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk",
+        "apkdownload/public/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk",
+    ):
+        if (ROOT / old_apk).exists():
+            raise AssertionError(f"D7pay 分支不允许保留旧客户 APK: {old_apk}")
 
     jenkins = read("ops/tenants/d7pay/jenkins.env.example")
     require(jenkins, "KUBE_NAMESPACE=pk-d7pay", "jenkins.env.example")
