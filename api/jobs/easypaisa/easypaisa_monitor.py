@@ -28,8 +28,7 @@ parent2_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, parent2_dir)
 
 import config
-from application.easypaisa_runtime import keyspace
-from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+from application.payment_eligibility import can_collect_statement, can_dispatch_df, can_dispatch_ds
 
 # EasyPaisa自动代付监控系统
 
@@ -391,7 +390,7 @@ logger, trace_id_filter, file_handler = setup_high_performance_logging(use_async
 conf = config.get_config()
 
 # 配置参数
-API_SERVER_DOMAIN = conf.get('ospay_api_host', 'http://localhost:8080')
+API_SERVER_DOMAIN = getattr(conf, 'ospay_api_host', 'http://localhost:8080')
 
 class AutoPayoutMonitor:
     def __init__(self, name):
@@ -413,27 +412,6 @@ class AutoPayoutMonitor:
 
         # 连接redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
-        self.runtime_service = SyncEasyPaisaRuntimeService(self.redis)
-
-    def _runtime_service(self):
-        runtime_service = getattr(self, "runtime_service", None)
-        if runtime_service is None:
-            runtime_service = SyncEasyPaisaRuntimeService(self.redis)
-            self.runtime_service = runtime_service
-        return runtime_service
-
-    def _runtime_manual_off_active(self, payment_id):
-        value = self._runtime_service().is_manual_off(payment_id)
-        if isinstance(value, bool):
-            return value
-        return bool(self.redis.get(keyspace.manual_off_collection_key(payment_id)))
-
-    def _runtime_health_order_paused_active(self, payment_id):
-        value = self._runtime_service().is_order_health_paused(payment_id)
-        if isinstance(value, bool):
-            return value
-        return bool(self.redis.get(keyspace.health_pause_order_key(payment_id)))
-
     def _init_easypaisa_config(self):
         """初始化 EasyPaisa 自动代付监控特定配置"""
         # 监控配置
@@ -452,8 +430,8 @@ class AutoPayoutMonitor:
         
         # Redis键名配置
         self.REDIS_KEYS = {
-            'easypaisa_online_df': 'payment_online_df',           # 在线账号集合（auto_payout.py使用）
-            'easypaisa_active_df': 'payment_active_df',           # 活跃账号列表（auto_payout.py使用）
+            'retired_payment_online_df': 'payment_online_df',     # 旧代付观察集合，仅用于残留清理和排错观测
+            'retired_payment_active_df': 'payment_active_df',     # 旧代付活跃队列，仅用于残留清理和排错观测
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # 余额有序集合（auto_payout.py使用）
             'easypaisa_status_prefix': 'easypaisa_status:',         # 状态缓存前缀（仅自动代付监控系统使用）
             'easypaisa_monitor_report': 'easypaisa_monitor_report', # 监控报告（仅自动代付监控系统使用）
@@ -570,13 +548,12 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
-                               manual_status, account_accno, account_iban
+                        SELECT id, phone, account, name, bank_type, bank_type_id, partner_id, wallet_status,
+                               collection_status, payout_status, status, certified, manual_status,
+                               account_accno, account_iban, channel
                         FROM payment
-                        WHERE status = 1
+                        WHERE wallet_status = 1
                           AND (bank_type = 97 OR bank_type_id = 97)
-                          AND account_accno IS NOT NULL
-                          AND account_accno != ''
                         ORDER BY id
                     """
                     
@@ -615,8 +592,8 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, partner_id, status, certified,
-                               account_accno
+                        SELECT phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
+                               account_accno, account_iban, channel
                         FROM payment 
                         WHERE id = %s
                     """
@@ -745,7 +722,7 @@ class AutoPayoutMonitor:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT status, certified, manual_status
+                        SELECT wallet_status, account_accno
                         FROM payment
                         WHERE id = %s
                     """
@@ -756,11 +733,11 @@ class AutoPayoutMonitor:
                     if result:
                         collect_enabled = True
                         self.logger.debug(
-                            f"payment_id {payment_id} 数据库状态: status={result['status']}, "
-                            f"certified={result['certified']}, manual_status={result.get('manual_status')}, "
+                            f"payment_id {payment_id} 数据库状态: wallet_status={result['wallet_status']}, "
+                            f"account_accno={result.get('account_accno')}, "
                             f"collect_enabled={collect_enabled}"
                         )
-                        return collect_enabled
+                        return can_collect_statement(result)
                     else:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return False
@@ -779,13 +756,10 @@ class AutoPayoutMonitor:
     def should_enable_collection(self, payment_id, payment_data=None):
         """判断是否允许采集账单/余额/限额。"""
         if isinstance(payment_data, dict):
-            status = payment_data.get('status')
-            if status is not None:
-                try:
-                    int(status)
-                    return True
-                except Exception:
-                    pass
+            wallet_status = payment_data.get('wallet_status')
+            account_accno = payment_data.get('account_accno')
+            if wallet_status is not None:
+                return can_collect_statement(payment_data)
         return self.check_payment_status_in_db(payment_id)
 
     def check_payment_ds_order_in_db(self, payment_id):
@@ -805,7 +779,7 @@ class AutoPayoutMonitor:
                 with connection.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT status, certified, manual_status
+                        SELECT wallet_status, account_accno, collection_status, status, certified, manual_status
                         FROM payment
                         WHERE id = %s
                         """,
@@ -814,11 +788,7 @@ class AutoPayoutMonitor:
                     result = cur.fetchone()
                     if not result:
                         return False
-                    return (
-                        int(result.get('status') or 0) == 1
-                        and int(result.get('certified') or 0) == 1
-                        and int(result.get('manual_status') or 0) == 0
-                    )
+                    return can_dispatch_ds(result)
             finally:
                 connection.close()
         except Exception as e:
@@ -826,20 +796,12 @@ class AutoPayoutMonitor:
             return False
 
     def should_enable_ds_order(self, payment_id, payment_data=None):
-        """判断是否允许代收派单。"""
-        if self._runtime_health_order_paused_active(payment_id):
-            return False
-        if self._runtime_manual_off_active(payment_id):
-            return False
+        """判断是否允许代收派单。collection_status 是最终资格。"""
         if isinstance(payment_data, dict):
-            status = payment_data.get('status')
-            certified = payment_data.get('certified')
-            if status is not None and certified is not None:
-                manual_status = payment_data.get('manual_status')
+            collection_status = payment_data.get('collection_status')
+            if collection_status is not None:
                 try:
-                    if manual_status is not None and int(manual_status) == 1:
-                        return False
-                    return int(status) == 1 and int(certified) == 1
+                    return int(collection_status) == 1
                 except Exception:
                     pass
         return self.check_payment_ds_order_in_db(payment_id)
@@ -861,7 +823,7 @@ class AutoPayoutMonitor:
                 with connection.cursor() as cur:
                     cur.execute(
                         """
-                        SELECT status, certified
+                        SELECT wallet_status, account_accno, payout_status, status, certified
                         FROM payment
                         WHERE id = %s
                         """,
@@ -870,23 +832,96 @@ class AutoPayoutMonitor:
                     result = cur.fetchone()
                     if not result:
                         return False
-                    return int(result.get('status') or 0) == 1 and int(result.get('certified') or 0) == 1
+                    return can_dispatch_df(result)
             finally:
                 connection.close()
         except Exception as e:
             self.logger.error(f"检查payment_id {payment_id} 代付派单资格失败: {e}")
             return False
 
+    def pause_payment_dispatch_for_health_error(self, payment_id, reason="api_error"):
+        """健康异常暂停派单必须落 MySQL 最终态，不能只写 Redis 临时键。"""
+        db_connection = getattr(self, "db_connection", None)
+        if not db_connection or not getattr(db_connection, "open", False):
+            check_db_connection = getattr(self, "check_db_connection", None)
+            if not callable(check_db_connection):
+                return 0
+            self.db_connection = check_db_connection()
+            if not self.db_connection:
+                return 0
+        with self.db_connection.cursor() as cur:
+            try:
+                affected = cur.execute(
+                    """
+                    UPDATE payment
+                    SET collection_status = 0,
+                        payout_status = 0
+                    WHERE id = %s
+                      AND (bank_type = 97 OR bank_type = '97' OR bank_type_id = 97)
+                      AND (collection_status <> 0 OR payout_status <> 0)
+                    """,
+                    (payment_id,),
+                )
+                self.db_connection.commit()
+                self.logger.info(
+                    "EasyPaisa 健康异常暂停最终派单态: payment_id=%s affected=%s reason=%s",
+                    payment_id,
+                    affected,
+                    reason,
+                )
+                return affected
+            except Exception as e:
+                self.db_connection.rollback()
+                self.logger.error(f"暂停 EasyPaisa 最终派单态失败 payment_id={payment_id}: {e}", exc_info=True)
+                return 0
+
+    def restore_payment_dispatch_after_health_success(self, payment_id):
+        """健康恢复后按 MySQL 配置字段恢复最终派单态。"""
+        db_connection = getattr(self, "db_connection", None)
+        if not db_connection or not getattr(db_connection, "open", False):
+            check_db_connection = getattr(self, "check_db_connection", None)
+            if not callable(check_db_connection):
+                return 0
+            self.db_connection = check_db_connection()
+            if not self.db_connection:
+                return 0
+        with self.db_connection.cursor() as cur:
+            try:
+                affected = cur.execute(
+                    """
+                    UPDATE payment
+                    SET collection_status = CASE
+                            WHEN wallet_status = 1 AND status = 1 AND certified = 1 AND manual_status = 0 THEN 1
+                            ELSE 0
+                        END,
+                        payout_status = CASE
+                            WHEN wallet_status = 1 AND status = 1 AND certified = 1 THEN 1
+                            ELSE 0
+                        END
+                    WHERE id = %s
+                      AND (bank_type = 97 OR bank_type = '97' OR bank_type_id = 97)
+                    """,
+                    (payment_id,),
+                )
+                self.db_connection.commit()
+                self.logger.info(
+                    "EasyPaisa 健康恢复重算最终派单态: payment_id=%s affected=%s",
+                    payment_id,
+                    affected,
+                )
+                return affected
+            except Exception as e:
+                self.db_connection.rollback()
+                self.logger.error(f"恢复 EasyPaisa 最终派单态失败 payment_id={payment_id}: {e}", exc_info=True)
+                return 0
+
     def should_enable_df_order(self, payment_id, payment_data=None):
-        """判断是否允许代付派单。人工代收锁定不影响代付。"""
-        if self._runtime_health_order_paused_active(payment_id):
-            return False
+        """判断是否允许代付派单。payout_status 是最终资格。"""
         if isinstance(payment_data, dict):
-            status = payment_data.get('status')
-            certified = payment_data.get('certified')
-            if status is not None and certified is not None:
+            payout_status = payment_data.get('payout_status')
+            if payout_status is not None:
                 try:
-                    return int(status) == 1 and int(certified) == 1
+                    return int(payout_status) == 1
                 except Exception:
                     pass
         return self.check_payment_df_order_in_db(payment_id)
@@ -894,6 +929,58 @@ class AutoPayoutMonitor:
     def should_enable_collection_dispatch(self, payment_id, payment_data=None):
         """兼容旧调用名：现在只代表代收派单资格，不代表采集资格。"""
         return self.should_enable_ds_order(payment_id, payment_data)
+
+    @staticmethod
+    def _channel_value(channel):
+        text = str(channel).strip()
+        return int(text) if text.isdigit() else text
+
+    @staticmethod
+    def _channel_source(payment_data):
+        if not isinstance(payment_data, dict):
+            return None
+        return payment_data.get('channels') or payment_data.get('qr_channel') or payment_data.get('channel')
+
+    def resolve_payment_channels(self, payment_data=None):
+        return self.normalize_channels(self._channel_source(payment_data))
+
+    @staticmethod
+    def normalize_channels(channels):
+        if channels in (None, "", []):
+            return []
+        raw_items = list(channels) if isinstance(channels, (list, tuple, set)) else [channels]
+        normalized = []
+        seen = set()
+        for item in raw_items:
+            if isinstance(item, bytes):
+                item = item.decode("utf-8")
+            for part in str(item).split(","):
+                text = part.strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                normalized.append(text)
+        return normalized
+
+    def resolve_cleanup_channels(self, payment_id=None, payment_data=None):
+        channels = self.resolve_payment_channels(payment_data)
+        if channels:
+            return channels
+
+        if payment_id not in (None, '') and hasattr(self, 'redis') and hasattr(self, 'hash_key'):
+            try:
+                raw = self.redis.hget(self.hash_key, payment_id)
+                if raw:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode('utf-8')
+                    login_data = simplejson.loads(raw)
+                    channels = self.resolve_payment_channels(login_data)
+                    if channels:
+                        return channels
+            except Exception as e:
+                self.logger.warning(f"解析账号 {payment_id} job 通道失败，使用 EasyPaisa 默认清理通道: {e}")
+
+        return ["1001", "1010"]
     
     async def get_online_easypaisa_accounts(self):
         """从hash_{self.name}中获取已登录成功的EasyPaisa账号列表"""
@@ -1110,6 +1197,20 @@ class AutoPayoutMonitor:
                 # 🔥 直接保存到Redis（独立的Hash），不放入status_info
                 await self.save_limits_to_redis(payment_id, limits_data)
                 self.logger.info(f"账号 payment_id:{payment_id} 限额查询成功并已保存到Redis")
+            elif limits_result and limits_result.get('should_offline'):
+                # 限额查询 501 与余额查询 501 都是账号硬失效信号，必须进入完整下线清理。
+                error = limits_result.get('error', '账号无效(501)')
+                status_info.update({
+                    'is_online': False,
+                    'status': 'account_invalid',
+                    'error_message': error,
+                    'api_response_time': limits_result.get(
+                        'response_time',
+                        status_info.get('api_response_time', 0),
+                    ),
+                    'force_offline': True,
+                })
+                self.logger.warning(f"账号 payment_id:{payment_id} 限额查询收到501错误，将强制下线: {error}")
             else:
                 # 限额查询失败
                 error = limits_result.get('error') if isinstance(limits_result, dict) else str(limits_result)
@@ -1446,11 +1547,7 @@ class AutoPayoutMonitor:
             if status_info['is_online'] and status_info['status'] == 'online':
                 # 200成功：更新余额到有序集合和状态缓存，上线处理
                 balance = float(status_info['balance'])
-                self.runtime_service.clear_order_health_pause(
-                    account_id,
-                    source="easypaisa_monitor_success",
-                )
-                self.redis.delete(keyspace.health_pause_order_key(account_id))
+                self.restore_payment_dispatch_after_health_success(account_id)
                 
                 # 🔥 使用有序集合存储余额（账号ID作为member，余额作为score）
                 # 不设置过期时间，数据永久保存，离线时手动删除
@@ -1466,19 +1563,6 @@ class AutoPayoutMonitor:
                     'api_response_time': status_info['api_response_time']
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
-                
-                self.runtime_service.mark_active_successful(
-                    account_id,
-                    phone=status_info.get('phone'),
-                    selected_accno=None,
-                    selected_iban=None,
-                    source="easypaisa_monitor",
-                    online_ttl=660,
-                    collect_enabled=self.should_enable_collection(account_id),
-                    ds_order_enabled=self.should_enable_ds_order(account_id),
-                    df_order_enabled=self.should_enable_df_order(account_id),
-                    channels=status_info.get('channels') or status_info.get('qr_channel') or status_info.get('channel'),
-                )
                 
             else:
                 # API错误：只更新状态缓存（不包含余额），下线处理
@@ -1500,8 +1584,10 @@ class AutoPayoutMonitor:
                     self.remove_account_completely(account_id, f"501账号无效: {error_msg}")
                     return True  # 返回True表示账号已删除，调用方应停止后续处理
                 elif status_info['status'] == 'api_error':
+                    self.pause_payment_dispatch_for_health_error(account_id, status_info.get('error_message') or 'api_error')
                     self.logger.warning(f"账号 {account_id} API健康检查失败但不下线: {status_info.get('error_message')}")
                 else:
+                    self.pause_payment_dispatch_for_health_error(account_id, status_info.get('status') or 'health_error')
                     self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改 runtime 在线态")
             
             self.logger.debug(f"账号 {account_id} Redis缓存更新完成")
@@ -1688,7 +1774,7 @@ class AutoPayoutMonitor:
             self.logger.info("=" * 50)
             self.logger.info(f"开始检查{self.hash_key}中已登录成功的EasyPaisa账号状态")
             
-            # 1. 获取已登录账号（从 JOB_HASH 中获取状态为 loginSuccessful 的账号）
+            # 1. 获取已登录账号（从hash_easypaisa中获取状态为loginSuccessful的账号）
             accounts = await self.get_online_easypaisa_accounts()
             if not accounts:
                 self.logger.warning(f"{self.hash_key}中没有已登录成功的EasyPaisa账号需要检查")
@@ -1864,19 +1950,6 @@ class AutoPayoutMonitor:
         """完全删除账号的所有数据"""
         try:
             payment_info = self.get_phone_by_payment_id_cached(account_id)
-            phone = payment_info.get('phone') if payment_info else None
-            self.runtime_service.set_ds_order_dispatch(
-                account_id,
-                enabled=False,
-                source="monitor:remove_account_completely",
-                channels=["1001"],
-            )
-            self.runtime_service.force_offline(
-                account_id,
-                phone=phone,
-                source="easypaisa_monitor",
-                reason="remove_account_completely",
-            )
 
             # 1. 删除主数据存储
             hash_deleted = self.redis.hdel(self.hash_key, account_id)
@@ -1884,6 +1957,7 @@ class AutoPayoutMonitor:
             
             # 2. 删除在线状态相关
             self.redis.srem('payment_online_df', account_id)
+            self.redis.srem('payment_online_ds', account_id)
             
             # 3. 删除EasyPaisa特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
@@ -1918,20 +1992,94 @@ class AutoPayoutMonitor:
             self.logger.error(f"删除账号 {account_id} 数据时出错: {e}")
             return False
 
-    def sync_online_payment_runtime(self, payment_data):
+    def build_monitor_login_data(self, payment_data):
+        """基于 payment 行构造采集 worker 可读的 hash_easypaisa 数据。"""
         payment_id = payment_data['id']
-        self.runtime_service.mark_active_successful(
-            payment_id,
-            phone=payment_data.get('phone'),
-            selected_accno=payment_data.get('account_accno'),
-            selected_iban=payment_data.get('account_iban') or payment_data.get('IBAN'),
-            source="easypaisa_monitor",
-            online_ttl=660,
-            collect_enabled=self.should_enable_collection(payment_id, payment_data),
-            ds_order_enabled=self.should_enable_ds_order(payment_id, payment_data),
-            df_order_enabled=self.should_enable_df_order(payment_id, payment_data),
-            channels=payment_data.get('channels') or payment_data.get('qr_channel') or payment_data.get('channel'),
-        )
+        channels = self.resolve_payment_channels(payment_data)
+        qr_channel = self._channel_value(channels[0]) if channels else payment_data.get('channel')
+        if channels:
+            stored_channel = ",".join(channels) if len(channels) > 1 else self._channel_value(channels[0])
+        else:
+            stored_channel = payment_data.get('channel')
+
+        login_data = {
+            'id': payment_id,
+            'real_payment_id': payment_id,
+            'phone': payment_data['phone'],
+            'original_phone': payment_data['phone'],
+            'bank_type': payment_data.get('bank_type'),
+            'bank_type_id': payment_data.get('bank_type_id'),
+            'partner_id': payment_data.get('partner_id'),
+            'account': payment_data.get('account'),
+            'name': payment_data.get('name'),
+            'account_accno': payment_data.get('account_accno'),
+            'account_iban': payment_data.get('account_iban') or payment_data.get('IBAN'),
+            'channels': channels,
+            'qr_channel': qr_channel,
+            'channel': stored_channel,
+            'status': 'grabstatement',
+            'count': 0,
+            'if_first_time': False,
+        }
+        return login_data
+
+    def restore_monitor_job_projection(self, payment_data):
+        """先确认 hash_easypaisa，再确认 set_easypaisa。"""
+        payment_id = payment_data['id']
+        try:
+            raw = self.redis.hget(self.hash_key, payment_id)
+            rewrite_hash = False
+            if raw:
+                try:
+                    decoded = raw.decode('utf-8') if isinstance(raw, bytes) else raw
+                    parsed = simplejson.loads(decoded)
+                    rewrite_hash = not isinstance(parsed, dict)
+                except Exception:
+                    rewrite_hash = True
+
+            if raw and not rewrite_hash:
+                self.refresh_job_account_fields(payment_data)
+                self.logger.debug(f"账号 {payment_id} 已存在于 {self.hash_key}，已刷新采集字段")
+            else:
+                login_data = self.build_monitor_login_data(payment_data)
+                hash_result = self.redis.hset(
+                    self.hash_key,
+                    payment_id,
+                    simplejson.dumps(login_data),
+                )
+                action = "重写" if raw else "恢复"
+                self.logger.info(f"✅ 已{action} {self.hash_key}[{payment_id}]，结果: {hash_result}")
+
+            zset_score = self.redis.zscore(self.set_key, payment_id)
+            if zset_score is None:
+                initial_timestamp = int(time.time()) - self.check_interval - 60
+                zset_result = self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
+                self.logger.info(
+                    f"✅ 已恢复 {self.set_key}[{payment_id}]，结果: {zset_result}, "
+                    f"时间戳: {initial_timestamp}"
+                )
+            else:
+                self.logger.debug(f"账号 {payment_id} 已存在于 {self.set_key}，score={zset_score}")
+
+            hash_ready = self.redis.hget(self.hash_key, payment_id) is not None
+            set_ready = self.redis.zscore(self.set_key, payment_id) is not None
+            if not hash_ready or not set_ready:
+                self.logger.error(
+                    f"账号 {payment_id} 采集投影未就绪: hash_ready={hash_ready}, set_ready={set_ready}"
+                )
+                return False
+            return True
+        except Exception as e:
+            self.logger.error(f"账号 {payment_id} 恢复采集投影失败: {e}")
+            return False
+
+    def restore_online_payment_from_db(self, payment_data):
+        """按 MySQL wallet_status 恢复 hash_easypaisa/set_easypaisa 采集投影。"""
+        payment_id = payment_data['id']
+        if not self.restore_monitor_job_projection(payment_data):
+            self.logger.warning(f"账号 {payment_id} 采集投影恢复失败")
+            return False
+        return True
 
     def refresh_job_account_fields(self, payment_data):
         payment_id = payment_data['id']
@@ -1951,7 +2099,7 @@ class AutoPayoutMonitor:
         changed = False
         account_accno = payment_data.get('account_accno')
         account_iban = payment_data.get('account_iban') or payment_data.get('IBAN')
-        channel = payment_data.get('channels') or payment_data.get('qr_channel') or payment_data.get('channel')
+        channel = self._channel_source(payment_data)
 
         if account_accno and login_data.get('account_accno') != account_accno:
             login_data['account_accno'] = account_accno
@@ -1960,12 +2108,18 @@ class AutoPayoutMonitor:
             login_data['account_iban'] = account_iban
             changed = True
         if channel not in (None, ''):
-            normalized_channel = int(channel) if str(channel).isdigit() else channel
+            channels = self.normalize_channels(channel)
+            normalized_channel = self._channel_value(channels[0]) if channels else self._channel_value(channel)
+            normalized_channel_list = channels or [str(normalized_channel)]
+            stored_channel = ",".join(normalized_channel_list) if len(normalized_channel_list) > 1 else normalized_channel
+            if login_data.get('channels') != normalized_channel_list:
+                login_data['channels'] = normalized_channel_list
+                changed = True
             if login_data.get('qr_channel') != normalized_channel:
                 login_data['qr_channel'] = normalized_channel
                 changed = True
-            if login_data.get('channel') != normalized_channel:
-                login_data['channel'] = normalized_channel
+            if login_data.get('channel') != stored_channel:
+                login_data['channel'] = stored_channel
                 changed = True
 
         if not changed:
@@ -1975,18 +2129,6 @@ class AutoPayoutMonitor:
         return True
 
     def cleanup_missing_db_payment(self, payment_id, phone=None):
-        self.runtime_service.set_ds_order_dispatch(
-            payment_id,
-            enabled=False,
-            source="monitor:payment_missing_in_db",
-            channels=["1001"],
-        )
-        self.runtime_service.force_offline(
-            payment_id,
-            phone=phone,
-            source="easypaisa_monitor",
-            reason="payment_missing_in_db",
-        )
         self.redis.hdel(self.hash_key, payment_id)
         self.redis.zrem(self.set_key, payment_id)
         self.redis.delete(f'login_on_{self.name}_{payment_id}')
@@ -2010,7 +2152,11 @@ class AutoPayoutMonitor:
                     # 更新payment表状态为0（下线）
                     sql = """
                         UPDATE payment 
-                        SET status = 0, time_update = NOW()
+                        SET status = 0,
+                            wallet_status = 0,
+                            collection_status = 0,
+                            payout_status = 0,
+                            time_update = NOW()
                         WHERE id = %s
                     """
                     
@@ -2035,28 +2181,9 @@ class AutoPayoutMonitor:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
-                self.runtime_service.mark_active_successful(
-                    login_data['id'],
-                    phone=login_data.get('phone'),
-                    selected_accno=login_data.get('account_accno'),
-                    selected_iban=login_data.get('account_iban'),
-                    source="easypaisa_monitor",
-                    online_ttl=660,
-                    collect_enabled=self.should_enable_collection(login_data['id'], login_data),
-                    ds_order_enabled=self.should_enable_ds_order(login_data['id'], login_data),
-                    df_order_enabled=self.should_enable_df_order(login_data['id'], login_data),
-                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
-                )
-                self.logger.info(f"{login_data['id']}, {self.name} 上线接单： {login_data['id']}")
+                self.logger.info(f"{login_data['id']}, {self.name} 监控在线：派单态以 MySQL 为准")
                 return True
-            self.runtime_service.set_kickoff(
-                login_data['id'],
-                phone=login_data.get('phone'),
-                ttl=60 * 20,
-                source="easypaisa_monitor",
-                reason="monitor_offline",
-            )
-            self.logger.error(f"{login_data['id']}, {self.name} 下线接单： {login_data['id']}")
+            self.logger.error(f"{login_data['id']}, {self.name} 监控离线：不写 runtime")
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -2279,16 +2406,11 @@ class AutoPayoutMonitor:
     # 打印所有的缓存,比较耗性能,生产环境可注释掉
     def read_cache(self, source, login_data):
         user_id = login_data['id']
-        qr_channel = login_data['qr_channel']
         self.logger.info(f"{user_id}, source: {source} 开始读取业务缓存")
         try:
             cache_key_lock = f'{self.name}_operate_{user_id}'
             cache_key_login_on = f'login_on_{self.name}_{user_id}'
             cache_key_upi_active_payment = f'upi_active_payment:{user_id}'
-            cache_key_payment_online_ds = f'payment_online_ds'
-            cache_key_payment_online_df = f'payment_online_df'
-            cache_key_payment_active_qr_channel = f'payment_active_{qr_channel}'
-            cache_key_kick_off = f'kick_off_{user_id}'
             cache_key_device = f'{self.name}_device'
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
@@ -2296,10 +2418,6 @@ class AutoPayoutMonitor:
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_ds}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_ds, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_ds)}")  # EasyPaisa不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_df}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_df, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_df)}")
-            # self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_active_qr_channel}, 成员: {login_data['id']}, 是否在list列表中 {login_data['id'] in self.read_redis_list(cache_key_payment_active_qr_channel)}, ttl: {self.redis.ttl(cache_key_payment_active_qr_channel)}")  # EasyPaisa不做代收
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_kick_off}, value: {self.redis.get(cache_key_kick_off)}, ttl: {self.redis.ttl(cache_key_kick_off)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
             tb_str = traceback.format_exc()
@@ -2574,14 +2692,6 @@ class AutoPayoutMonitor:
                 self.logger.info(f"账号 {_id} 监控正常，5分钟后重新检查")
             else:
                 # 网络、423、HTTP 5xx 只代表本轮健康探测失败；不能踢采集 worker。
-                self.runtime_service.set_order_health_pause(
-                    payment_id,
-                    reason=status_info.get('status') or 'api_error',
-                    ttl=180,
-                    source="easypaisa_monitor_health_error",
-                    phone=login_data.get('phone'),
-                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
-                )
                 self.update_key(login_data, next_check_interval=60)   # 1分钟后重新检查
                 self.logger.warning(f"账号 {_id} 监控异常({status_info.get('status')})，临时禁止派单、保留采集态并1分钟后重试: {status_info.get('error_message')}")
             
@@ -2662,81 +2772,20 @@ class AutoPayoutMonitor:
                             self.logger.error(f"❌ Redis连接失败: {ping_e}")
                             continue
 
-                        self.sync_online_payment_runtime(payment_data)
-                        
-                        # 检查是否已存在，确保Hash和ZSet数据一致性
-                        hash_exists = self.redis.hexists(self.hash_key, payment_id)
-                        zset_score = self.redis.zscore(self.set_key, payment_id)
-                        zset_exists = zset_score is not None
-                        self.logger.debug(f"账号 {payment_id} 存在检查: Hash={hash_exists}, ZSet={zset_exists}")
-                        
-                        if hash_exists and zset_exists:
-                            self.refresh_job_account_fields(payment_data)
-                            # 时间戳合理，完全跳过
-                            skipped_count += 1
-                            self.logger.info(f"⏩ 账号 payment_id:{payment_id} 已存在于{self.hash_key}，跳过")
-                            continue
-                        elif hash_exists and not zset_exists:
-                            # Hash存在但ZSet不存在，只添加到ZSet
-                            self.logger.warning(f"🔄 账号 payment_id:{payment_id} Hash存在但ZSet缺失，补充到ZSet")
-                            try:
-                                initial_timestamp = int(time.time()) - self.check_interval - 60
-                                zset_result = self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
-                                self.logger.info(f"✅ 补充到ZSet成功: {zset_result}, 时间戳: {initial_timestamp}")
+                        hash_existed = self.redis.hget(self.hash_key, payment_id) is not None
+                        set_existed = self.redis.zscore(self.set_key, payment_id) is not None
+                        if self.restore_online_payment_from_db(payment_data):
+                            if hash_existed and set_existed:
                                 skipped_count += 1
-                                continue
-                            except Exception as e:
-                                self.logger.error(f"❌ 补充到ZSet失败: {e}")
-                                # 继续执行完整的添加流程
-                        elif not hash_exists and zset_exists:
-                            # ZSet存在但Hash不存在，清理ZSet中的孤立数据
-                            self.logger.warning(f"🧹 账号 payment_id:{payment_id} ZSet存在但Hash缺失，清理ZSet中的孤立数据")
-                            try:
-                                self.redis.zrem(self.set_key, payment_id)
-                                self.logger.info(f"✅ 清理ZSet中的孤立数据成功")
-                            except Exception as e:
-                                self.logger.error(f"❌ 清理ZSet失败: {e}")
-                            # 继续执行完整的添加流程
+                                self.logger.info(f"⏩ 账号 payment_id:{payment_id} 采集投影已存在，runtime 已按顺序确认")
+                            else:
+                                added_count += 1
+                                self.logger.info(
+                                    f"✅ 账号 payment_id:{payment_id} 已按 hash -> set -> collect -> DS 顺序恢复"
+                                )
                         else:
-                            # 都不存在，继续执行完整的添加流程
-                            self.logger.info(f"➕ 账号 payment_id:{payment_id} Hash和ZSet都不存在，执行完整添加")
-                            
-                        # 构造 login_data（保持与现有格式兼容）
-                        login_data = {
-                            'id': payment_id,
-                            'real_payment_id': payment_id,
-                            'phone': payment_data['phone'],
-                            'bank_type': payment_data['bank_type'],
-                            'partner_id': payment_data['partner_id'],
-                            'account': payment_data.get('account'),
-                            'name': payment_data.get('name'),
-                            'account_accno': payment_data.get('account_accno'),
-                            'account_iban': payment_data.get('account_iban'),
-                            'qr_channel': payment_data.get('channel'),
-                            'channel': payment_data.get('channel'),
-                            # 不添加 'status': 'loginSuccessful'  
-                        }
-                        
-                        try:
-                            # 推入监控系统
-                            self.logger.debug(f"开始写入Redis: payment_id:{payment_id}")
-                            
-                            # 写入hash
-                            hash_result = self.redis.hset(self.hash_key, payment_id, simplejson.dumps(login_data))
-                            self.logger.debug(f"Hash写入结果: {hash_result}")
-                            
-                            # 写入zset
-                            # 🔥 使用较老的时间戳，让新账号可以立即被处理（而不是等5分钟）
-                            initial_timestamp = int(time.time()) - self.check_interval - 60  # 比5分钟间隔更早1分钟
-                            zset_result = self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
-                            self.logger.debug(f"ZSet写入结果: {zset_result}, 时间戳: {initial_timestamp}")
-                            
-                            added_count += 1
-                            self.logger.info(f"✅ 成功添加账号 payment_id:{payment_id} phone:{payment_data['phone']} 到监控系统")
-                            
-                        except Exception as redis_e:
-                            self.logger.error(f"❌ Redis写入失败 payment_id:{payment_id}: {redis_e}")
-                            continue
+                            skipped_count += 1
+                            self.logger.warning(f"账号 payment_id:{payment_id} 本轮恢复失败，等待下一轮重试")
                     
                     self.logger.info(f"📊 账号处理统计: 总数={len(online_payments)}, 新增={added_count}, 跳过={skipped_count}")
             except Exception as e:

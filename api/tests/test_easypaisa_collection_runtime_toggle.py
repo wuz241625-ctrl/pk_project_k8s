@@ -131,150 +131,80 @@ class EasyPaisaCollectionRuntimeToggleTests(unittest.IsolatedAsyncioTestCase):
         self.logger = MagicMock()
         FakeRuntimeService.calls = []
 
-    async def test_selling_active_syncs_easypaisa_runtime_dispatch(self):
-        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+    async def test_selling_active_updates_mysql_business_status_only(self):
         from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
 
         payment = FakePayment(certified=0, status=1)
         db_orm = FakeDbOrm(payment)
-        original_runtime_service = handler_module.EasyPaisaRuntimeService
-        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
-        try:
-            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+        service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
 
-            result = await service.selling_active(payment.id)
+        result = await service.selling_active(payment.id)
 
-            self.assertTrue(result)
-            self.assertEqual(payment.certified, 1)
-            self.assertEqual(
-                FakeRuntimeService.calls,
-                [
-                    {
-                        "method": "resume_order_dispatch",
-                        "payment_id": 533280,
-                        "ds_enabled": True,
-                        "df_enabled": True,
-                        "phone": "923045536108",
-                        "channels": 1001,
-                        "source": "app_selling_active",
-                    }
-                ],
-            )
-        finally:
-            handler_module.EasyPaisaRuntimeService = original_runtime_service
+        self.assertTrue(result)
+        self.assertEqual(payment.certified, 1)
+        self.assertEqual(payment.collection_status, 1)
+        self.assertEqual(payment.payout_status, 1)
+        self.assertEqual(FakeRuntimeService.calls, [])
 
-    async def test_selling_active_uses_runtime_when_legacy_bank_type_marks_easypaisa(self):
-        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+    async def test_selling_active_uses_mysql_when_legacy_bank_type_marks_easypaisa(self):
         from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
 
         payment = FakePayment(certified=0, status=1, bank_type_id=14, bank_type='97')
         db_orm = FakeDbOrm(payment)
-        original_runtime_service = handler_module.EasyPaisaRuntimeService
-        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
-        try:
-            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+        service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
 
-            result = await service.selling_active(payment.id)
+        result = await service.selling_active(payment.id)
 
-            self.assertTrue(result)
-            self.assertEqual(FakeRuntimeService.calls[0]["method"], "resume_order_dispatch")
-        finally:
-            handler_module.EasyPaisaRuntimeService = original_runtime_service
+        self.assertTrue(result)
+        self.assertEqual(payment.collection_status, 1)
+        self.assertEqual(payment.payout_status, 1)
+        self.assertEqual(FakeRuntimeService.calls, [])
 
-    async def test_selling_active_keeps_ds_paused_when_admin_manual_lock_exists(self):
-        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+    async def test_selling_active_does_not_write_runtime_when_admin_manual_lock_exists(self):
         from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
 
         payment = FakePayment(certified=0, status=1, manual_status=1)
         db_orm = FakeDbOrm(payment)
-        original_runtime_service = handler_module.EasyPaisaRuntimeService
-        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
-        try:
-            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+        service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
 
-            result = await service.selling_active(payment.id)
+        result = await service.selling_active(payment.id)
 
-            self.assertTrue(result)
-            self.assertEqual(payment.certified, 1)
-            self.assertEqual(
-                FakeRuntimeService.calls,
-                [
-                    {
-                        "method": "resume_order_dispatch",
-                        "payment_id": 533280,
-                        "ds_enabled": False,
-                        "df_enabled": True,
-                        "phone": "923045536108",
-                        "channels": 1001,
-                        "source": "app_selling_active",
-                    }
-                ],
-            )
-        finally:
-            handler_module.EasyPaisaRuntimeService = original_runtime_service
+        self.assertTrue(result)
+        self.assertEqual(payment.certified, 1)
+        self.assertEqual(payment.collection_status, 1)
+        self.assertEqual(payment.payout_status, 1)
+        self.assertEqual(FakeRuntimeService.calls, [])
 
-    async def test_selling_active_keeps_dispatch_paused_when_payment_disabled(self):
-        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+    async def test_selling_active_does_not_write_runtime_when_payment_disabled(self):
         from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
 
         payment = FakePayment(certified=0, status=0, manual_status=0)
         db_orm = FakeDbOrm(payment)
-        original_runtime_service = handler_module.EasyPaisaRuntimeService
-        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
-        try:
-            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+        service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
 
-            result = await service.selling_active(payment.id)
+        result = await service.selling_active(payment.id)
 
-            self.assertTrue(result)
-            self.assertEqual(payment.certified, 1)
-            self.assertEqual(
-                FakeRuntimeService.calls,
-                [
-                    {
-                        "method": "resume_order_dispatch",
-                        "payment_id": 533280,
-                        "ds_enabled": False,
-                        "df_enabled": False,
-                        "phone": "923045536108",
-                        "channels": 1001,
-                        "source": "app_selling_active",
-                    }
-                ],
-            )
-        finally:
-            handler_module.EasyPaisaRuntimeService = original_runtime_service
+        self.assertTrue(result)
+        self.assertEqual(payment.certified, 1)
+        self.assertEqual(payment.collection_status, 1)
+        self.assertEqual(payment.payout_status, 1)
+        self.assertEqual(FakeRuntimeService.calls, [])
 
-    async def test_selling_inactive_syncs_easypaisa_runtime_dispatch(self):
-        from application.lakshmi_api.services.payments import e_wallet_handler as handler_module
+    async def test_selling_inactive_updates_mysql_business_status_only(self):
         from application.lakshmi_api.services.payments.easypaisa_pay_service import EasyPaisaPayService
 
         payment = FakePayment(certified=1, status=1)
         db_orm = FakeDbOrm(payment)
-        original_runtime_service = handler_module.EasyPaisaRuntimeService
-        handler_module.EasyPaisaRuntimeService = FakeRuntimeService
-        try:
-            service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
+        service = EasyPaisaPayService(db_orm, self.redis, None, self.logger)
 
-            result = await service.selling_inactive(payment.id)
+        result = await service.selling_inactive(payment.id)
 
-            self.assertTrue(result)
-            self.assertEqual(payment.certified, 0)
-            self.assertNotIn("login_off_easypaisa_533280", self.redis.kv)
-            self.assertEqual(
-                FakeRuntimeService.calls,
-                [
-                    {
-                        "method": "pause_order_dispatch",
-                        "payment_id": 533280,
-                        "phone": "923045536108",
-                        "channels": 1001,
-                        "source": "app_selling_inactive",
-                    }
-                ],
-            )
-        finally:
-            handler_module.EasyPaisaRuntimeService = original_runtime_service
+        self.assertTrue(result)
+        self.assertEqual(payment.certified, 0)
+        self.assertNotIn("login_off_easypaisa_533280", self.redis.kv)
+        self.assertEqual(payment.collection_status, 0)
+        self.assertEqual(payment.payout_status, 0)
+        self.assertEqual(FakeRuntimeService.calls, [])
 
 
 if __name__ == "__main__":

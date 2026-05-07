@@ -4,6 +4,8 @@ SNAPSHOT_KEY = "easypaisa_runtime:snapshot:{payment_id}"
 SESSION_KEY = "easypaisa_runtime:session:{payment_id}"
 LOCK_PAYMENT_KEY = "easypaisa_runtime:lock:payment:{payment_id}"
 LOCK_PHONE_KEY = "easypaisa_runtime:lock:phone:{phone}"
+KICKOFF_KEY = "easypaisa_runtime:kickoff:{payment_id}"
+PRE_LOGIN_KEY = "pre_login_easypaisa_{payment_id}"
 
 INDEX_ONLINE = "easypaisa_runtime:index:online"
 INDEX_COLLECT_ENABLED = "easypaisa_runtime:index:collect_enabled"
@@ -18,6 +20,7 @@ LEGACY_PAYMENT_ONLINE_DS = "payment_online_ds"
 LEGACY_PAYMENT_ACTIVE_DF = "payment_active_df"
 LEGACY_LOGIN_ON_PAYMENT = "login_on_easypaisa_{payment_id}"
 LEGACY_LOGIN_ON_PHONE = "login_on_easypaisa_{phone}"
+LEGACY_KICKOFF = "kick_off_{payment_id}"
 MANUAL_OFF_COLLECTION_KEY = "easypaisa_runtime:manual_off:collection:{payment_id}"
 HEALTH_PAUSE_ORDER_KEY = "easypaisa_runtime:health_pause:order:{payment_id}"
 SCHEDULE_COLLECTION = "easypaisa_runtime:schedule:collection"
@@ -57,6 +60,14 @@ def session_key(payment_id) -> str:
     return SESSION_KEY.format(payment_id=payment_id)
 
 
+def pre_login_key(payment_id) -> str:
+    return PRE_LOGIN_KEY.format(payment_id=payment_id)
+
+
+def kickoff_key(payment_id) -> str:
+    return KICKOFF_KEY.format(payment_id=payment_id)
+
+
 def lock_payment_key(payment_id) -> str:
     return LOCK_PAYMENT_KEY.format(payment_id=payment_id)
 
@@ -71,6 +82,10 @@ def legacy_login_on_payment_key(payment_id) -> str:
 
 def legacy_login_on_phone_key(phone: str) -> str:
     return LEGACY_LOGIN_ON_PHONE.format(phone=phone)
+
+
+def legacy_kickoff_key(payment_id) -> str:
+    return LEGACY_KICKOFF.format(payment_id=payment_id)
 
 
 def legacy_payment_active_channel_key(channel) -> str:

@@ -38,7 +38,7 @@
       overflow: hidden;
       margin-top: 10px;
     }
-    
+
     /* Header Section */
     .header {
       background: linear-gradient(180deg, #62f1bd 0%, #58e6b2 100%);
@@ -116,8 +116,8 @@
       font-size: 16px;
     }
 
-    /* 
-      ** 重点：动态按钮样式 ** 
+    /*
+      ** 重点：动态按钮样式 **
     */
     .pay-btn {
       width: 100%;
@@ -199,63 +199,6 @@
       white-space: nowrap;
       box-shadow: 0 8px 20px rgba(15, 143, 99, 0.18);
     }
-    .pay-tabs {
-      display: flex;
-      gap: 0;
-      margin-bottom: 16px;
-      border-radius: 12px;
-      overflow: hidden;
-      border: 2px solid var(--accent1, #2fbf66);
-      direction: rtl;
-    }
-    .pay-tab {
-      flex: 1;
-      padding: 10px 0;
-      text-align: center;
-      font-size: 14px;
-      font-weight: 600;
-      border: none;
-      cursor: pointer;
-      transition: all 0.2s;
-      background: #fff;
-      color: var(--accent1, #2fbf66);
-    }
-    .pay-tab.active {
-      background: var(--accent1, #2fbf66);
-      color: #fff;
-    }
-    .pay-panel {
-      width: 100%;
-    }
-    .result-overlay {
-      position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
-      background: rgba(255,255,255,0.97);
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      z-index: 9999;
-      direction: rtl;
-    }
-    .result-box {
-      text-align: center;
-      padding: 40px 30px;
-    }
-    .result-icon {
-      width: 72px; height: 72px;
-      border-radius: 50%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 36px;
-      margin: 0 auto 16px;
-      color: #fff;
-    }
-    .result-icon.success { background: var(--accent1, #2fbf66); }
-    .result-icon.fail { background: #dc3545; }
-    .result-box h3 { font-size: 22px; margin-bottom: 8px; }
-    .result-box p { font-size: 14px; color: #666; margin-bottom: 4px; }
-    .redirect-hint { font-size: 12px; color: #999; margin-top: 12px; }
 
     .qr-code-section { display: none; margin-top: 20px; flex-direction: column; align-items: center; }
     .account-details-container {
@@ -265,7 +208,7 @@
     .account-number { font-size: 28px; font-weight: 800; color: #ef4444; display: block; margin: 10px 0; }
     .copy-btn { background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 10px 20px; cursor: pointer; }
     .rtl-text { direction: rtl; text-align: right; line-height: 1.8; font-size: 14px; color: #374151; margin-top: 15px; }
-  
+
     .support {
       padding:14px 18px;
       background:#fff;
@@ -674,14 +617,14 @@
         padding: 20px;
         background: #fff;
     }
-    
+
     /* Updated styles to match the new image designs */
     .account-details-container {
         padding: 20px;
-        border: 1px solid #e0e0e0; 
+        border: 1px solid #e0e0e0;
         border-radius: 12px;
-        background-color: #ffffff; 
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); 
+        background-color: #ffffff;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
         font-family: Arial, sans-serif;
         margin-bottom: 7px;
         text-align: center;
@@ -707,23 +650,23 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 0; 
-        background-color: transparent; 
+        padding: 0;
+        background-color: transparent;
         border: none;
         border-radius: 0;
         box-shadow: none;
     }
     .account-number {
         font-family: Arial, sans-serif;
-        font-size: 26px; 
-        font-weight: 700; 
+        font-size: 26px;
+        font-weight: 700;
         color: red;
     }
 
     /* 样式修改以匹配新的按钮 */
     .copy-btn {
-        background: #007aff; 
-        color: #fff; 
+        background: #007aff;
+        color: #fff;
         border: none;
         border-radius: 8px;
         padding: 10px 14px;
@@ -736,14 +679,14 @@
         transition: all 0.2s ease;
     }
     .copy-btn:hover {
-        opacity: 0.9; 
+        opacity: 0.9;
     }
     .copy-btn img {
         width: 16px; /* 调整大小 */
         height: 16px;
         filter: brightness(0) invert(1); /* 使图片颜色变为白色 */
     }
-    
+
     /* New style for the info icon to match the image */
     .info-icon {
         display: inline-flex;
@@ -844,7 +787,7 @@
         </div>
         <div class="brand-name">EasyPaisa</div>
       </div>
-      
+
       <div style="font-weight: 700; color: var(--dark-green);">ادائیگی کی رقم</div>
       <div id="countdown-timer">6:00</div>
       <div class="amount">PKR. {{ amount }}</div>
@@ -882,102 +825,94 @@
         <input id="acct" placeholder="اکاؤنٹ نمبر: 03XXXXXXXXXX" />
       </div>
 
-	      <button class="pay-btn" id="payBtn">
-	          <!-- 箭头图标 -->
-	          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-	              <line x1="5" y1="12" x2="19" y2="12"></line>
+      <button class="pay-btn" id="payBtn">
+          <!-- 箭头图标 -->
+          <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
               <polyline points="12 5 19 12 12 19"></polyline>
-	          </svg>
-	          <span>ادائیگی کریں</span>
-	      </button>
-	      <div class="pay-tabs" id="payTabs" style="display:none;">
-	          <button class="pay-tab active" data-tab="qr" id="tabQr" type="button">اسکین کریں</button>
-	          <button class="pay-tab" data-tab="copy" id="tabCopy" type="button">اکاؤنٹ کاپی کریں</button>
-	      </div>
+          </svg>
+          <span>ادائیگی کریں</span>
+      </button>
+      <div class="guide-entry" id="guideEntry">
+          <div class="guide-entry-copy">
+              <div class="guide-entry-title">ادائیگی میں مدد چاہیے؟</div>
+              <div class="guide-entry-desc">ایزی پیسہ کے 5 مراحل دیکھیں اور کسی بھی مرحلے پر ٹیپ کرکے بڑی تصویر کھولیں۔</div>
+          </div>
+          <button class="guide-entry-btn" id="guideEntryBtn" type="button">گائیڈ دیکھیں</button>
+      </div>
 
-	      <div class="qr-code-section" id="qrSection">
-	          <div class="pay-panel" data-panel="qr" id="payPanelQr" style="display:none;">
-	              <div class="qr-code-content" id="qrContentDiv" style="display:none;">
-	                  <p>یا اسکین کرکے ادائیگی کریں:</p>
-	                  <div class="qr-box" id="qrcode-container" style="padding: 20px;">
-	                      <img id="qrCodeImg" src="" alt="کیو آر کوڈ" />
-	                  </div>
-	                  <button class="download-qr-btn" id="downloadQrBtn">کیو آر کوڈ ڈاؤن لوڈ کریں</button>
-	              </div>
-	          </div>
-	          <div class="pay-panel" data-panel="copy" id="payPanelCopy" style="display:none;">
-	              <div class="easypaisa-transfer-guide" id="qrShow" style="display: none;">
-	                  <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
+      <div class="qr-code-section" id="qrSection">
+          <div class="qr-code-content" id="qrContentDiv" style="display:none;">
+              <p>یا اسکین کرکے ادائیگی کریں:</p>
+              <div class="qr-box" id="qrcode-container" style="padding: 20px;">
+                  <img id="qrCodeImg" src="" alt="کیو آر کوڈ" />
+              </div>
+              <button class="download-qr-btn" id="downloadQrBtn">کیو آر کوڈ ڈاؤن لوڈ کریں</button>
+          </div>
+          <div class="easypaisa-transfer-guide" id="qrShow" style="display: none;">
+              <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
 
-	                  <div class="account-details-container">
-	                      <div class="account-details-header">
-	                          <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
-	                      </div>
-	                      <div class="account-info-row">
-	                          <span class="account-number">{{ account_iban }}</span>
-	                          <button class="copy-btn" id="copyBtn0" aria-label="اکاؤنٹ نمبر کاپی کریں">
-	                              <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
-	                              <span>کاپی کریں</span>
-	                          </button>
-	                      </div>
-	                  </div>
-	              </div>
-	              <div id="transById" style="display: none;">
-	                  <div class="easypaisa-transfer-guide">
-	                      <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
+              <div class="account-details-container">
+                  <div class="account-details-header">
+                      <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
+                  </div>
+                  <div class="account-info-row">
+                      <span class="account-number">{{ account_iban }}</span>
+                      <button class="copy-btn" id="copyBtn0" aria-label="اکاؤنٹ نمبر کاپی کریں">
+                          <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
+                          <span>کاپی کریں</span>
+                      </button>
+                  </div>
+              </div>
+          </div>
+          <div id="transById" style="display: none;">
+              <div class="easypaisa-transfer-guide">
+                  <div class="guide-title">نیچے دیے گئے ڈیجیٹل اکاؤنٹ میں رقم منتقل کریں</div>
 
-	                      <div class="account-details-container">
-	                          <div class="account-details-header">
-	                              <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
-	                          </div>
-	                          <div class="account-info-row">
-	                              <span class="account-number" id="receiveAccount">{{ account_iban }}</span>
-	                              <button class="copy-btn" id="copyBtn" aria-label="اکاؤنٹ نمبر کاپی کریں">
-	                                  <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
-	                                  <span>کاپی کریں</span>
-	                              </button>
-	                          </div>
-	                      </div>
+                  <div class="account-details-container">
+                      <div class="account-details-header">
+                          <span class="digital-account-title">ڈیجیٹل اکاؤنٹ نمبر</span>
+                      </div>
+                      <div class="account-info-row">
+                          <span class="account-number" id="receiveAccount">{{ account_iban }}</span>
+                          <button class="copy-btn" id="copyBtn" aria-label="اکاؤنٹ نمبر کاپی کریں">
+                              <img src="{{ static_url('images/pakistan/copy.png') }}" alt="کاپی آئیکن">
+                              <span>کاپی کریں</span>
+                          </button>
+                      </div>
+                  </div>
 
-	                      <div class="easypaisa-steps-container">
-	                        <div class="easypaisa-step-item rtl-text">
-	                            <div class="easypaisa-step-text">
-	                                اپنی گیم ایپ کے اکاؤنٹ میں پیسے جمع کروانا اب بہت آسان ہے۔ سب سے پہلے اپنی ایزی پیسہ ایپ کھولیں اور سینڈ منی پر کلک کریں۔ اس کے بعد دو آپشن آئیں گے: موبائل نمبر اور ڈیجیٹل اکاؤنٹ نمبر۔ آپ نے ڈیجیٹل اکاؤنٹ نمبر والا آپشن منتخب کرنا ہے۔ پھر آپ کو دیا گیا اکاؤنٹ نمبر وہاں درج کریں (<span style="color: red;">{{ account_iban }}</span>)، مطلوبہ رقم لکھیں اور سینڈ پر کلک کریں۔ ۵ سے ۱۰ سیکنڈز کے اندر اندر آپ کے پیسے براہِ راست آپ کی گیم ایپ کے اکاؤنٹ میں منتقل ہو جائیں گے۔
-	                            </div>
-	                        </div>
-	                        <div style="display: none;">
-	                          <div class="easypaisa-step-item" >
-	                              <div class="easypaisa-step-number">1</div>
-	                              <div class="easypaisa-step-text">ایزی پیسہ ایپ کھولیں → سینڈ منی</div>
-	                          </div>
-	                          <div class="easypaisa-step-item">
-	                              <div class="easypaisa-step-number">2</div>
-	                              <div class="easypaisa-step-text">
-	                                  "ڈیجیٹل اکاؤنٹ نمبر" منتخب کریں<br>
-	                                  <span class="easypaisa-note">موبائل نمبر منتخب نہ کریں</span>
-	                              </div>
-	                          </div>
-	                          <div class="easypaisa-step-item">
-	                              <div class="easypaisa-step-number">3</div>
-	                              <div class="easypaisa-step-text">اکاؤنٹ نمبر پیسٹ کریں: <strong class="easypaisa-account-number">{{ account_iban }}</strong></div>
-	                          </div>
-	                          <div class="easypaisa-step-item">
-	                              <div class="easypaisa-step-number">4</div>
-	                              <div class="easypaisa-step-text">رقم درج کریں: <strong class="easypaisa-amount">PKR {{ amount }}</strong></div>
-	                          </div>
-	                        </div>
-	                    </div>
-	                  </div>
-	              </div>
-	              <div class="guide-entry" id="guideEntry">
-	                  <div class="guide-entry-copy">
-	                      <div class="guide-entry-title">ادائیگی میں مدد چاہیے؟</div>
-	                      <div class="guide-entry-desc">ایزی پیسہ کے 5 مراحل دیکھیں اور کسی بھی مرحلے پر ٹیپ کرکے بڑی تصویر کھولیں۔</div>
-	                  </div>
-	                  <button class="guide-entry-btn" id="guideEntryBtn" type="button">گائیڈ دیکھیں</button>
-	              </div>
-	          </div>
-	      </div>
+                  <div class="easypaisa-steps-container">
+                    <div class="easypaisa-step-item rtl-text">
+                        <div class="easypaisa-step-text">
+                            اپنی گیم ایپ کے اکاؤنٹ میں پیسے جمع کروانا اب بہت آسان ہے۔ سب سے پہلے اپنی ایزی پیسہ ایپ کھولیں اور سینڈ منی پر کلک کریں۔ اس کے بعد دو آپشن آئیں گے: موبائل نمبر اور ڈیجیٹل اکاؤنٹ نمبر۔ آپ نے ڈیجیٹل اکاؤنٹ نمبر والا آپشن منتخب کرنا ہے۔ پھر آپ کو دیا گیا اکاؤنٹ نمبر وہاں درج کریں (<span style="color: red;">{{ account_iban }}</span>)، مطلوبہ رقم لکھیں اور سینڈ پر کلک کریں۔ ۵ سے ۱۰ سیکنڈز کے اندر اندر آپ کے پیسے براہِ راست آپ کی گیم ایپ کے اکاؤنٹ میں منتقل ہو جائیں گے۔
+                        </div>
+                    </div>
+                    <div style="display: none;">
+                      <div class="easypaisa-step-item" >
+                          <div class="easypaisa-step-number">1</div>
+                          <div class="easypaisa-step-text">ایزی پیسہ ایپ کھولیں → سینڈ منی</div>
+                      </div>
+                      <div class="easypaisa-step-item">
+                          <div class="easypaisa-step-number">2</div>
+                          <div class="easypaisa-step-text">
+                              "ڈیجیٹل اکاؤنٹ نمبر" منتخب کریں<br>
+                              <span class="easypaisa-note">موبائل نمبر منتخب نہ کریں</span>
+                          </div>
+                      </div>
+                      <div class="easypaisa-step-item">
+                          <div class="easypaisa-step-number">3</div>
+                          <div class="easypaisa-step-text">اکاؤنٹ نمبر پیسٹ کریں: <strong class="easypaisa-account-number">{{ account_iban }}</strong></div>
+                      </div>
+                      <div class="easypaisa-step-item">
+                          <div class="easypaisa-step-number">4</div>
+                          <div class="easypaisa-step-text">رقم درج کریں: <strong class="easypaisa-amount">PKR {{ amount }}</strong></div>
+                      </div>
+                    </div>
+                </div>
+              </div>
+          </div>
+      </div>
 
     </div>
 
@@ -1127,9 +1062,9 @@
 
     // A new function to consistently add padding to any image URL.
     function addPaddingToImage(dataUrl, callback) {
-        const padding = 40; 
+        const padding = 40;
         const img = new Image();
-        img.crossOrigin = "anonymous"; 
+        img.crossOrigin = "anonymous";
         img.onload = () => {
             const paddedCanvas = document.createElement('canvas');
             paddedCanvas.width = img.width + (padding * 2);
@@ -1140,7 +1075,7 @@
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(img, padding, padding, img.width, img.height);
             // callback(paddedCanvas.toDataURL("image/png"));
-            callback(paddedCanvas.toDataURL("image/jpeg", 1.0)); 
+            callback(paddedCanvas.toDataURL("image/jpeg", 1.0));
         };
         img.onerror = () => callback(dataUrl);
         img.src = dataUrl;
@@ -1272,8 +1207,6 @@
                 if (showQrBtn) {
                     showQrBtn.disabled = true;
                 }
-                if (window.orderPollInterval) clearInterval(window.orderPollInterval);
-                document.getElementById('timeoutOverlay').style.display = 'flex';
             } else {
                 secondsRemaining--;
             }
@@ -1284,60 +1217,17 @@
     });
 
     (function(){
-      let orderPollInterval = null;
-      window.orderPollInterval = orderPollInterval;
-
-      function trackOrderStatus() {
-          if (orderPollInterval) clearInterval(orderPollInterval);
-          orderPollInterval = setInterval(function() {
-              $.ajax({
-                  type: 'post',
-                  url: '{{reverse_url("orderStatus", token)}}',
-                  data: {},
-                  dataType: 'json',
-                  success: function(res) {
-                      if (res.code === 0) {
-                          // Payment success
-                          clearInterval(orderPollInterval);
-                          document.getElementById('successOverlay').style.display = 'flex';
-                          setTimeout(function() {
-                              if (res.url && res.url !== 'sys') {
-                                  location.href = res.url;
-                              }
-                          }, 3000);
-                      }
-                      if (res.code === 10002) {
-                          // Order timeout/failed
-                          clearInterval(orderPollInterval);
-                          document.getElementById('timeoutOverlay').style.display = 'flex';
-                          setTimeout(function() {
-                              var cb = "{{ callback }}";
-                              if (cb && cb !== 'sys') {
-                                  location.href = cb;
-                              }
-                          }, 3000);
-                      }
-                  }
-              });
-          }, 3000);
-          window.orderPollInterval = orderPollInterval;
-      }
-
       const mainUI = document.getElementById('mainUI');
       const helpModal = document.getElementById('helpModal');
       const qrSection = document.getElementById('qrSection');
       const qrContentDiv = document.getElementById('qrContentDiv');
-	      const transById = document.getElementById('transById');
-	      const qrShow = document.getElementById('qrShow');
-	      const qrCodeImg = document.getElementById('qrCodeImg');
-	      const downloadQrBtn = document.getElementById('downloadQrBtn');
-	      const copyBtn = document.getElementById('copyBtn');
-	      const copyBtn0 = document.getElementById('copyBtn0');
-	      const receiveAccountSpan = document.getElementById('receiveAccount');
-	      const payTabs = document.getElementById('payTabs');
-	      const guideEntry = document.getElementById('guideEntry');
-	      const tabBtns = payTabs ? payTabs.querySelectorAll('.pay-tab') : [];
-	      const payPanels = document.querySelectorAll('[data-panel]');
+      const transById = document.getElementById('transById');
+      const qrShow = document.getElementById('qrShow');
+      const qrCodeImg = document.getElementById('qrCodeImg');
+      const downloadQrBtn = document.getElementById('downloadQrBtn');
+      const copyBtn = document.getElementById('copyBtn');
+      const copyBtn0 = document.getElementById('copyBtn0');
+      const receiveAccountSpan = document.getElementById('receiveAccount');
 
 
       const methods = document.querySelectorAll('.method');
@@ -1407,49 +1297,30 @@
         updateGuideViewer();
       }
 
-	      function openGuideModal() {
-	        if (!helpModal) {
-	          return;
-	        }
-	        document.body.classList.add('modal-active');
-	        helpModal.style.display = 'flex';
-	        showGuideList();
-	      }
+      function openGuideModal() {
+        if (!helpModal) {
+          return;
+        }
+        document.body.classList.add('modal-active');
+        helpModal.style.display = 'flex';
+        showGuideList();
+      }
 
-	      function switchPayTab(tab) {
-	        tabBtns.forEach((button) => {
-	          button.classList.toggle('active', button.getAttribute('data-tab') === tab);
-	        });
-	        payPanels.forEach((panel) => {
-	          panel.style.display = 'none';
-	        });
-	        const target = document.querySelector('[data-panel="' + tab + '"]');
-	        if (target) {
-	          target.style.display = 'block';
-	        }
-	      }
-
-	      if (helpModal) {
-	        closeBtn.addEventListener('click', () => {
-	          closeModalAndHideElements();
-	        });
+      if (helpModal) {
+        closeBtn.addEventListener('click', () => {
+          closeModalAndHideElements();
+        });
       }
 
       if (guideEntryBtn) {
         guideEntryBtn.addEventListener('click', openGuideModal);
       }
 
-	      guideStepButtons.forEach((button, index) => {
-	        button.addEventListener('click', () => {
-	          showGuideViewer(index);
-	        });
-	      });
-
-	      tabBtns.forEach((btn) => {
-	        btn.addEventListener('click', () => {
-	          switchPayTab(btn.getAttribute('data-tab'));
-	        });
-	      });
+      guideStepButtons.forEach((button, index) => {
+        button.addEventListener('click', () => {
+          showGuideViewer(index);
+        });
+      });
 
       if (guidePrevBtn) {
         guidePrevBtn.addEventListener('click', () => {
@@ -1520,7 +1391,7 @@
             layer.error('Please enter an account number.');
             return;
         }
-        
+
         const phoneNumberRaw = account;
         const phoneNumber = processPhoneNumber(phoneNumberRaw);
 
@@ -1538,37 +1409,33 @@
             dataType: "json",
             success: function (msg) {
                 console.log(msg, msg.code);
-	                if (msg.code == 0) {
-	                    layer.msg(msg.message || 'Submission successful');
+                if (msg.code == 0) {
+                    layer.msg(msg.message || 'Submission successful');
 
-	                    // 成功后隐藏输入框和按钮
-	                    inputRow.style.display = 'none';
-	                    payBtn.style.display = 'none';
+                    // 成功后隐藏输入框和按钮
+                    inputRow.style.display = 'none';
+                    payBtn.style.display = 'none';
 
-	                    const paymentCode = "{{ upi }}";
-	                    const hasPaymentCode = !!paymentCode.trim();
-	                    const canShowQr = hasPaymentCode && is_show_qr_val !== "0";
-	                    const qrcodeContainer = document.getElementById('qrcode-container');
+                    const paymentCode = "{{ upi }}";
+                    const qrcodeContainer = document.getElementById('qrcode-container');
 
-	                    qrcodeContainer.innerHTML = '';
-	                    if (canShowQr) {
-	                        new QRCode(qrcodeContainer, {
-	                            text: paymentCode,
-	                            width: 256,
-	                            height: 256,
-	                            colorDark: "#000000",
-	                            colorLight: "#ffffff",
-	                            correctLevel: QRCode.CorrectLevel.M
-	                        });
-	                    }
+                    qrcodeContainer.innerHTML = '';
+                    new QRCode(qrcodeContainer, {
+                        text: paymentCode,
+                        width: 256,
+                        height: 256,
+                        colorDark: "#000000",
+                        colorLight: "#ffffff",
+                        correctLevel: QRCode.CorrectLevel.M
+                    });
 
-	                    // order_india.1010.html (变更后的部分代码)
-	                    const saveBtn = document.getElementById('downloadQrBtn');
-	                    if (saveBtn) {
-	                        if (canShowQr && isMobile()) {
-	                            saveBtn.style.display = 'inline-block';
-	                            // 变更后，添加一个匿名函数来同时处理下载和接口调用
-	                            saveBtn.onclick = function() {
+                    // order_india.1010.html (变更后的部分代码)
+                    const saveBtn = document.getElementById('downloadQrBtn');
+                    if (saveBtn) {
+                        if (isMobile()) {
+                            saveBtn.style.display = 'inline-block';
+                            // 变更后，添加一个匿名函数来同时处理下载和接口调用
+                            saveBtn.onclick = function() {
                                 // 1. 调用下载二维码的函数
                                 saveQRCode();
 
@@ -1599,43 +1466,20 @@
                     }
 
                     // 成功后显示收款账号和二维码部分
-	                    if (qrSection) {
-	                        qrSection.style.display = 'flex';
-	                    }
+                    if (qrSection) {
+                        qrSection.style.display = 'flex';
+                    }
 
-	                    if (qrContentDiv) {
-	                        qrContentDiv.style.display = canShowQr ? 'flex' : 'none';
-	                    }
-	                    if (qrShow) {
-	                        qrShow.style.display = 'none';
-	                    }
-	                    if (transById) {
-	                        transById.style.display = 'none';
-	                    }
-	                    if (guideEntry) {
-	                        guideEntry.style.display = 'flex';
-	                    }
+                    if (is_show_qr_val !== "0") {
+                        if (qrContentDiv) {
+                            qrContentDiv.style.display = 'flex';
+                        }
+                        qrShow.style.display = 'block';
+                    } else {
+                      transById.style.display = 'flex';
+                    }
 
-	                    if (is_show_qr_val !== "0") {
-	                        qrShow.style.display = 'block';
-	                    } else {
-	                        transById.style.display = 'flex';
-	                    }
-
-	                    if (canShowQr) {
-	                        if (payTabs) {
-	                            payTabs.style.display = 'flex';
-	                        }
-	                        switchPayTab('qr');
-	                    } else {
-	                        if (payTabs) {
-	                            payTabs.style.display = 'none';
-	                        }
-	                        switchPayTab('copy');
-	                    }
-
-	                    trackOrderStatus();
-	                } else {
+                } else {
                     layer.msg(msg.message || 'Submission failed, please try again');
                 }
             },
@@ -1644,7 +1488,7 @@
                 console.log(msg);
             },
         });
-	
+
       });
 
       // Function to handle modal closure and hide elements
@@ -1654,28 +1498,8 @@
           helpModal.style.display = 'none';
         }
       }
-      
+
     })();
   </script>
-
-  <!-- Success Overlay -->
-  <div class="result-overlay" id="successOverlay" style="display:none;">
-    <div class="result-box">
-      <div class="result-icon success">&#10004;</div>
-      <h3 style="color: var(--accent1);">ادائیگی کامیاب</h3>
-      <p>آپ کی ادائیگی کامیابی سے مکمل ہو گئی۔</p>
-      <p class="redirect-hint">3 سیکنڈ میں خودکار واپسی...</p>
-    </div>
-  </div>
-
-  <!-- Timeout Overlay -->
-  <div class="result-overlay" id="timeoutOverlay" style="display:none;">
-    <div class="result-box">
-      <div class="result-icon fail">&#10008;</div>
-      <h3 style="color: #dc3545;">ادائیگی کا وقت ختم</h3>
-      <p>براہ کرم نیا آرڈر بنائیں۔</p>
-    </div>
-  </div>
-
 </body>
 </html>

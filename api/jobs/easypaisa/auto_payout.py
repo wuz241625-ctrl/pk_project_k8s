@@ -40,7 +40,7 @@ from jobs.easypaisa.scheduling_state import (
     classify_round_state,
     should_return_account_to_pool,
 )
-from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+from application.payment_eligibility import payout_sql_condition
 
 # ========== 日志系统 ==========
 # 程序名称（用于日志）
@@ -428,7 +428,6 @@ class EasyPaisaAutoPayout:
 
         # 连接Redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
-        self.runtime_service = SyncEasyPaisaRuntimeService(self.redis)
         
         # 会议决策：异常当成功处理（已内置到逻辑中）
         
@@ -437,8 +436,7 @@ class EasyPaisaAutoPayout:
         
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
-            'easypaisa_online_df': 'payment_online_df',           # EasyPaisa在线代付账号集合（复用项目标准键名）
-            'easypaisa_active_df': 'payment_active_df',           # EasyPaisa活跃代付账号列表（复用项目标准键名）
+            'retired_payment_active_df': 'payment_active_df',     # 旧活跃队列，仅用于清理残留，不再回写
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # EasyPaisa余额有序集合
             'easypaisa_balance_prefix': 'easypaisa_balance:',       # EasyPaisa余额缓存前缀（兼容性保留）
             'easypaisa_account_used_prefix': 'easypaisa_account_used:',  # 账号使用记录前缀（支持动态冷却期）
@@ -816,9 +814,9 @@ class EasyPaisaAutoPayout:
             cur.execute(sql_update, (earn_merchant, order_code))
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
             
-            # 9. 重新接单（复制success_df逻辑）
-            if self.qr_id and self.return_df_account_to_active_queue(self.qr_id):
-                self.logger.info(f"代付账户{self.qr_id}重新进入活跃轮询队列")
+            # 9. EasyPaisa 代付已改为 DB 轮询 + 预分配，不再回写旧 payment_active_df。
+            if self.qr_id:
+                self.clear_retired_df_queue_residue(self.qr_id)
             
             # 10. Redis通知
             self.redis.publish('order_df_notify', order_code)
@@ -1706,16 +1704,16 @@ class EasyPaisaAutoPayout:
 
 
 
-    async def process_members_concurrent(self, dispatched_pairs: List[tuple] = None,
+    async def process_members_concurrent(self, account_order_batches: List[tuple] = None,
                                           members: List[bytes] = None, concurrent_limit: int = 20):
         """
         并发处理订单。
-        预分配模式：dispatched_pairs = [(account, [orders]), ...]
-        旧模式兼容：members = [b"code_amount", ...], concurrent_limit
+        预分配模式：account_order_batches = [(account, [orders]), ...]
+        旧 members 模式已退役：Docker 当前只走账号订单批次预分配模式。
         Returns: (success_count, total_count)
         """
         # 预分配模式
-        if dispatched_pairs:
+        if account_order_batches:
             async def process_account_orders(account, orders):
                 """一个账号串行处理其所有订单，每单完成后检查冷却期"""
                 account_success = 0
@@ -1736,12 +1734,12 @@ class EasyPaisaAutoPayout:
                                 account_success += 1
                         except Exception as e:
                             self.logger.error(f"订单{order['code']}处理异常: {e}")
-                finally:
-                    self.return_account_to_active_list(account)
+                except Exception as e:
+                    self.logger.error(f"账号{pid}批量处理异常: {e}")
                 return account_success
 
-            tasks = [process_account_orders(account, orders) for account, orders in dispatched_pairs]
-            total_count = sum(len(orders) for _, orders in dispatched_pairs)
+            tasks = [process_account_orders(account, orders) for account, orders in account_order_batches]
+            total_count = sum(len(orders) for _, orders in account_order_batches)
 
             start_time = time.time()
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1754,36 +1752,15 @@ class EasyPaisaAutoPayout:
                 f"进程{os.getpid()} 并发处理完成: "
                 f"总数 {total_count}, 成功 {success_count}, "
                 f"失败 {total_count - success_count}, 异常 {error_count}, "
-                f"账号数 {len(dispatched_pairs)}, 耗时 {elapsed:.2f}秒"
+                f"账号数 {len(account_order_batches)}, 耗时 {elapsed:.2f}秒"
             )
             return (success_count, total_count)
 
-        # 旧模式兼容
+        # 旧 Redis members 模式已退役，避免 order_push/payment_active_df 兼容链回流。
         if not members:
             return (0, 0)
-
-        semaphore = asyncio.Semaphore(concurrent_limit)
-
-        async def process_with_semaphore(member):
-            async with semaphore:
-                order_message = member.decode()
-                return await self.process_single_order_async(order_message)
-
-        tasks = [process_with_semaphore(member) for member in members]
-        start_time = time.time()
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        elapsed = time.time() - start_time
-
-        success_count = sum(1 for r in results if r is True)
-        error_count = sum(1 for r in results if isinstance(r, Exception))
-
-        self.logger.info(
-            f"进程{os.getpid()} 并发处理完成: "
-            f"总数 {len(members)}, 成功 {success_count}, "
-            f"失败 {len(results) - success_count}, 异常 {error_count}, "
-            f"耗时 {elapsed:.2f}秒"
-        )
-        return (success_count, len(members))
+        self.logger.warning("EasyPaisa legacy members 模式已退役，跳过 %s 个旧消息", len(members))
+        return (0, 0)
 
     # on_off() 方法已删除 - EasyPaisa自动代付不需要账号上下线管理
 
@@ -1835,15 +1812,15 @@ class EasyPaisaAutoPayout:
                     return (0, NO_AVAILABLE_ACCOUNTS)
 
                 # 5. 分配订单到账号
-                dispatched_pairs = self.dispatch_orders_to_accounts(allocated_orders, available_accounts)
+                account_order_batches = self.dispatch_orders_to_accounts(allocated_orders, available_accounts)
 
-                if not dispatched_pairs:
+                if not account_order_batches:
                     self.logger.warning("预分配：分配结果为空")
                     return (0, NO_AVAILABLE_ACCOUNTS)
 
                 # 6. 并发处理
                 success_count, total_count = loop.run_until_complete(
-                    self.process_members_concurrent(dispatched_pairs=dispatched_pairs)
+                    self.process_members_concurrent(account_order_batches=account_order_batches)
                 )
 
                 return (success_count, total_count)
@@ -1942,27 +1919,11 @@ class EasyPaisaAutoPayout:
     
     # ========== Redis防护机制 ==========
 
-    def _runtime_service(self):
-        runtime_service = getattr(self, "runtime_service", None)
-        if runtime_service is None:
-            runtime_service = SyncEasyPaisaRuntimeService(self.redis)
-            self.runtime_service = runtime_service
-        return runtime_service
-
-    def is_df_order_online(self, payment_id) -> bool:
-        snapshot = self._runtime_service().read_snapshot(payment_id)
-        if not snapshot:
-            return False
-        collect_enabled = bool(snapshot.get("collect_enabled")) if "collect_enabled" in snapshot else True
-        df_enabled = bool(snapshot.get("df_order_enabled")) if "df_order_enabled" in snapshot else bool(snapshot.get("dispatch_df"))
-        return bool(snapshot.get("online") and collect_enabled and df_enabled)
-
-    def return_df_account_to_active_queue(self, payment_id) -> bool:
-        if not self.is_df_order_online(payment_id):
-            return False
-        self.redis.lrem(self.REDIS_KEYS['easypaisa_active_df'], 0, payment_id)
-        self.redis.rpush(self.REDIS_KEYS['easypaisa_active_df'], payment_id)
-        return True
+    def clear_retired_df_queue_residue(self, payment_id) -> bool:
+        """退役回队：只清理旧 payment_active_df 残留，不再回写。"""
+        key = self.REDIS_KEYS.get('retired_payment_active_df', 'payment_active_df')
+        self.redis.lrem(key, 0, payment_id)
+        return False
     
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
@@ -1974,9 +1935,7 @@ class EasyPaisaAutoPayout:
             payment_info = self.get_phone_by_payment_id(payment_id)
             if not payment_info or not payment_info.get('phone'):
                 self.logger.warning(f"无法获取payment_id {payment_id} 的手机号信息，账号不可用")
-                # 无法获取手机号时，直接返回False，不使用降级方案
-                # redis_online = self.redis.sismember(self.REDIS_KEYS['easypaisa_online_df'], payment_id)
-                # return bool(redis_online)
+                # 无法获取手机号时，直接返回False，不使用 Redis 降级方案
                 return False
             
             phone = payment_info['phone']
@@ -1986,41 +1945,19 @@ class EasyPaisaAutoPayout:
             api_result = await self._check_account_online_via_api(phone)
             
             if api_result is not None:
-                # API检查成功后仍以 runtime snapshot 的 DF 派单资格为准。
-                runtime_df_online = self.is_df_order_online(payment_id)
-                
                 if api_result:
-                    # API显示在线
-                    if not runtime_df_online:
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API显示在线但runtime DF不可派单，跳过处理")
-                        return False  # 返回False表示账号不可用
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，runtime DF可派单")
+                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认在线，MySQL payout_status 可派单")
                 else:
-                    # API显示离线
-                    if runtime_df_online:
-                        self._runtime_service().pause_order_dispatch(
-                            payment_id,
-                            phone=phone,
-                            source="auto_payout_api_offline",
-                        )
-                        self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查离线，已通过runtime暂停派单")
-                    else:
-                        self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线，runtime已不可派单")
-                
+                    self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} API确认离线")
+
                 return api_result
             else:
-                runtime_df_online = self.is_df_order_online(payment_id)
-                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，降级使用runtime DF状态: {runtime_df_online}")
-                return runtime_df_online
+                self.logger.warning(f"账号payment_id:{payment_id} phone:{phone} API检查失败，按 MySQL payout_status 资格继续")
+                return True
                 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}在线状态失败: {e}")
-            # 异常时也降级使用Redis状态
-            try:
-                return self.is_df_order_online(payment_id)
-            except:
-                return False
+            return False
     
     async def _check_account_online_via_api(self, account_id: str) -> Optional[bool]:
         """
@@ -2121,13 +2058,13 @@ class EasyPaisaAutoPayout:
             try:
                 with connection.cursor() as cur:
                     sql = """
-                        SELECT phone, account, name, bank_type, bank_type_id, partner_id, status, certified,
-                               account_accno
+                        SELECT phone, account, name, bank_type, bank_type_id, partner_id, wallet_status,
+                               payout_status, status, certified, manual_status, account_accno
                         FROM payment
-                        WHERE id = %s AND status = 1
-                          AND certified = 1
-                          AND (bank_type = 97 OR bank_type_id = 97)
+                        WHERE id = %s
+                          AND {condition}
                     """
+                    sql = sql.format(condition=payout_sql_condition("payment"))
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
                     query_time = time.time() - start_time
@@ -2137,11 +2074,11 @@ class EasyPaisaAutoPayout:
                         return result
                     else:
                         # 检查是否存在但状态不符合条件
-                        check_sql = "SELECT status, certified, manual_status FROM payment WHERE id = %s"
+                        check_sql = "SELECT wallet_status, payout_status, account_accno FROM payment WHERE id = %s"
                         cur.execute(check_sql, payment_id)
                         check_result = cur.fetchone()
                         if check_result:
-                            self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不可用: status={check_result['status']}, certified={check_result['certified']}, manual_status={check_result.get('manual_status')}, 耗时: {query_time:.3f}s")
+                            self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不可用: wallet_status={check_result['wallet_status']}, payout_status={check_result['payout_status']}, account_accno={check_result.get('account_accno')}, 耗时: {query_time:.3f}s")
                         else:
                             self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不存在, 耗时: {query_time:.3f}s")
                         return None
@@ -2154,42 +2091,9 @@ class EasyPaisaAutoPayout:
             self.logger.error(f"[AutoPayout] 查询payment_id={payment_id} 失败: {e}, 耗时: {total_time:.3f}s")
             return None
     
-    def get_account_from_active_list(self) -> Optional[Dict]:
+    def clear_retired_account_queue_residue(self, account_info):
         """
-        防护机制2: 从活跃列表轮询获取账号，返回包含payment_id和phone的字典
-        参考order_push.py第58行：payment_id = rds.lpop(list_name)
-        """
-        try:
-            payment_id_bytes = self.redis.lpop(self.REDIS_KEYS['easypaisa_active_df'])
-            if payment_id_bytes:
-                payment_id = payment_id_bytes.decode()
-                
-                # 🔥 查询数据库获取手机号
-                payment_info = self.get_phone_by_payment_id(payment_id)
-                if payment_info and payment_info.get('phone'):
-                    account_info = {
-                        'payment_id': payment_id,          # 数字ID：532128
-                        'phone': payment_info['phone'],    # 手机号：03499681697
-                        'account': payment_info.get('account', ''),
-                        'name': payment_info.get('name', ''),
-                        'bank_type': payment_info.get('bank_type', ''),
-                        'partner_id': payment_info.get('partner_id'),
-                        'account_accno': payment_info.get('account_accno'),  # 🔥 修改：账号号码（必送）
-                    }
-                    self.logger.debug(f"从活跃列表获取账号: payment_id={payment_id}, phone={payment_info['phone']}")
-                    return account_info
-                else:
-                    self.logger.error(f"无法获取payment_id {payment_id} 的手机号信息")
-                    return None
-            return None
-        except Exception as e:
-            self.logger.error(f"从活跃列表获取账号失败: {e}")
-            return None
-    
-    def return_account_to_active_list(self, account_info):
-        """
-        防护机制3: 将账号重新加入活跃列表
-        参考order_push.py第88-90行的逻辑
+        清理旧 payment_active_df 残留，不再回写旧活跃队列。
         """
         try:
             # 支持传入字典或payment_id字符串
@@ -2200,11 +2104,10 @@ class EasyPaisaAutoPayout:
                 payment_id = str(account_info)
                 phone = 'UNKNOWN'
             
-            # 只有 runtime snapshot 仍允许 DF 派单时才重新加入活跃列表。
-            if self.return_df_account_to_active_queue(payment_id):
-                self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 重新加入活跃列表")
+            self.clear_retired_df_queue_residue(payment_id)
+            self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 已清理旧活跃队列残留")
         except Exception as e:
-            self.logger.error(f"账号重新加入活跃列表失败: {e}, account_info: {account_info}")
+            self.logger.error(f"清理旧活跃队列残留失败: {e}, account_info: {account_info}")
     
     # async def check_account_concurrent_orders(self, payment_id: str) -> bool:
     #     """
@@ -2612,6 +2515,56 @@ class EasyPaisaAutoPayout:
             return None
     
     # ========== 有序集合余额相关方法 ==========
+
+    def get_mysql_payout_candidates(self, min_balance: Decimal = Decimal('1000'), count: int = 50, connection=None) -> List[Dict]:
+        """Redis 余额缓存丢失时，从 MySQL 资格源恢复代付候选。"""
+        own_conn = False
+        try:
+            if connection is None:
+                own_conn = True
+                connection = pymysql.connect(
+                    host=conf['mysql_host'],
+                    user=conf['mysql_user'],
+                    password=conf['mysql_password'],
+                    db=conf['mysql_database'],
+                    charset='utf8mb4',
+                    cursorclass=pymysql.cursors.DictCursor,
+                )
+
+            with connection.cursor() as cur:
+                sql = """
+                    SELECT id AS payment_id, phone, account, name, bank_type, bank_type_id,
+                           partner_id, account_accno, COALESCE(balance, 0) AS balance
+                    FROM payment
+                    WHERE {condition}
+                      AND COALESCE(balance, 0) >= %s
+                    ORDER BY balance DESC, id ASC
+                    LIMIT %s
+                """.format(condition=payout_sql_condition("payment"))
+                cur.execute(sql, (min_balance, int(count)))
+                rows = cur.fetchall() or []
+
+            accounts = []
+            for row in rows:
+                balance = Decimal(str(row.get('balance') or 0))
+                accounts.append({
+                    'payment_id': str(row.get('payment_id')),
+                    'phone': row.get('phone'),
+                    'partner_id': row.get('partner_id'),
+                    'account': row.get('account'),
+                    'name': row.get('name'),
+                    'account_accno': row.get('account_accno'),
+                    'balance': balance,
+                    'priority': int(balance),
+                })
+            self.logger.info(f"从 MySQL eligibility 获取 {len(accounts)} 个代付候选")
+            return accounts
+        except Exception as e:
+            self.logger.error(f"从 MySQL 获取 EasyPaisa 代付候选失败: {e}")
+            return []
+        finally:
+            if own_conn and connection:
+                connection.close()
     
     def get_top_balance_accounts(self, min_balance: Decimal = Decimal('1000'), count: int = 50, connection=None) -> List[Dict]:
         """从有序集合获取余额最高的账号列表，带幽灵缓存过滤"""
@@ -2620,7 +2573,7 @@ class EasyPaisaAutoPayout:
 
             if not self.redis.exists(balance_sorted_set):
                 self.logger.warning(f"有序集合 {balance_sorted_set} 不存在")
-                return []
+                return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
 
             # 多取一些补偿幽灵账号
             fetch_count = count * 2
@@ -2631,7 +2584,7 @@ class EasyPaisaAutoPayout:
 
             if not accounts_with_balance:
                 self.logger.info(f"有序集合中无余额>={min_balance}的账号")
-                return []
+                return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
 
             # 清理过期缓存
             now = time.time()
@@ -2708,17 +2661,16 @@ class EasyPaisaAutoPayout:
     
     async def get_available_accounts(self, amount: Decimal, target_account: str = None) -> List[Dict]:
         """
-        账号获取：双策略方案，加入20分钟使用间隔筛选
-        
-        策略1: 优先从有序集合获取高余额账号（按余额降序）
-        策略2: 如果策略1未找到，fallback到活跃列表逐个检查
+        账号获取：MySQL payout_status 资格 + 余额排序方案，加入20分钟使用间隔筛选
+
+        优先从有序集合获取高余额账号；有序集合为空时 get_top_balance_accounts 内部回退 MySQL。
+        不再消费 payment_active_df。
         
         Args:
             amount: 转账金额
             target_account: 目标收款账号，用于过滤相同账号
         """
         available_accounts = []
-        back_key = []  # 需要重新加入活跃列表的账号
         
         # 统计各种检查结果
         check_stats = {
@@ -2882,153 +2834,9 @@ class EasyPaisaAutoPayout:
                             check_stats['available_count'] += 1
                             self.logger.info(f"🎯 最终选择账号: payment_id={selected_account['payment_id']} phone={selected_account['phone']}, 余额={selected_account['balance']} (虽然20分钟内使用过，但无其他选择)")
             
-            # 🔥 策略2: fallback到活跃列表（如果策略1未找到）
+            # 如果未找到可用账号，记录详细原因
             if not available_accounts:
-                self.logger.info(f"策略2: 有序集合未找到可用账号，fallback到活跃列表方式")
-                
-                # 保持原有逻辑，但优化余额检查
-                for attempt in range(10):  # 减少尝试次数，因为前面已经尝试过高余额账号
-                    account_info = self.get_account_from_active_list()
-                    
-                    if not account_info:
-                        self.logger.info(f"活跃列表为空，停止查找")
-                        break
-                    
-                    check_stats['active_list_attempts'] += 1
-                    check_stats['total_attempted'] += 1
-                    
-                    payment_id = account_info['payment_id']
-                    phone = account_info['phone']
-                    
-                    self.logger.info(f"第{attempt + 1}次尝试: 检查账号 payment_id:{payment_id} phone:{phone}")
-                    
-                    # 🔥 新增：检查收付款账号是否相同
-                    if target_account and phone == target_account:
-                        self.logger.warning(f"账号{payment_id} - 付款账号与收款账号相同 [{phone}]，跳过")
-                        check_stats['same_account_count'] += 1
-                        continue
-                    
-                    # 执行完整的防护检查
-                    # 检查1: 在线状态
-                    if not await self.check_account_online_status(payment_id):
-                        check_stats['offline_count'] += 1
-                        self.logger.debug(f"账号{payment_id} -不在线，跳过")
-                        continue
-                    
-                    # 检查2: 释放时间
-                    if not self.check_account_release_time(payment_id):
-                        check_stats['release_time_count'] += 1
-                        self.logger.debug(f"账号{payment_id} -在释放期内，重新入队")
-                        back_key.append(account_info)
-                        continue
-                    
-                    # 🔥 检查3: 重复订单检测（直接查询Hash表）
-                    self.logger.debug(f"准备检查重复订单: payment_id={payment_id}, target_account={target_account}, amount={amount}")
-                    if target_account:
-                        # 有收款账号，执行精确的重复检测
-                        duplicate_check = self.check_duplicate_failure(
-                            payment_id=payment_id,
-                            amount=amount,
-                            to_account=target_account,
-                            time_window=1200  # 20分钟
-                        )
-                        
-                        if duplicate_check['has_duplicate']:
-                            # ❌ 检测到重复，重新入队
-                            check_stats['duplicate_failure_count'] += 1
-                            self.logger.error(
-                                f"⚠️ 账号{payment_id}重复订单检测: "
-                                f"20分钟内已失败{duplicate_check['duplicate_count']}次 "
-                                f"(金额:{amount}, 收款:{target_account})，重新入队"
-                            )
-                            back_key.append(account_info)
-                            continue
-                        else:
-                            # ✅ 没有重复，继续使用
-                            self.logger.error(
-                                f"账号{payment_id}未检测到重复订单，继续使用"
-                            )
-                    else:
-                        # 收款账号为空，无法做重复检测，记录日志后继续
-                        self.logger.error(
-                            f"账号{payment_id}收款账号为空，跳过重复检测"
-                        )
-                    
-                    # 检查4: 并发订单 (已注释，由payment_id_lock机制处理)
-                    # if not await self.check_account_concurrent_orders(payment_id):
-                    #     check_stats['concurrent_orders_count'] += 1
-                    #     self.logger.debug(f"账号{payment_id} -并发订单超限，重新入队")
-                    #     back_key.append(account_info)
-                    #     continue
-                    
-                    # 🔥 新增：payment_id 锁检查（防止选中已被其他进程占用的账号）
-                    lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
-                    if self.redis.exists(lock_key):
-                        check_stats['payment_id_locked_count'] += 1
-                        self.logger.debug(f"账号{payment_id} -payment_id已被锁定，重新入队")
-                        back_key.append(account_info)
-                        continue
-                    
-                    # 检查5: 金额限制
-                    amount_check = await self.check_account_amount_limits(payment_id, amount)
-                    if not amount_check['passed']:
-                        check_stats['amount_limit_count'] += 1
-                        self.logger.debug(f"账号{payment_id} -金额限制: {amount_check['reason']}，重新入队")
-                        back_key.append(account_info)
-                        continue
-                    
-                    # 🔥 余额检查：优先从有序集合获取
-                    balance = self.get_account_balance_from_sorted_set(payment_id)
-                    if balance is None:
-                        # 有序集合没有，尝试原有缓存
-                        balance_key = f"{self.REDIS_KEYS['easypaisa_balance_prefix']}{payment_id}"
-                        cached_balance = self.redis.get(balance_key)
-                        if cached_balance:
-                            balance = Decimal(cached_balance.decode())
-                        else:
-                            # 重新获取余额
-                            self.logger.debug(f"账号{payment_id} -余额缓存不存在，尝试重新获取")
-                            balance_result = await self.fetch_balance_from_api(account_info)
-                            
-                            if balance_result and balance_result.get('success'):
-                                balance = Decimal(str(balance_result['balance']))
-                                # 同时更新传统缓存和有序集合
-                                self.redis.setex(balance_key, 300, str(balance))
-                                balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
-                                self.redis.zadd(balance_sorted_set, {payment_id: float(balance)})
-                                # self.redis.expire(balance_sorted_set, 300)  # 已注释：不设置过期，数据永久保存
-                                self.logger.info(f"✅ 账号{payment_id} - 重新获取余额成功: {balance}")
-                            else:
-                                check_stats['no_balance_cache_count'] += 1
-                                error_msg = balance_result.get('error', '获取余额失败') if balance_result else '获取余额失败'
-                                self.logger.warning(f"账号{payment_id} - 重新获取余额失败: {error_msg}，重新入队")
-                                back_key.append(account_info)
-                                continue
-                    
-                    if balance >= amount:
-                        # 检查20分钟使用间隔
-                        if self.is_account_recently_used(payment_id):
-                            check_stats['recently_used_count'] += 1
-                            self.logger.debug(f"账号{payment_id} -20分钟内使用过，重新入队")
-                            back_key.append(account_info)
-                            continue
-                        
-                        check_stats['available_count'] += 1
-                        account_info.update({
-                            'balance': balance,
-                            'priority': int(balance)
-                        })
-                        available_accounts.append(account_info)
-                        self.logger.info(f"✅ 找到可用账号: payment_id={payment_id} phone={phone}, 余额: {balance}")
-                        break
-                    else:
-                        check_stats['insufficient_balance_count'] += 1
-                        self.logger.debug(f"账号{payment_id} -余额不足（{balance} < {amount}），重新入队")
-                        back_key.append(account_info)
-            
-            # 如果两个策略都未找到可用账号，记录详细原因
-            if not available_accounts:
-                self.logger.warning(f"❌ 两个策略都未找到可用账号")
+                self.logger.warning(f"❌ 未找到可用账号")
                 if not high_balance_accounts:
                     self.logger.error(f"🚨 有序集合中无余额>={amount}的账号，可能原因:")
                     self.logger.error(f"   1. Monitor系统未运行或数据同步延迟")
@@ -3048,22 +2856,11 @@ class EasyPaisaAutoPayout:
                     self.logger.error(f"   - 余额不足账号: {check_stats['insufficient_balance_count']}")
                     self.logger.error(f"   - 无缓存账号: {check_stats['no_balance_cache_count']}")
                     
-                self.logger.error(f"活跃列表尝试情况: {check_stats['active_list_attempts']}次尝试")
-            
-            # 将不符合条件的账号重新加入活跃列表
-            if back_key:
-                self.logger.info(f"重新入队账号处理: 共{len(back_key)}个账号")
-                for account_info in back_key:
-                    self.return_account_to_active_list(account_info)
-                    payment_id = account_info['payment_id']
-                    phone = account_info.get('phone', 'UNKNOWN')
-                    self.logger.info(f"账号payment_id:{payment_id} phone:{phone} 已重新入队到活跃列表")
-            
             # 输出详细统计
             self.logger.info(f"======== EasyPaisa账号筛选完成 ========")
             self.logger.info(f"筛选统计:")
             self.logger.info(f"  📊 有序集合尝试: {check_stats['sorted_set_attempts']}")
-            self.logger.info(f"  📊 活跃列表尝试: {check_stats['active_list_attempts']}")
+            self.logger.info(f"  📊 旧活跃列表尝试: {check_stats['active_list_attempts']}")
             self.logger.info(f"  📊 总尝试账号数: {check_stats['total_attempted']}")
             self.logger.info(f"  ❌ 离线账号数: {check_stats['offline_count']}")
             self.logger.info(f"  ⏰ 释放期账号数: {check_stats['release_time_count']}")
@@ -3077,7 +2874,7 @@ class EasyPaisaAutoPayout:
             self.logger.info(f"  💾 无缓存账号数: {check_stats['no_balance_cache_count']}")
             self.logger.info(f"  🕐 20分钟内使用过: {check_stats['recently_used_count']}")
             self.logger.info(f"  ✅ 可用账号数: {check_stats['available_count']}")
-            self.logger.info(f"  🔄 重新入队数: {len(back_key)}")
+            self.logger.info(f"  🔄 旧队列回写数: 0")
             
             if available_accounts:
                 self.logger.info(f"🎯 筛选结果: 成功找到{len(available_accounts)}个可用账号")
@@ -3092,17 +2889,7 @@ class EasyPaisaAutoPayout:
             self.logger.error(f"异常时统计:")
             self.logger.error(f"  已检查账号数: {check_stats['total_attempted']}")
             self.logger.error(f"  有序集合尝试: {check_stats['sorted_set_attempts']}")
-            self.logger.error(f"  活跃列表尝试: {check_stats['active_list_attempts']}")
-            self.logger.error(f"  待重新入队数: {len(back_key)}")
-            
-            # 异常时也要将账号重新入队
-            if back_key:
-                self.logger.info(f"异常处理: 重新入队{len(back_key)}个账号")
-                for account_info in back_key:
-                    self.return_account_to_active_list(account_info)
-                    payment_id = account_info['payment_id']
-                    phone = account_info.get('phone', 'UNKNOWN')
-                    self.logger.info(f"异常处理: 账号payment_id:{payment_id} phone:{phone}已重新入队")
+            self.logger.error(f"  旧活跃列表尝试: {check_stats['active_list_attempts']}")
             
             self.logger.error(f"🚨 筛选结果: 因异常返回空列表")
             return []
@@ -4039,7 +3826,7 @@ class EasyPaisaAutoPayout:
             # 🔥 3. 获取订单锁（有可用账号后才获取）
             order_lock_value = self.get_lock(order_code)
             if not order_lock_value:
-                self.return_account_to_active_list(selected_account)
+                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 未抢到订单锁'
@@ -4052,7 +3839,7 @@ class EasyPaisaAutoPayout:
             if not account_lock:
                 # 账号锁失败，释放订单锁
                 self.del_lock(order_code, order_lock_value)
-                self.return_account_to_active_list(selected_account)
+                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 账号{account_id}被锁定'
@@ -4066,7 +3853,7 @@ class EasyPaisaAutoPayout:
                 # payment_id 锁定失败，释放订单锁和账号锁
                 self.release_account_lock(account_id, account_lock)
                 self.del_lock(order_code, order_lock_value)
-                self.return_account_to_active_list(selected_account)
+                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} Payment ID {payment_id} 锁定失败'
@@ -4112,13 +3899,13 @@ class EasyPaisaAutoPayout:
                 except Exception as lock_e:
                     self.logger.error(f"释放订单锁失败: {lock_e}")
             
-            # 把账号放回活跃列表
+            # 旧活跃队列不再回写，只清理残留，避免历史队列重新参与派单。
             if selected_account:
                 try:
-                    self.return_account_to_active_list(selected_account)
-                    self.logger.info(f"订单{order_code} 异常时账号已放回活跃列表")
+                    self.clear_retired_account_queue_residue(selected_account)
+                    self.logger.info(f"订单{order_code} 异常时已清理旧活跃队列残留")
                 except Exception as list_e:
-                    self.logger.error(f"账号放回活跃列表失败: {list_e}")
+                    self.logger.error(f"清理旧活跃队列残留失败: {list_e}")
             
             return {
                 'success': False,
@@ -4165,11 +3952,11 @@ class EasyPaisaAutoPayout:
             # # 4. 获取账号锁
             # account_lock = await self.acquire_account_lock(account_id, order_code)
             # if not account_lock:
-            #     # 账号被锁定，将账号重新入队
-            #     self.return_account_to_active_list(selected_account)
+            #     # 账号被锁定，只清理旧队列残留，不重新入队
+            #     self.clear_retired_account_queue_residue(selected_account)
             #     return {
             #         'success': False,
-            #         'message': f'账号{account_id}被锁定，已重新排队',
+            #         'message': f'账号{account_id}被锁定，等待下轮 DB 预分配',
             #         'payment_id': selected_account.get('payment_id'),
             #         'partner_id': selected_account.get('partner_id')
             #     }
@@ -4178,12 +3965,12 @@ class EasyPaisaAutoPayout:
             # payment_id = selected_account['payment_id']
             # payment_id_lock_value = self.get_payment_id_lock(payment_id)
             # if not payment_id_lock_value:
-            #     # payment_id锁定失败，释放账号锁并重新入队
+            #     # payment_id锁定失败，释放账号锁并清理旧队列残留
             #     self.release_account_lock(account_id, account_lock)
-            #     self.return_account_to_active_list(selected_account)
+            #     self.clear_retired_account_queue_residue(selected_account)
             #     return {
             #         'success': False,
-            #         'message': f'Payment ID {payment_id} 锁定失败，已重新排队',
+            #         'message': f'Payment ID {payment_id} 锁定失败，等待下轮 DB 预分配',
             #         'payment_id': payment_id,
             #         'partner_id': selected_account.get('partner_id')
             #     }
@@ -4205,7 +3992,7 @@ class EasyPaisaAutoPayout:
                     # 转账成功，设置账号释放时间（从配置读取）
                     self.set_account_release_time(selected_account['payment_id'])
                     if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.return_account_to_active_list(selected_account)
+                        self.clear_retired_account_queue_residue(selected_account)
                     
                     return {
                         'success': True,
@@ -4221,7 +4008,7 @@ class EasyPaisaAutoPayout:
                     # Python异常（如连接异常、JSON解析错误等）按成功处理
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
                     if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.return_account_to_active_list(selected_account)
+                        self.clear_retired_account_queue_residue(selected_account)
                     
                     return {
                         'success': False,  # 🔥 修复: 不是真正成功
@@ -4239,7 +4026,7 @@ class EasyPaisaAutoPayout:
                     
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
                     if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.return_account_to_active_list(selected_account)
+                        self.clear_retired_account_queue_residue(selected_account)
                     
                     # 🔥 驳回情况：直接返回，由外层处理
                     if is_reject:
@@ -5324,8 +5111,13 @@ class EasyPaisaAutoPayout:
                             'payment_id': _pid,
                         }
                     else:
-                        # 原模式：调用 prepare_account_and_locks 选账号
-                        prepare_result = await self.prepare_account_and_locks(order_data)
+                        self.logger.warning(
+                            f"订单{order_code} 未带预分配账号，旧 Redis members/active list 模式已退役"
+                        )
+                        prepare_result = {
+                            'success': False,
+                            'message': 'EasyPaisa 仅支持 DB 轮询预分配模式',
+                        }
 
                     if not prepare_result['success']:
                         self.logger.info(

@@ -54,8 +54,6 @@ def main(execute: bool):
         print_section("legacy_online_payment_ids_list", plan["legacy_online_payment_ids"])
         print_section("legacy_active_payment_ids_list", plan["legacy_active_payment_ids"])
         print_section("runtime_online_payment_ids_list", plan["runtime_online_payment_ids"])
-        print_section("job_hash_payment_ids_list", plan["job_hash_payment_ids"])
-        print_section("job_set_payment_ids_list", plan["job_set_payment_ids"])
 
         if not execute:
             print("dry_run=true")

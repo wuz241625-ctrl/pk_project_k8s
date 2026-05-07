@@ -2,7 +2,6 @@ from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence, Set
 
 from application.easypaisa_runtime import keyspace
 from application.easypaisa_runtime.rollout_cleanup import normalize_payment_ids
-from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 
 
 LOGIN_ON_PREFIX = "login_on_easypaisa_"
@@ -74,8 +73,6 @@ def _sorted_payment_ids(values: Iterable[object]) -> List[str]:
 
 def _tracked_payment_ids(redis_client) -> Set[str]:
     payment_ids = set()
-    payment_ids.update(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH)))
-    payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1)))
     payment_ids.update(normalize_payment_ids(redis_client.hkeys(keyspace.MONITOR_HASH)))
     payment_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.MONITOR_SET, 0, -1)))
     payment_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
@@ -132,6 +129,7 @@ def _build_delete_keys(disable_payment_ids: Iterable[str], disable_phones: Itera
         matched.add(keyspace.pre_login_key(payment_id))
         matched.add(keyspace.legacy_login_on_payment_key(payment_id))
         matched.add(keyspace.session_key(payment_id))
+        matched.add(keyspace.snapshot_key(payment_id))
         matched.add(keyspace.kickoff_key(payment_id))
         matched.add(keyspace.legacy_kickoff_key(payment_id))
         matched.add(keyspace.lock_payment_key(payment_id))
@@ -233,8 +231,6 @@ def build_retention_plan(
     runtime_schedule_collection_ids = disable_payment_ids.intersection(
         normalize_payment_ids(redis_client.zrange(keyspace.SCHEDULE_COLLECTION, 0, -1))
     )
-    job_hash_ids = disable_payment_ids.intersection(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH)))
-    job_set_ids = disable_payment_ids.intersection(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1)))
     monitor_hash_ids = disable_payment_ids.intersection(
         normalize_payment_ids(redis_client.hkeys(keyspace.MONITOR_HASH))
     )
@@ -267,8 +263,6 @@ def build_retention_plan(
         "runtime_updated_payment_ids": _sorted_payment_ids(runtime_updated_ids),
         "legacy_online_payment_ids": _sorted_payment_ids(legacy_online_ids),
         "legacy_active_payment_ids": _sorted_payment_ids(legacy_active_ids),
-        "job_hash_payment_ids": _sorted_payment_ids(job_hash_ids),
-        "job_set_payment_ids": _sorted_payment_ids(job_set_ids),
         "monitor_hash_payment_ids": _sorted_payment_ids(monitor_hash_ids),
         "monitor_set_payment_ids": _sorted_payment_ids(monitor_set_ids),
     }
@@ -277,43 +271,55 @@ def build_retention_plan(
 def execute_retention_plan(
     redis_client,
     plan: Mapping[str, object],
-    runtime_service: SyncEasyPaisaRuntimeService | None = None,
 ) -> Dict[str, int]:
-    runtime_service = runtime_service or SyncEasyPaisaRuntimeService(redis_client)
-    phone_by_payment_id = plan.get("phone_by_payment_id", {})
-
-    forced_offline_payment_ids = plan.get("force_offline_payment_ids", [])
-    forced_offline_job_hash_ids = set(forced_offline_payment_ids).intersection(
-        set(plan.get("job_hash_payment_ids", []))
-    )
-    forced_offline_job_set_ids = set(forced_offline_payment_ids).intersection(
-        set(plan.get("job_set_payment_ids", []))
-    )
-    for payment_id in forced_offline_payment_ids:
-        payment_value = int(payment_id)
-        runtime_service.force_offline(
-            payment_value,
-            phone=phone_by_payment_id.get(payment_id),
-            source="account_retention",
-            reason="retain_only_whitelist",
-        )
+    cleared_runtime_payment_ids = plan.get("force_offline_payment_ids", [])
 
     matched_keys = plan.get("matched_keys", [])
     deleted_keys = redis_client.delete(*matched_keys) if matched_keys else 0
 
+    removed_runtime_online = (
+        redis_client.srem(keyspace.INDEX_ONLINE, *plan.get("runtime_online_payment_ids", []))
+        if plan.get("runtime_online_payment_ids")
+        else 0
+    )
+    removed_runtime_collect = (
+        redis_client.srem(keyspace.INDEX_COLLECT_ENABLED, *plan.get("runtime_collect_payment_ids", []))
+        if plan.get("runtime_collect_payment_ids")
+        else 0
+    )
+    removed_runtime_df_order = (
+        redis_client.srem(keyspace.INDEX_DF_ORDER_ENABLED, *plan.get("runtime_df_order_payment_ids", []))
+        if plan.get("runtime_df_order_payment_ids")
+        else 0
+    )
+    removed_runtime_ds_order = (
+        redis_client.srem(keyspace.INDEX_DS_ORDER_ENABLED, *plan.get("runtime_ds_order_payment_ids", []))
+        if plan.get("runtime_ds_order_payment_ids")
+        else 0
+    )
+    removed_runtime_dispatch_df = (
+        redis_client.srem(keyspace.INDEX_DISPATCH_DF, *plan.get("runtime_dispatch_df_payment_ids", []))
+        if plan.get("runtime_dispatch_df_payment_ids")
+        else 0
+    )
+    removed_runtime_dispatch_ds = (
+        redis_client.srem(keyspace.INDEX_DISPATCH_DS, *plan.get("runtime_dispatch_ds_payment_ids", []))
+        if plan.get("runtime_dispatch_ds_payment_ids")
+        else 0
+    )
+    removed_runtime_schedule_collection = (
+        redis_client.zrem(keyspace.SCHEDULE_COLLECTION, *plan.get("runtime_schedule_collection_payment_ids", []))
+        if plan.get("runtime_schedule_collection_payment_ids")
+        else 0
+    )
     removed_runtime_updated = (
         redis_client.zrem(keyspace.INDEX_UPDATED_AT, *plan.get("runtime_updated_payment_ids", []))
         if plan.get("runtime_updated_payment_ids")
         else 0
     )
-    removed_job_hash = (
-        redis_client.hdel(keyspace.JOB_HASH, *plan.get("job_hash_payment_ids", []))
-        if plan.get("job_hash_payment_ids")
-        else 0
-    )
-    removed_job_set = (
-        redis_client.zrem(keyspace.JOB_SET, *plan.get("job_set_payment_ids", []))
-        if plan.get("job_set_payment_ids")
+    removed_legacy_online = (
+        redis_client.srem(keyspace.LEGACY_PAYMENT_ONLINE_DF, *plan.get("legacy_online_payment_ids", []))
+        if plan.get("legacy_online_payment_ids")
         else 0
     )
     removed_monitor_hash = (
@@ -326,13 +332,23 @@ def execute_retention_plan(
         if plan.get("monitor_set_payment_ids")
         else 0
     )
+    removed_legacy_active = 0
+    for payment_id in plan.get("legacy_active_payment_ids", []):
+        removed_legacy_active += redis_client.lrem(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, payment_id)
 
     return {
-        "forced_offline_payment_ids": len(forced_offline_payment_ids),
+        "cleared_runtime_payment_ids": len(cleared_runtime_payment_ids),
         "deleted_keys": deleted_keys,
+        "removed_runtime_online": removed_runtime_online,
+        "removed_runtime_collect": removed_runtime_collect,
+        "removed_runtime_df_order": removed_runtime_df_order,
+        "removed_runtime_ds_order": removed_runtime_ds_order,
+        "removed_runtime_dispatch_df": removed_runtime_dispatch_df,
+        "removed_runtime_dispatch_ds": removed_runtime_dispatch_ds,
+        "removed_runtime_schedule_collection": removed_runtime_schedule_collection,
         "removed_runtime_updated": removed_runtime_updated,
-        "removed_job_hash": removed_job_hash + len(forced_offline_job_hash_ids),
-        "removed_job_set": removed_job_set + len(forced_offline_job_set_ids),
+        "removed_legacy_online": removed_legacy_online,
+        "removed_legacy_active": removed_legacy_active,
         "removed_monitor_hash": removed_monitor_hash,
         "removed_monitor_set": removed_monitor_set,
     }
@@ -358,8 +374,6 @@ def summarize_retention_plan(plan: Mapping[str, object]) -> Dict[str, int]:
         "runtime_updated_payment_ids": len(plan.get("runtime_updated_payment_ids", [])),
         "legacy_online_payment_ids": len(plan.get("legacy_online_payment_ids", [])),
         "legacy_active_payment_ids": len(plan.get("legacy_active_payment_ids", [])),
-        "job_hash_payment_ids": len(plan.get("job_hash_payment_ids", [])),
-        "job_set_payment_ids": len(plan.get("job_set_payment_ids", [])),
         "monitor_hash_payment_ids": len(plan.get("monitor_hash_payment_ids", [])),
         "monitor_set_payment_ids": len(plan.get("monitor_set_payment_ids", [])),
     }

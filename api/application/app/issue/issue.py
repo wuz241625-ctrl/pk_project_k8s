@@ -6,8 +6,8 @@ from decimal import Decimal
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
 from application.message import msg
+from application.payment_eligibility import can_dispatch_df
 
 
 def _is_easypaisa_payment(payment):
@@ -64,9 +64,7 @@ async def grabOrder(self, data):
         payment = await self.get_result_by_condition('payment', ['*'], {'id': data['payment_id'], 'partner_id': self.current_user['id']})
         if not payment:
             return msg[10403]
-        bank_type = 97 if _is_easypaisa_payment(payment) else payment.get('bank_type_id') or payment.get('bank_type')
-        runtime_reader = EasyPaisaRuntimeReader(self.redis)
-        if not await runtime_reader.is_payment_online_df(data['payment_id'], bank_type=bank_type):
+        if _is_easypaisa_payment(payment) and not can_dispatch_df(payment):
             self.logger.warning("代付抢单，{code},码商{partner} 监控代付{id}不在线".format(code=data['code'], partner=self.current_user['id'], id=data['payment_id']))
             return msg[10403]
         data_update['payment_id'] = data['payment_id']

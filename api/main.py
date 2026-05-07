@@ -54,14 +54,6 @@ class Application(tornado.web.Application):
     async def _init_business(self):
         # 启动时一些redis之类易失缓存的初始化工作
         # 注意多进程时这个函数会被多次执行，因此需要兼容可反复执行的初始化操作
-        notice_domain_api_list_key = 'notice_domain_api_list'
-        notice_domain_api_list = await self.redis.get(notice_domain_api_list_key)
-        if not notice_domain_api_list:
-            default_notice_host = conf.get('ospay_api_host', '').strip()
-            if default_notice_host:
-                await self.redis.set(notice_domain_api_list_key, default_notice_host)
-                self.logger.info('API启动初始化工作：通知回调域名已写入缓存：{}'.format(default_notice_host))
-
         target_payment_key = 'target_payment_key'
         async with self.db.acquire() as conn:
             async with conn.cursor(aiomysql.DictCursor) as cur:

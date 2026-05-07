@@ -137,11 +137,9 @@ class FakeSyncRedis:
 class EasyPaisaAccountRetentionTests(unittest.TestCase):
     def setUp(self):
         from application.easypaisa_runtime import keyspace
-        from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
 
         self.keyspace = keyspace
         self.redis = FakeSyncRedis()
-        self.runtime_service = SyncEasyPaisaRuntimeService(self.redis, now_provider=lambda: 1_744_000_000)
 
         self.accounts = [
             {"id": 533277, "phone": "03194937489", "status": 1, "bank_type": 97},
@@ -149,22 +147,15 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
             {"id": 533281, "phone": "03489696378", "status": 1, "bank_type": 97},
         ]
 
-        self.runtime_service.mark_active_successful(
-            533277,
-            phone="03194937489",
-            selected_accno="ACC-277",
-            selected_iban="IBAN-277",
-            source="test_setup",
-            online_ttl=660,
-        )
-        self.runtime_service.mark_active_successful(
-            533280,
-            phone="03045536108",
-            selected_accno="ACC-280",
-            selected_iban="IBAN-280",
-            source="test_setup",
-            online_ttl=660,
-        )
+        self.redis.set(keyspace.snapshot_key(533277), json.dumps({"payment_id": 533277, "online": True}))
+        self.redis.set(keyspace.snapshot_key(533280), json.dumps({"payment_id": 533280, "online": True}))
+        self.redis.sadd(keyspace.INDEX_ONLINE, 533277, 533280)
+        self.redis.sadd(keyspace.INDEX_COLLECT_ENABLED, 533277, 533280)
+        self.redis.sadd(keyspace.INDEX_DF_ORDER_ENABLED, 533277, 533280)
+        self.redis.sadd(keyspace.INDEX_DISPATCH_DF, 533277, 533280)
+        self.redis.rpush(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 533277, 533280)
+        self.redis.sadd(keyspace.LEGACY_PAYMENT_ONLINE_DF, 533277, 533280)
+        self.redis.zadd(keyspace.SCHEDULE_COLLECTION, {533277: 1_744_000_000, 533280: 1_744_000_000})
 
         self.redis.sadd(keyspace.INDEX_ONLINE, 533281)
         self.redis.sadd(keyspace.INDEX_COLLECT_ENABLED, 533281)
@@ -222,10 +213,10 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertEqual(plan["runtime_schedule_collection_payment_ids"], ["533277", "533281"])
         self.assertEqual(plan["legacy_online_payment_ids"], ["533277"])
         self.assertEqual(plan["legacy_active_payment_ids"], ["533277"])
-        self.assertEqual(plan["job_hash_payment_ids"], ["533277", "599999"])
-        self.assertEqual(plan["job_set_payment_ids"], ["533277", "599999"])
         self.assertEqual(plan["monitor_hash_payment_ids"], ["533277", "599999"])
         self.assertEqual(plan["monitor_set_payment_ids"], ["533277", "599999"])
+        self.assertNotIn("job_hash_payment_ids", plan)
+        self.assertNotIn("job_set_payment_ids", plan)
         self.assertIn(self.keyspace.pre_login_key(533277), plan["matched_keys"])
         self.assertIn(self.keyspace.session_key(533277), plan["matched_keys"])
         self.assertIn(self.keyspace.health_pause_order_key(533277), plan["matched_keys"])
@@ -243,9 +234,9 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         plan = build_retention_plan(self.redis, self.accounts, {"03045536108"})
         result = execute_retention_plan(self.redis, plan)
 
-        self.assertEqual(result["forced_offline_payment_ids"], 2)
-        self.assertEqual(result["removed_job_hash"], 2)
-        self.assertEqual(result["removed_job_set"], 2)
+        self.assertEqual(result["cleared_runtime_payment_ids"], 2)
+        self.assertNotIn("removed_job_hash", result)
+        self.assertNotIn("removed_job_set", result)
         self.assertEqual(result["removed_monitor_hash"], 2)
         self.assertEqual(result["removed_monitor_set"], 2)
 
@@ -259,8 +250,8 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         self.assertEqual(self.redis.smembers(self.keyspace.LEGACY_PAYMENT_ONLINE_DF), {"533280", "533999"})
         self.assertEqual(self.redis.lrange(self.keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, -1), ["533280", "533999"])
 
-        self.assertEqual(self.redis.hkeys(self.keyspace.JOB_HASH), [])
-        self.assertEqual(self.redis.zrange(self.keyspace.JOB_SET, 0, -1), [])
+        self.assertEqual(self.redis.hkeys(self.keyspace.JOB_HASH), ["533277", "599999"])
+        self.assertEqual(self.redis.zrange(self.keyspace.JOB_SET, 0, -1), ["533277", "599999"])
         self.assertEqual(self.redis.hkeys(self.keyspace.MONITOR_HASH), ["533280"])
         self.assertEqual(self.redis.zrange(self.keyspace.MONITOR_SET, 0, -1), ["533280"])
 
@@ -280,9 +271,7 @@ class EasyPaisaAccountRetentionTests(unittest.TestCase):
         keep_snapshot = json.loads(self.redis.get(self.keyspace.snapshot_key(533280)))
         self.assertTrue(keep_snapshot["online"])
 
-        offline_snapshot = json.loads(self.redis.get(self.keyspace.snapshot_key(533277)))
-        self.assertFalse(offline_snapshot["online"])
-        self.assertEqual(offline_snapshot["last_transition"], "retain_only_whitelist")
+        self.assertIsNone(self.redis.get(self.keyspace.snapshot_key(533277)))
 
         self.assertIsNone(self.redis.zscore(self.keyspace.INDEX_UPDATED_AT, "533277"))
         self.assertIsNone(self.redis.zscore(self.keyspace.INDEX_UPDATED_AT, "533281"))

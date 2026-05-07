@@ -15,13 +15,18 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.message import msg
-from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
+from application.payment_eligibility import payout_sql_condition
 
 
-async def load_easypaisa_monitor_counts(redis, runtime_reader):
+async def load_easypaisa_monitor_counts(handler):
+    sql = "SELECT COUNT(*) AS total FROM payment WHERE {condition}".format(
+        condition=payout_sql_condition("payment"),
+    )
+    rows = await handler.query(sql)
+    online_accounts = int((rows or [{}])[0].get("total") or 0)
     return {
-        "online_accounts": await runtime_reader.df_order_count(),
-        "active_accounts": await runtime_reader.active_df_count(),
+        "online_accounts": online_accounts,
+        "active_accounts": online_accounts,
     }
 
 
@@ -553,8 +558,7 @@ class AutoPayoutMonitorHandler(BaseHandler):
             # 获取系统状态
             emergency_stop = await self.redis.get("easypaisa_emergency_stop")
             
-            runtime_reader = EasyPaisaAdminRuntimeReader(self.redis)
-            counts = await load_easypaisa_monitor_counts(self.redis, runtime_reader)
+            counts = await load_easypaisa_monitor_counts(self)
             online_accounts = counts["online_accounts"]
             active_accounts = counts["active_accounts"]
             

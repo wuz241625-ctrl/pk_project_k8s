@@ -42,9 +42,9 @@ sys.path.insert(0, parent_dir)
 
 from response_logger import ResponseLogger
 import config
-from application.easypaisa_runtime import keyspace
-from application.easypaisa_runtime.sync_runtime_service import SyncEasyPaisaRuntimeService
+from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
 from application.lakshmi_api.enums.payment_login_progress import PaymentLoginProgress
+from jobs.easypaisa.wallet_status_service import WorkerWalletStatusService
 from datetime import datetime
 
 #easypaisa爬取账单，需要发送短信
@@ -428,9 +428,9 @@ class BankLogin:
 
         # 连接redis
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
-        self.runtime_service = SyncEasyPaisaRuntimeService(self.redis)
         # 新增: 初始化数据库连接
         self.db_connection = self.check_db_connection()
+        self.wallet_status_service = self._new_wallet_status_service()
     
     def check_db_connection(self):
             """
@@ -450,6 +450,187 @@ class BankLogin:
             except Exception as e:
                 self.logger.error(f"数据库连接失败: {e}", exc_info=True)
                 return None
+
+    def _new_wallet_status_service(self):
+        if not getattr(self, "db_connection", None):
+            return None
+        return WorkerWalletStatusService(self.db_connection, self.logger)
+
+    def get_wallet_status_service(self):
+        if not hasattr(self, "db_connection"):
+            return None
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            self.wallet_status_service = self._new_wallet_status_service()
+        if not getattr(self, "wallet_status_service", None):
+            self.wallet_status_service = self._new_wallet_status_service()
+        return self.wallet_status_service
+
+    def fetch_wallet_status_reconcile_rows(self, limit=50):
+        if not hasattr(self, "db_connection"):
+            return []
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            if not self.db_connection:
+                return []
+
+        with self.db_connection.cursor() as cur:
+            try:
+                sql = """
+                    SELECT id, wallet_status, account_accno, phone
+                    FROM payment
+                    WHERE (bank_type = 97 OR bank_type = '97' OR bank_type_id = 97)
+                      AND (
+                        (wallet_status = 1 AND (account_accno IS NULL OR account_accno = ''))
+                        OR (wallet_status = 0 AND account_accno IS NOT NULL AND account_accno <> '')
+                      )
+                    LIMIT {limit}
+                """.format(limit=int(limit))
+                cur.execute(sql)
+                return cur.fetchall() or []
+            except Exception as e:
+                self.logger.error(f"查询 EasyPaisa wallet_status 纠偏候选失败: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return []
+            finally:
+                self.db_connection.commit()
+
+    def fetch_wallet_collection_rows(self, limit=500):
+        if not hasattr(self, "db_connection"):
+            return []
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            if not self.db_connection:
+                return []
+
+        with self.db_connection.cursor() as cur:
+            try:
+                sql = """
+                    SELECT id, phone, partner_id, account_accno, account_iban, account_entire,
+                           upi, channel, net_trade_pw
+                    FROM payment
+                    WHERE wallet_status = 1
+                      AND (bank_type = 97 OR bank_type = '97' OR bank_type_id = 97)
+                    LIMIT {limit}
+                """.format(limit=int(limit))
+                cur.execute(sql)
+                return cur.fetchall() or []
+            except Exception as e:
+                self.logger.error(f"查询 EasyPaisa wallet_status 采集账号失败: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return []
+            finally:
+                self.db_connection.commit()
+
+    def confirm_wallet_available(self, row):
+        payment_id = row.get("id")
+        phone = str(row.get("phone") or "").strip()
+        account_accno = str(row.get("account_accno") or "").strip()
+        if not phone or not account_accno:
+            return False
+
+        payload = {
+            "id": str(uuid.uuid4()),
+            "action": "queryBill",
+            "payload": {"account_id": phone, "accno": account_accno},
+        }
+        payload_str = json.dumps(payload, separators=(',', ':'))
+        data_base64 = base64.b64encode(payload_str.encode('utf-8')).decode('utf-8')
+        sign = hashlib.md5((data_base64 + SECRET_KEY).encode('utf-8')).hexdigest()
+        request_data = {'user_id': USER_ID, 'data': data_base64, 'sign': sign}
+
+        try:
+            response = requests.post(API_URL, data=request_data, timeout=10)
+            if response.status_code != 200:
+                self.logger.warning(f"EasyPaisa wallet_status 确认失败 payment_id={payment_id}, HTTP={response.status_code}")
+                return False
+            response_data = response.json()
+            if response_data.get("code") == 200:
+                return True
+            self.logger.warning(
+                f"EasyPaisa wallet_status 确认失败 payment_id={payment_id}, code={response_data.get('code')}, msg={response_data.get('msg')}"
+            )
+            return False
+        except Exception as e:
+            self.logger.warning(f"EasyPaisa wallet_status 确认异常 payment_id={payment_id}: {e}")
+            return False
+
+    def reconcile_wallet_status_from_mysql(self):
+        service = self.get_wallet_status_service()
+        if not service:
+            return {"confirm": 0, "offline": 0, "noop": 0}
+
+        stats = {"confirm": 0, "offline": 0, "noop": 0}
+        for row in self.fetch_wallet_status_reconcile_rows():
+            action = WorkerWalletStatusService.reconcile_wallet_status_row(row)
+            if action == "offline":
+                service.mark_offline(row["id"], "account_selection_cleared")
+                stats["offline"] += 1
+            elif action == "confirm":
+                throttle_key = f"easypaisa_wallet_status_confirm:{row['id']}"
+                if self.redis.get(throttle_key):
+                    stats["noop"] += 1
+                    continue
+                self.redis.setex(throttle_key, 300, 1)
+                if self.confirm_wallet_available(row):
+                    service.mark_available(row["id"], "upstream_confirmed")
+                    stats["confirm"] += 1
+                else:
+                    stats["noop"] += 1
+            else:
+                stats["noop"] += 1
+        return stats
+
+    @staticmethod
+    def _first_channel(channel):
+        channel = str(channel or "").replace(" ", "")
+        if not channel:
+            return ""
+        return channel.split(",")[0]
+
+    def _wallet_collection_login_data(self, row, existing=None):
+        data = existing if isinstance(existing, dict) else {}
+        payment_id = row.get("id")
+        data.update({
+            "id": payment_id,
+            "real_payment_id": payment_id,
+            "status": "grabstatement",
+            "phone": row.get("phone"),
+            "partner_id": row.get("partner_id"),
+            "account_accno": row.get("account_accno"),
+            "account_iban": row.get("account_iban"),
+            "account_entire": row.get("account_entire"),
+            "upi": row.get("upi"),
+            "net_trade_pw": row.get("net_trade_pw"),
+            "channel": row.get("channel"),
+            "channels": row.get("channel"),
+            "qr_channel": self._first_channel(row.get("channel")),
+        })
+        return data
+
+    def sync_mysql_wallet_collection_accounts(self):
+        rows = self.fetch_wallet_collection_rows()
+        synced = 0
+        for row in rows:
+            payment_id = str(row.get("id"))
+            existing = None
+            raw_existing = self.redis.hget(self.hash_key, payment_id)
+            if raw_existing:
+                try:
+                    if isinstance(raw_existing, bytes):
+                        raw_existing = raw_existing.decode()
+                    existing = simplejson.loads(raw_existing)
+                except Exception:
+                    existing = None
+            login_data = self._wallet_collection_login_data(row, existing)
+            self.redis.hset(self.hash_key, payment_id, simplejson.dumps(login_data, ensure_ascii=False))
+            if self.redis.zscore(self.set_key, payment_id) is None:
+                self.redis.zadd(self.set_key, {payment_id: 0})
+            synced += 1
+        return synced
 
     def get_payment_info(self, payment_id):
         """
@@ -487,28 +668,6 @@ class BankLogin:
             finally:
                 self.db_connection.commit()
 
-    def _runtime_manual_off(self, payment_id):
-        try:
-            runtime_service = getattr(self, "runtime_service", None)
-            if runtime_service is None:
-                runtime_service = SyncEasyPaisaRuntimeService(self.redis)
-                self.runtime_service = runtime_service
-            return runtime_service.is_manual_off(payment_id)
-        except Exception as e:
-            self.logger.error(f"检查 EasyPaisa manual-off 失败 payment_id={payment_id}: {e}", exc_info=True)
-            return False
-
-    def _runtime_health_order_paused(self, payment_id):
-        try:
-            runtime_service = getattr(self, "runtime_service", None)
-            if runtime_service is None:
-                runtime_service = SyncEasyPaisaRuntimeService(self.redis)
-                self.runtime_service = runtime_service
-            return runtime_service.is_order_health_paused(payment_id)
-        except Exception as e:
-            self.logger.error(f"检查 EasyPaisa health-pause 失败 payment_id={payment_id}: {e}", exc_info=True)
-            return True
-
     def _read_payment_runtime_flags(self, payment_id):
         if not self.db_connection or not self.db_connection.open:
             self.logger.error("数据库连接已关闭，尝试重新连接...")
@@ -520,7 +679,8 @@ class BankLogin:
             try:
                 cur.execute(
                     """
-                    SELECT id, phone, status, certified, manual_status, channel
+                    SELECT id, phone, wallet_status, account_accno, collection_status, payout_status,
+                           status, certified, manual_status, channel
                     FROM payment
                     WHERE id = %s
                     """,
@@ -541,29 +701,32 @@ class BankLogin:
             return "offline"
 
         try:
-            status = int(payment.get("status") or 0)
-            certified = int(payment.get("certified") or 0)
-            manual_status = int(payment.get("manual_status") or 0)
+            collection_status = int(payment.get("collection_status") or 0)
+            payout_status = int(payment.get("payout_status") or 0)
+            ds_enabled = can_dispatch_ds(payment)
+            df_enabled = can_dispatch_df(payment)
         except Exception:
             self.logger.error(f"EasyPaisa payment 状态字段异常 payment_id={payment_id}: {payment}")
             return "offline"
 
-        if status != 1:
-            return "business_paused"
-        if certified != 1:
-            return "order_paused"
-        if self._runtime_health_order_paused(payment_id):
-            return "order_paused"
-        if self._runtime_manual_off(payment_id):
+        if ds_enabled and df_enabled:
+            return "dispatch_on"
+        if ds_enabled and not df_enabled:
+            return "df_dispatch_off"
+        if not ds_enabled and df_enabled:
             return "ds_dispatch_off"
-        if manual_status == 1:
-            return "ds_dispatch_off"
-        return "dispatch_on"
+        if collection_status == 1 or payout_status == 1:
+            return "offline"
+        return "order_paused"
 
     @staticmethod
     def _df_order_enabled_for_policy(policy):
         """代付只受全局接单资格影响，不受代收人工锁定影响。"""
         return policy in ("dispatch_on", "ds_dispatch_off")
+
+    @staticmethod
+    def _ds_order_enabled_for_policy(policy):
+        return policy in ("dispatch_on", "df_dispatch_off")
 
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
@@ -714,18 +877,9 @@ class BankLogin:
             self.logger.warning(f"{redis_key} alias 缺少 target_payment_id，已删除残留 key")
             return True
 
-        snapshot = self.runtime_service.read_snapshot(target_payment_id)
         target_online = bool(
-            snapshot
-            and (
-                snapshot.get("session_phase") != "offline"
-                or snapshot.get("online")
-                or snapshot.get("dispatch_df")
-                or snapshot.get("dispatch_ds")
-                or snapshot.get("collect_enabled")
-                or snapshot.get("df_order_enabled")
-                or snapshot.get("ds_order_enabled")
-            )
+            self.redis.hget(self.hash_key, target_payment_id)
+            or self.redis.zscore(self.set_key, target_payment_id) is not None
         )
         if target_online:
             self.logger.info(f"{redis_key} 是 payment_id_alias -> {target_payment_id}，跳过 jobs 扫描")
@@ -737,6 +891,9 @@ class BankLogin:
 
     async def login_off(self, login_data):
         try:
+            wallet_status_service = self.get_wallet_status_service()
+            if wallet_status_service:
+                wallet_status_service.mark_offline(login_data['id'], "login_off")
             # 删除hash和set，退出
             self.redis.zrem(self.set_key, login_data['id'])
             self.redis.hdel(self.hash_key, login_data['id'])
@@ -755,46 +912,26 @@ class BankLogin:
         try:
             if _on == 1:
                 policy = self.payment_runtime_policy(login_data['id'], login_data)
-                channels = login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel')
                 if policy == "offline":
-                    self.runtime_service.force_offline(
-                        login_data['id'],
-                        phone=login_data.get('phone'),
-                        source="pakistanpay_v2",
-                        reason="payment_disabled",
-                        channels=channels,
-                    )
+                    self.redis.hdel(self.hash_key, login_data['id'])
+                    self.redis.zrem(self.set_key, login_data['id'])
                     self.logger.error(f"{login_data['id']}, {self.list_key} DB已下线，拒绝重新上线采集")
                     return False
+                ds_order_enabled = self._ds_order_enabled_for_policy(policy)
                 df_order_enabled = self._df_order_enabled_for_policy(policy)
-                self.runtime_service.mark_active_successful(
-                    login_data['id'],
-                    phone=login_data.get('phone'),
-                    selected_accno=login_data.get('account_accno'),
-                    selected_iban=login_data.get('account_iban') or login_data.get('IBAN'),
-                    source="pakistanpay_v2",
-                    online_ttl=660,
-                    collect_enabled=True,
-                    ds_order_enabled=policy == "dispatch_on",
-                    df_order_enabled=df_order_enabled,
-                    channels=channels,
-                )
                 if policy == "dispatch_on":
                     self.logger.info(f"{login_data['id']}, {self.list_key} 上线采集： {login_data['id']}")
-                elif policy == "business_paused":
-                    self.logger.info(f"{login_data['id']}, {self.list_key} 业务禁用：保留采集但关闭代收/代付派单")
+                elif policy == "df_dispatch_off":
+                    self.logger.info(f"{login_data['id']}, {self.list_key} 保持采集和代收但关闭代付派单： {login_data['id']}")
                 elif policy == "order_paused":
                     self.logger.info(f"{login_data['id']}, {self.list_key} 全局暂停接单：保留采集但关闭代收/代付派单")
                 else:
                     self.logger.info(f"{login_data['id']}, {self.list_key} 保持采集和代付但关闭代收派单： {login_data['id']}")
+                self.logger.info(
+                    f"{login_data['id']}, {self.list_key} MySQL派单态: "
+                    f"ds_order_enabled={ds_order_enabled}, df_order_enabled={df_order_enabled}"
+                )
                 return True
-            self.runtime_service.set_kickoff(
-                login_data['id'],
-                phone=login_data.get('phone'),
-                ttl=60 * 20,
-                source="pakistanpay_v2",
-                reason="statement_worker_offline",
-            )
             self.logger.error(f"{login_data['id']}, {self.list_key} 下线接单： {login_data['id']}")
         except Exception as e:
             tb_str = traceback.format_exc()
@@ -813,27 +950,39 @@ class BankLogin:
     def _should_force_statement_worker_offline(self, bill_result):
         return not self._is_transient_bill_error(bill_result)
 
+    def sync_job_projection(self, login_data, schedule_score=None):
+        payment_id = login_data.get('real_payment_id') or login_data.get('id')
+        if payment_id in [None, ""]:
+            raise ValueError("sync_job_projection requires payment id")
+        merged = {}
+        existing = self.redis.hget(self.hash_key, payment_id)
+        if existing:
+            try:
+                if isinstance(existing, bytes):
+                    existing = existing.decode('utf-8')
+                parsed = simplejson.loads(existing)
+                if isinstance(parsed, dict):
+                    merged.update(parsed)
+            except Exception:
+                merged = {}
+        merged.update(login_data)
+        merged['id'] = payment_id
+        merged['real_payment_id'] = payment_id
+        merged['status'] = 'grabstatement'
+        self.redis.hset(self.hash_key, payment_id, simplejson.dumps(merged, ensure_ascii=False))
+        score = int(time.time()) if schedule_score is None else int(schedule_score)
+        self.redis.zadd(self.set_key, {payment_id: score})
+        return merged
+
     def update_key(self, login_data):
         try:
             policy = self.payment_runtime_policy(login_data['id'], login_data)
             if policy == "offline":
-                self.runtime_service.force_offline(
-                    login_data['id'],
-                    phone=login_data.get('phone'),
-                    source="pakistanpay_v2",
-                    reason="payment_disabled",
-                    channels=login_data.get('channels') or login_data.get('qr_channel') or login_data.get('channel'),
-                )
+                self.redis.hdel(self.hash_key, login_data['id'])
+                self.redis.zrem(self.set_key, login_data['id'])
+                self.logger.warning(f"{login_data['id']} DB已下线，已移除采集投影")
                 return
-            df_order_enabled = self._df_order_enabled_for_policy(policy)
-            self.runtime_service.sync_collection_job_state(
-                login_data,
-                source="pakistanpay_v2",
-                schedule_score=int(time.time()),
-                collect_enabled=True,
-                ds_order_enabled=policy == "dispatch_on",
-                df_order_enabled=df_order_enabled,
-            )
+            self.sync_job_projection(login_data, schedule_score=int(time.time()))
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -1030,12 +1179,14 @@ class BankLogin:
         self.logger.info(f"{login_data['id']}, source: {source} 开始读取业务缓存")
         try:
             cache_key_lock = f'{self.name}_operate_{login_data['id']}'
+            cache_key_login_on = f'login_on_{self.name}_{login_data['id']}'
             cache_key_upi_active_payment = f'upi_active_payment:{login_data['id']}'
             cache_key_device = f'{self.name}_device'
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(self.hash_key, login_data['id'])}, ttl: {self.redis.ttl(self.hash_key)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
+            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
@@ -2410,6 +2561,11 @@ class BankLogin:
         try:
             # 生成新的trace_id
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
+            reconcile_stats = self.reconcile_wallet_status_from_mysql()
+            synced_wallet_accounts = self.sync_mysql_wallet_collection_accounts()
+            self.logger.info(
+                f"EasyPaisa wallet_status MySQL扫描完成: reconcile={reconcile_stats}, synced={synced_wallet_accounts}"
+            )
 
             # 1 先检查pre_login_*中的相关数据，查看是否已经有成功的
             pre_lgoin_keys = f"pre_login_{self.name}_*"
@@ -2465,24 +2621,10 @@ class BankLogin:
                         data['id'] = data['real_payment_id']
                         policy = self.payment_runtime_policy(data['id'], data)
                         if policy == "offline":
-                            self.runtime_service.force_offline(
-                                data['id'],
-                                phone=data.get('phone'),
-                                source="pakistanpay_v2",
-                                reason="payment_disabled",
-                                channels=data.get('channels') or data.get('qr_channel') or data.get('channel'),
-                            )
                             self.redis.delete(_id)
                             self.del_lock(_id, _lock)
                             continue
-                        self.runtime_service.sync_collection_job_state(
-                            data,
-                            source="pakistanpay_v2",
-                            schedule_score=0,
-                            collect_enabled=True,
-                            ds_order_enabled=policy == "dispatch_on",
-                            df_order_enabled=self._df_order_enabled_for_policy(policy),
-                        )
+                        self.sync_job_projection(data, schedule_score=0)
                         self.logger.info(f"已将 {data['id']} {data['real_payment_id']}推入 hash_key: {self.hash_key} 和 zset: {self.set_key}")
                         # 删除pre_login*
                         self.redis.delete(_id)

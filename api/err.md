@@ -2,6 +2,48 @@
 
 ## 常见问题
 
+### 0.20 D7pay 合并 pk_project 业务主线时覆盖 JazzCashBusiness runtime
+
+现象：
+
+- 从 `/Users/tear/pk_project` 合并业务代码到 `d7pay` 时，EasyPaisa wallet/business status 测试通过，但 JazzCashBusiness 指纹、冷却期和 runtime 测试大量失败。
+- 典型报错包括 `LoginStatus.FINGERPRINT_UPLOADED` 不存在、`verify_fingerprint_http` 不存在、`Unsupported bank type: jazzcash`、`_has_collection_kickoff` 不存在。
+
+根因：
+
+- `pk_project/main` 的最新业务主线主要收口 EasyPaisa MySQL 真相源。
+- `d7pay` 分支额外承载 JazzCashBusiness v1.6 指纹流程和 runtime 唯一真相源。
+- 直接覆盖 `api/application/app/login/banks/jazzcash.py`、`api/application/pay/pay.py`、`http_login_controller.py`、`Jazzcashpay_v2.py` 会把 D7pay 的 JCB 专属逻辑删掉。
+
+处理：
+
+- 保留 D7pay 的 JazzCashBusiness runtime 链路和指纹/冷却期流程。
+- 合并 EasyPaisa 的 MySQL 业务真相源：
+  - `payment.wallet_status`
+  - `payment.collection_status`
+  - `payment.payout_status`
+  - `application.payment_eligibility`
+  - `jobs/easypaisa/wallet_status_service.py`
+- `pay.py` 中 EasyPaisa 代收资格读取 MySQL `collection_status`，不再读 `payment_online_ds`；JazzCashBusiness 仍读取 `jazzcash_runtime`。
+
+验证：
+
+```bash
+PYTHONPATH=api python3 -m unittest \
+  api.tests.test_easypaisa_mysql_eligibility \
+  api.tests.test_easypaisa_wallet_status_dispatch \
+  api.tests.easypaisa_runtime.test_wallet_status_service \
+  api.tests.easypaisa_runtime.test_business_status_fields \
+  api.tests.easypaisa_runtime.test_worker_wallet_status_integration
+
+PYTHONPATH=api python3 -m unittest \
+  api.tests.test_jazzcash_business_flow_v2 \
+  api.tests.jazzcash_runtime.test_reader \
+  api.tests.jazzcash_runtime.test_runtime_service \
+  api.tests.jazzcash_runtime.test_sync_collection_worker \
+  api.tests.test_time_out_guard
+```
+
 ### 0.19 Pakistanpay worker 调试日志重新读取 EasyPaisa legacy 投影
 
 现象：

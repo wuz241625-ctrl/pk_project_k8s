@@ -4,28 +4,10 @@ from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
 from aiomysql import DictCursor
 
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
-
-
-def _is_easypaisa_payment(payment):
-    return (
-        str((payment or {}).get('bank_type_id') or '') == '97'
-        or str((payment or {}).get('bank_type') or '') == '97'
-    )
-
-
 async def _requeue_df_if_online(self, payment_id):
-    payment = await self.get_result_by_condition(
-        'payment',
-        ['bank_type', 'bank_type_id'],
-        {'id': payment_id},
-    )
-    if not payment:
-        await self.redis.lrem('payment_active_df', 0, payment_id)
-        return False
-    bank_type = 97 if _is_easypaisa_payment(payment) else (payment or {}).get('bank_type_id') or (payment or {}).get('bank_type')
-    reader = EasyPaisaRuntimeReader(self.redis)
-    return await reader.requeue_df_if_online(payment_id, bank_type=bank_type)
+    """EasyPaisa 代付不再回写旧 payment_active_df，只清理残留。"""
+    await self.redis.lrem('payment_active_df', 0, payment_id)
+    return False
 
 
 # 代收确认

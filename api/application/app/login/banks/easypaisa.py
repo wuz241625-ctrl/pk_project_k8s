@@ -20,8 +20,6 @@ import uuid
 import os
 from datetime import datetime
 from config import get_config
-from application.easypaisa_runtime import keyspace
-from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
 
 conf = get_config()
 
@@ -51,6 +49,7 @@ class LoginStatus:
     FINGERPRINT_UPLOAD_REQUIRED = "fingerprintUploadRequired"
     FINGERPRINT_UPLOADED = "fingerprintUploaded"
     FINGERPRINT_VERIFIED = "fingerprintVerified"
+    SECOND_LOGIN_READY = "secondLoginReady"
     SECOND_LOGIN_PASSED = "secondLoginPassed"
     AWAITING_PIN_CHANGE = "awaitingPinChange"
     ACCOUNT_SELECTION_REQUIRED = "accountSelectionRequired"
@@ -76,6 +75,10 @@ STATUS_TRANSITIONS = {
         LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
     ],
     LoginStatus.FINGERPRINT_VERIFIED: [
+        LoginStatus.SECOND_LOGIN_PASSED,
+        LoginStatus.AWAITING_PIN_CHANGE,
+    ],
+    LoginStatus.SECOND_LOGIN_READY: [
         LoginStatus.SECOND_LOGIN_PASSED,
         LoginStatus.AWAITING_PIN_CHANGE,
     ],
@@ -160,7 +163,6 @@ class EasyPaisa:
         self.handler = request_handler
         self.redis = request_handler.redis
         self.logger = logging.getLogger(self.__class__.__name__)
-        self.runtime_service = EasyPaisaRuntimeService(self.redis)
         
         # 添加锁相关的属性
         self.name = SVRNAME
@@ -493,11 +495,55 @@ class EasyPaisa:
 
     @staticmethod
     def _login_lock_payment_key(payment_id):
-        return keyspace.lock_payment_key(payment_id)
+        return f'login_lock_easypaisa_payment_{payment_id}'
 
     @staticmethod
     def _login_lock_phone_key(phone):
-        return keyspace.lock_phone_key(phone)
+        return f'login_lock_easypaisa_phone_{phone}'
+
+    @staticmethod
+    def _normalize_channels(channels) -> list:
+        if channels in (None, '', []):
+            return []
+        if isinstance(channels, (list, tuple, set)):
+            raw_items = list(channels)
+        else:
+            raw_items = [channels]
+
+        normalized = []
+        seen = set()
+        for item in raw_items:
+            if isinstance(item, bytes):
+                item = item.decode('utf-8')
+            for part in str(item).split(','):
+                text = part.strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                normalized.append(text)
+        return normalized
+
+    @staticmethod
+    def _legacy_runtime_residue_keys(payment_id, phone=None):
+        keys = [
+            f'pre_login_easypaisa_{payment_id}',
+            f'login_on_easypaisa_{payment_id}',
+            f'easypaisa_runtime:session:{payment_id}',
+            f'easypaisa_runtime:snapshot:{payment_id}',
+            f'easypaisa_runtime:kickoff:{payment_id}',
+            f'easypaisa_runtime:health_pause:order:{payment_id}',
+            f'easypaisa_runtime:lock:payment:{payment_id}',
+            f'easypaisa_runtime:manual_off:collection:{payment_id}',
+            f'kick_off_{payment_id}',
+        ]
+        if phone:
+            keys.extend(
+                [
+                    f'login_on_easypaisa_{phone}',
+                    f'easypaisa_runtime:lock:phone:{phone}',
+                ]
+            )
+        return keys
 
     def _log_key(self, funcName):
         return f'{self.name} {self._get_pre_login_key()} {funcName}'
@@ -510,7 +556,7 @@ class EasyPaisa:
                 return
             
             # 基本信息
-            self.logger.info(f'{self._log_key(funcName)} 请求时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}')
+            self.logger.info(f"{self._log_key(funcName)} 请求时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             self.logger.info(f'{self._log_key(funcName)} 请求URL: {response.url}')
             self.logger.info(f'{self._log_key(funcName)} 请求方法: {response.request.method}')
             self.logger.info(f'{self._log_key(funcName)} 状态码: {response.status_code}')
@@ -805,16 +851,6 @@ class EasyPaisa:
                     'session_data': entry,
                     'is_aliased': requested_payment_id != resolved_payment_id,
                 }
-            session_data = await self.runtime_service.read_session(resolved_payment_id)
-            if session_data:
-                return {
-                    'requested_payment_id': requested_payment_id,
-                    'resolved_payment_id': resolved_payment_id,
-                    'requested_redis_key': requested_redis_key,
-                    'redis_key': resolved_redis_key,
-                    'session_data': session_data,
-                    'is_aliased': requested_payment_id != resolved_payment_id,
-                }
             break
 
         return {
@@ -844,44 +880,39 @@ class EasyPaisa:
                         target_entry = await self._read_prelogin_entry(target_redis_key)
                         if target_entry and not self._is_payment_id_alias_entry(target_entry):
                             return target_entry
-                        return await self.runtime_service.read_session(target_payment_id)
                 return entry
-            payment_id = self._extract_payment_id_from_redis_key(redis_key)
-            if payment_id is not None:
-                return await self.runtime_service.read_session(payment_id)
             return None
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
             return None
 
     async def _clear_stale_active_session_if_offline(self, redis_key, session_data):
-        """当 runtime snapshot 已明确离线时，清理残留的成功会话。"""
+        """当 MySQL 钱包最终态已离线时，清理残留的成功会话。"""
         payment_id = self._extract_payment_id_from_redis_key(redis_key)
         if payment_id is None:
             return False
 
-        runtime_snapshot = await self.runtime_service.read_snapshot(payment_id)
-        if not runtime_snapshot:
+        payment = await self._query_payment(payment_id)
+        if not payment:
             return False
 
-        session_phase = runtime_snapshot.get("session_phase")
-        is_offline_snapshot = (
-            session_phase == "offline"
-            or (
-                not runtime_snapshot.get("online")
-                and not runtime_snapshot.get("dispatch_df")
-                and not runtime_snapshot.get("dispatch_ds")
-            )
-        )
-        if not is_offline_snapshot:
+        wallet_status = payment.get('wallet_status', 0)
+        try:
+            wallet_status = int(wallet_status or 0)
+        except (TypeError, ValueError):
+            wallet_status = 0
+        if wallet_status == 1:
             return False
 
-        resolved_phone = session_data.get("phone") or runtime_snapshot.get("phone")
-        await self.runtime_service.clear_session(payment_id)
+        resolved_phone = session_data.get("phone") or payment.get("phone")
         await self.redis.delete(redis_key)
-        await self.redis.delete(keyspace.legacy_login_on_payment_key(payment_id))
+        await self.redis.delete(f'easypaisa_runtime:session:{payment_id}')
+        await self.redis.delete(f'easypaisa_runtime:snapshot:{payment_id}')
+        await self.redis.delete(f'login_on_easypaisa_{payment_id}')
         if resolved_phone:
-            await self.redis.delete(keyspace.legacy_login_on_phone_key(resolved_phone))
+            await self.redis.delete(f'easypaisa_runtime:session:{resolved_phone}')
+            await self.redis.delete(f'easypaisa_runtime:snapshot:{resolved_phone}')
+            await self.redis.delete(f'login_on_easypaisa_{resolved_phone}')
         return True
 
     def _session_ttl_for_status(self, status):
@@ -906,7 +937,6 @@ class EasyPaisa:
                 phone=session_data.get('phone'),
             )
             await self.redis.setex(alias_key, expire_time, json.dumps(alias_entry))
-        await self._sync_runtime_state(redis_key, session_data, expire_time)
         return session_data['se_until']
 
     @staticmethod
@@ -914,85 +944,6 @@ class EasyPaisa:
         if not redis_key:
             return None
         return str(redis_key).rsplit('_', 1)[-1]
-
-    def _runtime_snapshot_patch_from_session(self, session_data):
-        status = session_data.get('status')
-        account_options = session_data.get('accounts')
-        if account_options is None:
-            raw_accounts = session_data.get('account_entire')
-            if raw_accounts:
-                try:
-                    loaded_accounts = json.loads(raw_accounts) if isinstance(raw_accounts, str) else raw_accounts
-                except (TypeError, json.JSONDecodeError):
-                    loaded_accounts = []
-                if isinstance(loaded_accounts, list):
-                    account_options = self._filter_active_accounts(loaded_accounts)
-
-        return {
-            'phone': session_data.get('phone'),
-            'session_phase': status,
-            'session_expires_at': session_data.get('se_until'),
-            'online': status == LoginStatus.ACTIVE_SUCCESSFUL,
-            'collect_enabled': status == LoginStatus.ACTIVE_SUCCESSFUL,
-            'ds_order_enabled': False,
-            'df_order_enabled': status == LoginStatus.ACTIVE_SUCCESSFUL,
-            'dispatch_df': status == LoginStatus.ACTIVE_SUCCESSFUL,
-            'dispatch_ds': False,
-            'channels': keyspace.normalize_channels(
-                session_data.get('channels') or session_data.get('qr_channel') or session_data.get('channel')
-            ),
-            'account_options': account_options,
-            'selected_accno': session_data.get('account_accno'),
-            'selected_iban': session_data.get('account_iban'),
-            'cd_until': session_data.get('cd_until', 0),
-            'cooldown_until': session_data.get('cd_until', 0),
-            'last_transition': status,
-        }
-
-    async def _sync_runtime_state(self, redis_key, session_data, expire_time):
-        payment_id = session_data.get('id') or self._extract_payment_id_from_redis_key(redis_key)
-        if payment_id in [None, '']:
-            return
-
-        await self.runtime_service.write_session(payment_id, session_data, ttl=expire_time)
-
-        snapshot_patch = self._runtime_snapshot_patch_from_session(session_data)
-        status = session_data.get('status')
-        if status == LoginStatus.ACTIVE_SUCCESSFUL:
-            await self.runtime_service.mark_active_successful(
-                payment_id,
-                selected_accno=snapshot_patch.get('selected_accno'),
-                selected_iban=snapshot_patch.get('selected_iban'),
-                source='login_flow',
-                online_ttl=self.lock_time_login_duplicate_avoid,
-                collect_enabled=True,
-                ds_order_enabled=True,
-                df_order_enabled=True,
-                channels=snapshot_patch.get('channels'),
-            )
-            if snapshot_patch.get('account_options') is not None:
-                await self.runtime_service.write_snapshot(
-                    payment_id,
-                    {
-                        'account_options': snapshot_patch.get('account_options'),
-                        'cd_until': snapshot_patch.get('cd_until', 0),
-                        'cooldown_until': snapshot_patch.get('cooldown_until', 0),
-                    },
-                    source='login_flow',
-                )
-            return
-
-        if status == LoginStatus.ACCOUNT_SELECTION_REQUIRED:
-            await self.runtime_service.store_account_selection(
-                payment_id,
-                account_options=snapshot_patch.get('account_options') or [],
-                selected_accno=snapshot_patch.get('selected_accno'),
-                selected_iban=snapshot_patch.get('selected_iban'),
-                source='login_flow',
-            )
-            return
-
-        await self.runtime_service.write_snapshot(payment_id, snapshot_patch, source='login_flow')
 
     async def _update_session_status(self, redis_key, session_data, status_new, additional_data=None) -> int:
         """更新会话状态"""
@@ -1274,15 +1225,15 @@ class EasyPaisa:
             self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
             
             if data.get('step', 'unknown') != 'complete_login':
-                raise NewApiError(ErrorCode.Unsupported, f'Unsupported step: {data.get('step', 'unknown')}')
+                raise NewApiError(ErrorCode.Unsupported, f"Unsupported step: {data.get('step', 'unknown')}")
             
             # 检查用户类型 完成登录信息提交
-            self.logger.info(f'{self._log_key(funcName)} 执行步骤: {data.get('step', 'complete_login')}')
+            self.logger.info(f"{self._log_key(funcName)} 执行步骤: {data.get('step', 'complete_login')}")
             
             required_fields = ['bankname', 'phone', 'password', 'pin', 'name']
             if not all(field in data and data[field] for field in required_fields):
                 missing_fields = [field for field in required_fields if field not in data or not data[field]]
-                error_msg = f'Missing required parameters: {', '.join(missing_fields)}'
+                error_msg = f"Missing required parameters: {', '.join(missing_fields)}"
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: {error_msg}')
                 raise NewApiError(ErrorCode.MissingParams, error_msg)
             
@@ -1316,9 +1267,10 @@ class EasyPaisa:
             user_id = self.handler.current_user.id  # ← 获取码商ID
             is_new_user = data.get('is_new_user', True)
             payment_id = data.get('payment_id')  # 获取payment_id
+            bound_payment = None
             
             self.logger.info(f'{self._log_key(funcName)} 预登录参数: 银行={bankname}, 手机号={phone}, 码商ID={user_id}')
-            self.logger.info(f'{self._log_key(funcName)} 当前认证用户信息: ID={user_id}, 手机号={getattr(self.handler.current_user, 'cellphone', 'Unknown')}')
+            self.logger.info(f"{self._log_key(funcName)} 当前认证用户信息: ID={user_id}, 手机号={getattr(self.handler.current_user, 'cellphone', 'Unknown')}")
 
             # 立即检查协议进程锁 - 在任何复杂处理前进行早期检查
             # 检查 payment_id 登录状态
@@ -1344,6 +1296,20 @@ class EasyPaisa:
                         raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Payment record not found: {payment_id}')
                     if existing_payment.phone != phone:
                         raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number mismatch for payment {payment_id}, expected {existing_payment.phone}')
+                    if int(getattr(existing_payment, 'user_id', 0) or 0) != int(user_id):
+                        raise NewApiError('10402', 'UPI already occupied by another user')
+                    bound_payment = {
+                        'id': existing_payment.id,
+                        'phone': existing_payment.phone,
+                        'user_id': existing_payment.user_id,
+                        'pin': getattr(existing_payment, 'pin', None),
+                        'account_entire': getattr(existing_payment, 'account_entire', None),
+                        'account_accno': getattr(existing_payment, 'account_accno', None),
+                        'account_iban': getattr(existing_payment, 'account_iban', None),
+                    }
+                    phone_owner = await self._check_payment(bankname, phone, user_id)
+                    if phone_owner and str(phone_owner.get('id')) != str(existing_payment.id):
+                        raise NewApiError('10402', 'UPI already occupied by another payment id')
                     self.logger.info(f'{self._log_key(funcName)} Payment record validation successful: {payment_id}')
             else:
                 # 检查现有payment记录
@@ -1357,6 +1323,7 @@ class EasyPaisa:
                             f'{self._log_key(funcName)} payment已存在且属于当前用户: phone={phone}, user_id={user_id}'
                         )
                         payment_id = existing_payment.get('id')
+                        bound_payment = existing_payment
                     else:
                         self.logger.error(
                             f'{self._log_key(funcName)} payment已被其他码商占用: phone={phone}, '
@@ -1376,7 +1343,35 @@ class EasyPaisa:
             except NewApiError as lock_error:
                 self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
                 raise lock_error
-            
+
+            if bound_payment:
+                is_registered = await self._is_account_registered(phone)
+                if not is_registered:
+                    raise NewApiError(
+                        'EP_CLOUD_NOT_REGISTERED',
+                        'Bound EasyPaisa account is not registered on cloud machine; reset manually before first login'
+                    )
+
+                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+                await self.redis.delete(redis_key)
+                await self.redis.delete(f'easypaisa_runtime:session:{payment_id}')
+
+                result = {
+                    'status': 'success',
+                    'message': '成功',
+                    'data': {
+                        'id': payment_id,
+                        'redis_key': None,
+                        'expires_in': 0,
+                        'total_timeout': 120,
+                        'is_new_user': False,
+                        'bank_type': self.LOGIN_TYPE,
+                        'next_step': 'second_login'
+                    }
+                }
+                self.logger.info(f'{self._log_key(funcName)} 已绑定账号通过归属校验，返回second_login: {result}')
+                return result
+
             # 创建Redis登录会话
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
             self.logger.info(f'{self._log_key(funcName)} 创建Redis会话key: {redis_key}')
@@ -1564,7 +1559,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -1601,7 +1596,7 @@ class EasyPaisa:
             
             if missing_fields:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
             
             # 检查登录锁状态
             session_phone = session_data.get('phone')
@@ -1614,13 +1609,13 @@ class EasyPaisa:
 
             self.logger.info(f'{self._log_key(funcName)} 成功获取会话数据！')
             self.logger.info(f'{self._log_key(funcName)} === 会话数据详细信息 ===')
-            self.logger.info(f'{self._log_key(funcName)} 手机号: {session_data.get('phone', 'UNKNOWN')}')
-            self.logger.info(f'{self._log_key(funcName)} 当前状态: {session_data.get('status', 'UNKNOWN')}')
+            self.logger.info(f"{self._log_key(funcName)} 手机号: {session_data.get('phone', 'UNKNOWN')}")
+            self.logger.info(f"{self._log_key(funcName)} 当前状态: {session_data.get('status', 'UNKNOWN')}")
             self.logger.info(f'{self._log_key(funcName)} 目标状态: {LoginStatus.OTP_SENT}')
-            self.logger.info(f'{self._log_key(funcName)} app_gen_id: {session_data.get('app_gen_id', 'UNKNOWN')}')
-            self.logger.info(f'{self._log_key(funcName)} android_id: {session_data.get('androidId', 'UNKNOWN')}')
-            self.logger.info(f'{self._log_key(funcName)} safety_net_id: {session_data.get('safetyNetId', 'UNKNOWN')}')
-            self.logger.info(f'{self._log_key(funcName)} authorization存在: {'是' if session_data.get('authorization') else '否'}')
+            self.logger.info(f"{self._log_key(funcName)} app_gen_id: {session_data.get('app_gen_id', 'UNKNOWN')}")
+            self.logger.info(f"{self._log_key(funcName)} android_id: {session_data.get('androidId', 'UNKNOWN')}")
+            self.logger.info(f"{self._log_key(funcName)} safety_net_id: {session_data.get('safetyNetId', 'UNKNOWN')}")
+            self.logger.info(f"{self._log_key(funcName)} authorization存在: {'是' if session_data.get('authorization') else '否'}")
             if session_data.get('authorization'):
                 auth_preview = session_data.get('authorization')[:50] + "..." if len(session_data.get('authorization', '')) > 50 else session_data.get('authorization')
                 self.logger.info(f'{self._log_key(funcName)} authorization预览: {auth_preview}')
@@ -1683,7 +1678,7 @@ class EasyPaisa:
                 'data': {
                     'next_status': LoginStatus.OTP_VERIFIED,
                     'phone': session_data.get('phone'),
-                    'instruction': f'请查看手机 {session_data.get('phone')} 收到的OTP验证码短信'
+                    'instruction': f"请查看手机 {session_data.get('phone')} 收到的OTP验证码短信"
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -1721,7 +1716,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -1763,7 +1758,7 @@ class EasyPaisa:
             
             if missing_fields:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
             
             # 检查登录锁状态
             session_phone = session_data.get('phone')
@@ -1776,8 +1771,8 @@ class EasyPaisa:
             
             self.logger.info(f'{self._log_key(funcName)} 成功获取会话数据！')
             self.logger.info(f'{self._log_key(funcName)} === 会话数据详细信息 ===')
-            self.logger.info(f'{self._log_key(funcName)} 手机号: {session_data.get('phone', 'UNKNOWN')}')
-            self.logger.info(f'{self._log_key(funcName)} 当前状态: {session_data.get('status', 'UNKNOWN')}')
+            self.logger.info(f"{self._log_key(funcName)} 手机号: {session_data.get('phone', 'UNKNOWN')}")
+            self.logger.info(f"{self._log_key(funcName)} 当前状态: {session_data.get('status', 'UNKNOWN')}")
             self.logger.info(f'{self._log_key(funcName)} 目标状态: {LoginStatus.OTP_VERIFIED}')
 
             self.logger.info(f'{self._log_key(funcName)} 会话数据完整性检查通过！')
@@ -1806,7 +1801,7 @@ class EasyPaisa:
             if old_redis_key != redis_key:
                 await self.redis.delete(old_redis_key)
                 if old_payment_id not in [None, '', real_payment_id_text]:
-                    await self.runtime_service.clear_session(old_payment_id)
+                    await self.redis.delete(f'easypaisa_runtime:session:{old_payment_id}')
 
             login_lock_payment_key = self._login_lock_payment_key(real_payment_id)
             await self.redis.setex(login_lock_payment_key, self.lock_time_login_duplicate_avoid, 1)
@@ -1829,7 +1824,7 @@ class EasyPaisa:
                 'previous_payment_id': old_payment_id,
             })
 
-            self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态. {session_data.get('status')} → {LoginStatus.OTP_VERIFIED}')
+            self.logger.info(f"{self._log_key(funcName)} 正在更新会话状态. {session_data.get('status')} → {LoginStatus.OTP_VERIFIED}")
             await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
 
             try:
@@ -2027,15 +2022,24 @@ class EasyPaisa:
             redis_key = session_ctx.get('redis_key')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_fingerprint_http first')
+                session_data = await self._build_bound_second_login_session(bankname, requested_payment_id)
+                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=requested_payment_id)
             if session_ctx.get('is_aliased'):
                 self.logger.info(
                     f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
                 )
 
+            current_status = session_data.get('status')
+            if current_status not in (LoginStatus.FINGERPRINT_VERIFIED, LoginStatus.SECOND_LOGIN_READY):
+                self._assert_status_transition(
+                    session_data,
+                    LoginStatus.FINGERPRINT_VERIFIED,
+                    LoginStatus.SECOND_LOGIN_PASSED,
+                    funcName,
+                )
             self._assert_status_transition(
                 session_data,
-                LoginStatus.FINGERPRINT_VERIFIED,
+                current_status,
                 LoginStatus.SECOND_LOGIN_PASSED,
                 funcName,
             )
@@ -2062,7 +2066,7 @@ class EasyPaisa:
             if outcome == 'needs_pin_change':
                 self._assert_status_transition(
                     session_data,
-                    LoginStatus.FINGERPRINT_VERIFIED,
+                    current_status,
                     LoginStatus.AWAITING_PIN_CHANGE,
                     funcName,
                 )
@@ -2146,7 +2150,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -2195,7 +2199,7 @@ class EasyPaisa:
             
             if missing_fields:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
             
             session_phone = session_data.get('phone')
             session_payment_id = session_data.get('id')
@@ -2304,7 +2308,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -2363,7 +2367,7 @@ class EasyPaisa:
             
             if missing_fields:
                 self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
             
             session_phone = session_data.get('phone')
             session_payment_id = session_data.get('id')
@@ -2442,7 +2446,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -2547,6 +2551,18 @@ class EasyPaisa:
             if str(item.get('accountStatus', '')).upper() == 'ACTIVE'
         ]
 
+    @staticmethod
+    def _selected_account_business_status(wallet_status, status, certified, manual_status):
+        business_enabled = (
+            int(wallet_status or 0) == 1
+            and int(status or 0) == 1
+            and int(certified or 0) == 1
+        )
+        return {
+            'collection_status': 1 if business_enabled and int(manual_status or 0) == 0 else 0,
+            'payout_status': 1 if business_enabled else 0,
+        }
+
     async def _query_bound_accounts(self, payment):
         funcName = 'query_bound_accounts'
         api_result = await self._query_accts(payment.phone)
@@ -2611,6 +2627,12 @@ class EasyPaisa:
             account_iban=iban,
         )
         account_type_value = self._convert_account_type_to_int(account_type_str)
+        business_status = self._selected_account_business_status(
+            1,
+            getattr(payment, 'status', 0),
+            getattr(payment, 'certified', 0),
+            getattr(payment, 'manual_status', 0),
+        )
 
         with self.handler.db_orm.sessionmaker() as session:
             session.execute(
@@ -2621,6 +2643,8 @@ class EasyPaisa:
                     account_accno=accno,
                     account_iban=iban,
                     account_type=account_type_value,
+                    wallet_status=1,
+                    **business_status,
                 )
             )
             session.commit()
@@ -2658,7 +2682,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -2722,16 +2746,8 @@ class EasyPaisa:
                 self.logger.error(f'[Phone: {phone}] [PaymentID: {payment_id}] 账户类型检测失败: {str(e)}', exc_info=True)
                 account_type_value = ACCOUNT_TYPE_UNKNOWN
             
-            active_payment_session = dict(session_data)
-            active_payment_session.update({
-                'status': LoginStatus.ACTIVE_SUCCESSFUL,
-                'account_accno': accno,
-                'account_iban': iban,
-                'last_error': None,
-            })
-
             self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
-            await self._update_payment(payment_id, active_payment_session, account_accno=accno, account_iban=iban, account_type=account_type_value)
+            await self._update_payment(payment_id, session_data, account_accno=accno, account_iban=iban, account_type=account_type_value)
             await self._update_session_status(
                 redis_key,
                 session_data,
@@ -2781,7 +2797,7 @@ class EasyPaisa:
                 missing_fields = [field for field in required_fields if field not in data]
                 self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
                 self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {', '.join(missing_fields)}')
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
             
             # 获取参数
             bankname = data['bankname']
@@ -2795,6 +2811,7 @@ class EasyPaisa:
                 LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: 'upload_fingerprint',
                 LoginStatus.FINGERPRINT_UPLOADED: 'verify_fingerprint',
                 LoginStatus.FINGERPRINT_VERIFIED: 'second_login',
+                LoginStatus.SECOND_LOGIN_READY: 'second_login',
                 LoginStatus.SECOND_LOGIN_PASSED: 'query_accts',
                 LoginStatus.AWAITING_PIN_CHANGE: 'change_pin',
                 LoginStatus.ACCOUNT_SELECTION_REQUIRED: 'select_accts',
@@ -2803,37 +2820,8 @@ class EasyPaisa:
 
             objs = []
             for payment_id in paymentIDArray:
-                runtime_snapshot = await self.runtime_service.read_snapshot(payment_id)
-                if runtime_snapshot:
-                    status = runtime_snapshot.get('session_phase', '')
-                    obj = {
-                        "payment_id": payment_id,
-                        "status": status,
-                        "error": runtime_snapshot.get('last_error'),
-                        "cd_until": runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0)),
-                        "next_action": next_action_map.get(status, 'unknown'),
-                    }
-                    objs.append(obj)
-                    continue
-
                 session_ctx = await self._resolve_session_context(bankname, payment_id)
                 resolved_payment_id = session_ctx.get('resolved_payment_id') or payment_id
-                if session_ctx.get('is_aliased'):
-                    runtime_snapshot = await self.runtime_service.read_snapshot(resolved_payment_id)
-                    if runtime_snapshot:
-                        status = runtime_snapshot.get('session_phase', '')
-                        objs.append(
-                            {
-                                "payment_id": payment_id,
-                                "resolved_payment_id": resolved_payment_id,
-                                "status": status,
-                                "error": runtime_snapshot.get('last_error'),
-                                "cd_until": runtime_snapshot.get('cd_until', runtime_snapshot.get('cooldown_until', 0)),
-                                "next_action": next_action_map.get(status, 'unknown'),
-                            }
-                        )
-                        continue
-
                 session_data = session_ctx.get('session_data')
                 if not session_data:
                     continue
@@ -2859,6 +2847,35 @@ class EasyPaisa:
             raise NewApiError(ErrorCode.MissingParams, f'{str(e)}')
 
     # ================== 内部辅助方法 ==================
+    async def _is_account_registered(self, phone):
+        funcName = '云机注册检查'
+        url = self.API_ENDPOINTS['base_url']
+        request_data = self._build_is_account_registered_request(phone)
+
+        response = self.retry_make_request(method='POST', url=url, data=request_data)
+        self._log_response(funcName, response)
+
+        if not response or response.status_code != 200:
+            raise NewApiError(
+                'EP_REGISTER_CHECK_FAILED',
+                'Could not confirm EasyPaisa cloud registration; refusing to run loginStep1'
+            )
+
+        response_data = self._decode_indus_response(funcName, response.text)
+        if not isinstance(response_data, dict):
+            raise NewApiError(
+                'EP_REGISTER_CHECK_FAILED',
+                'Invalid EasyPaisa cloud registration response'
+            )
+
+        if response_data.get('code') != 200:
+            raise NewApiError(
+                'EP_REGISTER_CHECK_FAILED',
+                response_data.get('msg') or 'EasyPaisa cloud registration check failed'
+            )
+
+        return response_data.get('data') is True
+
     async def _send_otp(self, session_data):
         funcName = 'OTP发送'
             
@@ -3142,40 +3159,48 @@ class EasyPaisa:
                     payment = session.query(Payment).filter(Payment.id == payment_id).first()
 
                 if not payment:
-                    self.logger.error(f'{self._log_key(funcName)} [1/4] 数据库中未找到 payment_id={payment_id}，将仅按 runtime 快照清理')
+                    self.logger.error(f'{self._log_key(funcName)} [1/4] 数据库中未找到 payment_id={payment_id}，将仅清理 Redis 残留')
                 else:
                     self.logger.info(f'{self._log_key(funcName)} [1/4] 查询 payment 成功: phone={getattr(payment, "phone", None)}, channel={getattr(payment, "channel", None)}')
 
             except Exception as e:
                 self.logger.error(f'{self._log_key(funcName)} [1/4] 查询 payment 失败: {e}')
 
-            runtime_snapshot = await self.runtime_service.read_snapshot(payment_id)
             resolved_phone = None
             if payment and getattr(payment, 'phone', None):
                 resolved_phone = payment.phone
-            elif runtime_snapshot:
-                resolved_phone = runtime_snapshot.get('phone')
-            resolved_channels = keyspace.normalize_channels(
-                [
-                    runtime_snapshot.get('channels') if runtime_snapshot else None,
-                    payment.channel if payment and getattr(payment, 'channel', None) else None,
-                ]
+            resolved_channels = self._normalize_channels(
+                payment.channel if payment and getattr(payment, 'channel', None) else None
             )
 
-            # === 2. 用 runtime service 统一写离线 + kickoff，避免只删 legacy key ===
-            await self.runtime_service.set_kickoff(
-                payment_id,
-                phone=resolved_phone,
-                ttl=60 * 20,
-                source='force_logout',
-                reason=reason,
-                channels=resolved_channels,
+            # === 2. 清理旧 Redis 残留；MySQL 才是最终状态源，不再写 runtime/kickoff gate ===
+            residue_keys = self._legacy_runtime_residue_keys(payment_id, resolved_phone)
+            deleted_residue = await self.redis.delete(*residue_keys)
+            for channel in resolved_channels:
+                await self.redis.lrem(f'payment_active_{channel}', 0, payment_id)
+            await self.redis.srem('payment_online_ds', payment_id)
+            await self.redis.srem('payment_online_df', payment_id)
+            await self.redis.lrem('payment_active_df', 0, payment_id)
+            await self.redis.hdel('hash_easypaisa', payment_id)
+            await self.redis.zrem('set_easypaisa', payment_id)
+            for runtime_index in [
+                'easypaisa_runtime:index:online',
+                'easypaisa_runtime:index:collect_enabled',
+                'easypaisa_runtime:index:df_order_enabled',
+                'easypaisa_runtime:index:ds_order_enabled',
+                'easypaisa_runtime:index:dispatch_df',
+                'easypaisa_runtime:index:dispatch_ds',
+            ]:
+                await self.redis.srem(runtime_index, payment_id)
+            await self.redis.zrem('easypaisa_runtime:schedule:collection', payment_id)
+            await self.redis.zrem('easypaisa_runtime:index:updated_at', payment_id)
+            self.logger.info(
+                f'{self._log_key(funcName)} [2/4] Redis 残留清理完成: '
+                f'phone={resolved_phone}, channels={resolved_channels}, deleted={deleted_residue}'
             )
-            self.logger.info(f'{self._log_key(funcName)} [2/4] runtime 下线完成: phone={resolved_phone}, channels={resolved_channels}')
 
             # === 3. 清理会话数据，避免下次登录被旧 session / pre_login 卡住 ===
-            await self.runtime_service.clear_session(payment_id)
-            pre_login_key = keyspace.pre_login_key(payment_id)
+            pre_login_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
             deleted_session = await self.redis.delete(pre_login_key)
             self.logger.info(f'{self._log_key(funcName)} [3/4] 清理会话完成: pre_login={pre_login_key}, deleted={deleted_session}')
 
@@ -3190,7 +3215,10 @@ class EasyPaisa:
                                 Payment.id == payment_id
                             ).values(
                                 status=0,
-                                certified=0
+                                certified=0,
+                                wallet_status=0,
+                                collection_status=0,
+                                payout_status=0,
                             )
                         )
                         session.commit()
@@ -3407,7 +3435,7 @@ class EasyPaisa:
             return {'outcome': 'session_expired', 'message': message}
         if message == 'URM40008':
             return {'outcome': 'cooldown', 'message': message}
-        if code == 500 or self._is_verify_fingerprint_rejected_message(message):
+        if self._is_verify_fingerprint_rejected_message(message):
             return {'outcome': 'rejected', 'message': message}
         return {'outcome': 'transient', 'message': message or raw_text}
 
@@ -3599,13 +3627,21 @@ class EasyPaisa:
                 'data': status_desc
             }
         else:
-            raise NewApiError(ErrorCode.ChangePin, f'Query Accounts failed: {response_data.get('msg')}')
+            raise NewApiError(ErrorCode.ChangePin, f"Query Accounts failed: {response_data.get('msg')}")
 
     def _query_accts_default(self, accounts):
         record = next((acc for acc in accounts if acc.get("accountName") == "Easypaisa Wallet"), None)
         return record
 
     # ================== 请求构建方法 ==================
+    def _build_is_account_registered_request(self, phone):
+        funcName = '构建云机注册检查'
+        request_msg = {
+            "account_id": phone,
+        }
+        self.logger.info(f'{self._log_key(funcName)} 参数 phone: {phone}')
+        return self._encode_indus_request(funcName, 'isAccountRegistered', request_msg)
+
     def _build_send_otp_request(self, session_data):
         funcName = '构建OTP发送'
         
@@ -3902,6 +3938,7 @@ class EasyPaisa:
                         'upi': existing_payment.upi,
                         'user_id': existing_payment.user_id,
                         'status': existing_payment.status,
+                        'wallet_status': getattr(existing_payment, 'wallet_status', 0),
                         'time_create': existing_payment.created_at.isoformat() if existing_payment.created_at else None,
                         'account_entire': existing_payment.account_entire,
                         'account_accno': existing_payment.account_accno,
@@ -3914,6 +3951,68 @@ class EasyPaisa:
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}', exc_info=True)
             return None
+
+    async def _query_bound_payment_for_current_partner(self, bankname, payment_id):
+        funcName = '查询当前码商绑定payment'
+        bank_type_id = await self._get_bank_type_id(bankname)
+        if not bank_type_id:
+            raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Bank type not found for: {bankname}')
+
+        with self.handler.db_orm.sessionmaker() as session:
+            payment = session.query(Payment).filter(
+                Payment.id == payment_id,
+                Payment.bank_type_id == bank_type_id,
+            ).first()
+
+        if not payment:
+            raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Payment record not found: {payment_id}')
+
+        current_partner_id = int(getattr(self.handler.current_user, 'id', 0) or 0)
+        owner_partner_id = int(getattr(payment, 'user_id', 0) or 0)
+        if owner_partner_id != current_partner_id:
+            self.logger.warning(
+                f'{self._log_key(funcName)} 码商归属不匹配: payment_id={payment_id}, '
+                f'current_partner={current_partner_id}, owner_partner={owner_partner_id}'
+            )
+            raise NewApiError('10402', 'UPI already occupied by another user')
+
+        return payment
+
+    async def _build_bound_second_login_session(self, bankname, payment_id):
+        payment = await self._query_bound_payment_for_current_partner(bankname, payment_id)
+        phone = getattr(payment, 'phone', None)
+        if not phone:
+            raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number missing for payment {payment_id}')
+
+        is_registered = await self._is_account_registered(phone)
+        if not is_registered:
+            raise NewApiError(
+                'EP_CLOUD_NOT_REGISTERED',
+                'Bound EasyPaisa account is not registered on cloud machine; reset manually before first login'
+            )
+
+        now_ts = int(time.time())
+        return {
+            'id': payment_id,
+            'partner_id': getattr(payment, 'user_id', None),
+            'phone': phone,
+            'original_phone': phone,
+            'status': LoginStatus.SECOND_LOGIN_READY,
+            'status_history': [LoginStatus.SECOND_LOGIN_READY],
+            'time': now_ts,
+            'try_count': 0,
+            'bankname': bankname,
+            'pinCode': getattr(payment, 'pin', None),
+            'password': getattr(payment, 'net_trade_pw', None),
+            'name': getattr(payment, 'name', '') or '',
+            'is_new_user': False,
+            'last_status_change': now_ts,
+            'last_request_time': now_ts,
+            'account_entire': getattr(payment, 'account_entire', None),
+            'account_accno': getattr(payment, 'account_accno', None),
+            'account_iban': getattr(payment, 'account_iban', None),
+            'qr_channel': getattr(payment, 'channel', None) or 1001,
+        }
 
     async def _save_payment(self, session_data, name=None, pin=None, fingerprint_path=None):
         funcName = '保存payment数据到数据库'
@@ -4007,6 +4106,15 @@ class EasyPaisa:
         funcName = '更新现有payment记录'
         try:
             phone = session_data.get('phone', '')
+            isOn = 1 if session_data.get('status', '') == LoginStatus.ACTIVE_SUCCESSFUL else 0
+            current_payment_state = None
+            if account_accno:
+                with self.handler.db_orm.sessionmaker() as session:
+                    current_payment_state = session.query(
+                        Payment.status,
+                        Payment.certified,
+                        Payment.manual_status,
+                    ).filter(Payment.id == existing_payment_id).first()
             
             # 构建更新数据（使用正确的Python模型字段名）
             update_data = {
@@ -4033,6 +4141,18 @@ class EasyPaisa:
             
             if account_accno:
                 update_data['account_accno'] = account_accno
+                update_data['wallet_status'] = 1
+                next_status = 1 if isOn == 1 else getattr(current_payment_state, 'status', 0)
+                next_certified = getattr(current_payment_state, 'certified', 0)
+                next_manual_status = getattr(current_payment_state, 'manual_status', 0)
+                update_data.update(
+                    self._selected_account_business_status(
+                        1,
+                        next_status,
+                        next_certified,
+                        next_manual_status,
+                    )
+                )
                 self.logger.info(f'{self._log_key(funcName)} 更新 account_accno: {account_accno}')
             
             if account_iban:
@@ -4043,7 +4163,6 @@ class EasyPaisa:
                 update_data['account_type'] = account_type
                 self.logger.info(f'[Phone: {phone}] [PaymentID: {existing_payment_id}] 更新 account_type: {account_type}')
             
-            isOn = 1 if session_data.get('status', '') == LoginStatus.ACTIVE_SUCCESSFUL else 0
             if isOn == 1:
                 update_data['status'] = 1
                 self.logger.info(f'{self._log_key(funcName)} 更新 status: {1}')

@@ -1592,3 +1592,23 @@ VALUES (
   '1002',
   ''
 );
+
+-- 2026-05-01 EP 扫码自有代收通道
+INSERT INTO `channel`
+(`code`, `name`, `type`, `url`, `rate`, `rates`, `amount_min`, `amount_max`, `amount_fixed`, `fixed`, `status`, `decimal_callback_enabled`, `decimal_min`, `decimal_max`, `is_show_qr`)
+VALUES (1010,'EP 扫码',1,'1',0.0001,'0.002,0.001',100.00,100000.00,NULL,0,1,0,0.01,0.99,0)
+ON DUPLICATE KEY UPDATE
+  `name` = VALUES(`name`),
+  `type` = VALUES(`type`),
+  `url` = VALUES(`url`),
+  `rate` = VALUES(`rate`),
+  `rates` = VALUES(`rates`),
+  `amount_min` = VALUES(`amount_min`),
+  `amount_max` = VALUES(`amount_max`),
+  `amount_fixed` = VALUES(`amount_fixed`),
+  `fixed` = VALUES(`fixed`),
+  `status` = VALUES(`status`),
+  `decimal_callback_enabled` = VALUES(`decimal_callback_enabled`),
+  `decimal_min` = VALUES(`decimal_min`),
+  `decimal_max` = VALUES(`decimal_max`),
+  `is_show_qr` = VALUES(`is_show_qr`);

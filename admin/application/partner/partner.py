@@ -23,10 +23,6 @@ import bcrypt
 
 from application.system import operationLog
 from application.easypaisa_runtime import keyspace
-from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
-from application.easypaisa_runtime.service import EasyPaisaAdminRuntimeService
-from application.jazzcash_runtime.reader import JazzCashAdminRuntimeReader
-from application.jazzcash_runtime.service import JazzCashAdminRuntimeService
 
 
 def is_easypaisa_payment(payment_row):
@@ -36,49 +32,127 @@ def is_easypaisa_payment(payment_row):
     )
 
 
-def is_jazzcash_payment(payment_row):
+def _as_int(value, default=0):
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def payment_wallet_status_select_key(table):
+    return 'a.wallet_status' if table == 'payment' else '0 AS wallet_status'
+
+
+def payment_business_status_select_keys(table):
+    if table == 'payment':
+        return ['a.collection_status', 'a.payout_status']
+    return ['0 AS collection_status', '0 AS payout_status']
+
+
+def easypaisa_reset_account_fields_sql():
     return (
-        str((payment_row or {}).get('bank_type_id') or '') == '98'
-        or str((payment_row or {}).get('bank_type') or '') == '98'
+        "update payment set account_accno=NULL, account_iban=NULL, account_entire=NULL, "
+        "wallet_status=0, collection_status=0, payout_status=0 where id=%s"
     )
+
+
+def easypaisa_business_status_from_config(wallet_status, status, certified, manual_status):
+    business_enabled = (
+        _as_int(wallet_status) == 1
+        and _as_int(status) == 1
+        and _as_int(certified) == 1
+    )
+    return {
+        'collection_status': 1 if business_enabled and _as_int(manual_status) == 0 else 0,
+        'payout_status': 1 if business_enabled else 0,
+    }
+
+
+def monitor_status_update_fields(payment_row, monitor_status):
+    return {}
+
+
+def batch_disable_payment_update_sql(payment_count):
+    return """update payment set certified=0,status=0,collection_status=0,payout_status=0 where id in ({ids})""".format(
+        ids=','.join(['%s'] * payment_count)
+    )
+
+
+async def reset_easypaisa_redis_state(redis_client, payment_id, channels=None):
+    payment_id = str(payment_id)
+    channel_list = keyspace.normalize_channels(channels)
+    delete_keys = [
+        keyspace.pre_login_key(payment_id),
+        keyspace.session_key(payment_id),
+        keyspace.kickoff_key(payment_id),
+        keyspace.legacy_kickoff_key(payment_id),
+        keyspace.snapshot_key(payment_id),
+        keyspace.health_pause_order_key(payment_id),
+        keyspace.lock_payment_key(payment_id),
+        keyspace.manual_off_collection_key(payment_id),
+        keyspace.legacy_login_on_payment_key(payment_id),
+    ]
+    deleted_keys = await redis_client.delete(*delete_keys)
+    removed_job_hash = await redis_client.hdel(keyspace.JOB_HASH, payment_id)
+    removed_job_set = await redis_client.zrem(keyspace.JOB_SET, payment_id)
+    removed_online_df = await redis_client.srem(keyspace.LEGACY_PAYMENT_ONLINE_DF, payment_id)
+    removed_online_ds = await redis_client.srem(keyspace.LEGACY_PAYMENT_ONLINE_DS, payment_id)
+    removed_active_df = await redis_client.lrem(keyspace.LEGACY_PAYMENT_ACTIVE_DF, 0, payment_id)
+
+    removed_channel_active = 0
+    for channel in channel_list:
+        removed_channel_active += await redis_client.lrem(
+            keyspace.legacy_payment_active_channel_key(channel),
+            0,
+            payment_id,
+        )
+
+    removed_runtime_online = await redis_client.srem(keyspace.INDEX_ONLINE, payment_id)
+    removed_runtime_collect = await redis_client.srem(keyspace.INDEX_COLLECT_ENABLED, payment_id)
+    removed_runtime_df_order = await redis_client.srem(keyspace.INDEX_DF_ORDER_ENABLED, payment_id)
+    removed_runtime_ds_order = await redis_client.srem(keyspace.INDEX_DS_ORDER_ENABLED, payment_id)
+    removed_runtime_dispatch_df = await redis_client.srem(keyspace.INDEX_DISPATCH_DF, payment_id)
+    removed_runtime_dispatch_ds = await redis_client.srem(keyspace.INDEX_DISPATCH_DS, payment_id)
+    removed_runtime_schedule = await redis_client.zrem(keyspace.SCHEDULE_COLLECTION, payment_id)
+    removed_runtime_updated = await redis_client.zrem(keyspace.INDEX_UPDATED_AT, payment_id)
+
+    return {
+        "deleted_keys": deleted_keys,
+        "removed_job_hash": removed_job_hash,
+        "removed_job_set": removed_job_set,
+        "removed_online_df": removed_online_df,
+        "removed_online_ds": removed_online_ds,
+        "removed_active_df": removed_active_df,
+        "removed_channel_active": removed_channel_active,
+        "removed_runtime_online": removed_runtime_online,
+        "removed_runtime_collect": removed_runtime_collect,
+        "removed_runtime_df_order": removed_runtime_df_order,
+        "removed_runtime_ds_order": removed_runtime_ds_order,
+        "removed_runtime_dispatch_df": removed_runtime_dispatch_df,
+        "removed_runtime_dispatch_ds": removed_runtime_dispatch_ds,
+        "removed_runtime_schedule": removed_runtime_schedule,
+        "removed_runtime_updated": removed_runtime_updated,
+    }
+
+
+def apply_easypaisa_wallet_status_fields(payment_row):
+    if not is_easypaisa_payment(payment_row):
+        return payment_row
+
+    wallet_status = _as_int(payment_row.get('wallet_status'))
+    collection_status = _as_int(payment_row.get('collection_status'))
+    payout_status = _as_int(payment_row.get('payout_status'))
+
+    payment_row['online_status'] = 1 if wallet_status == 1 else 0
+    payment_row['online_df'] = 1 if payout_status == 1 else 0
+    payment_row['online_ds'] = 1 if collection_status == 1 else 0
+    return payment_row
 
 
 async def apply_easypaisa_runtime_fields(payment_row, runtime_reader):
     if not is_easypaisa_payment(payment_row):
         return payment_row
-    payment_id = payment_row['id']
-    payment_row['online_status'] = 1 if await runtime_reader.is_payment_online_status(
-        payment_id,
-        bank_type=97,
-    ) else 0
-    payment_row['online_df'] = 1 if await runtime_reader.is_payment_online_df(
-        payment_id,
-        bank_type=97,
-    ) else 0
-    payment_row['online_ds'] = 1 if await runtime_reader.is_payment_online_ds(
-        payment_id,
-        bank_type=97,
-    ) else 0
-    return payment_row
-
-
-async def apply_jazzcash_runtime_fields(payment_row, runtime_reader):
-    if not is_jazzcash_payment(payment_row):
-        return payment_row
-    payment_id = payment_row['id']
-    payment_row['online_status'] = 1 if await runtime_reader.is_payment_online_status(
-        payment_id,
-        bank_type=98,
-    ) else 0
-    payment_row['online_df'] = 1 if await runtime_reader.is_payment_online_df(
-        payment_id,
-        bank_type=98,
-    ) else 0
-    payment_row['online_ds'] = 1 if await runtime_reader.is_payment_online_ds(
-        payment_id,
-        bank_type=98,
-    ) else 0
-    return payment_row
+    return apply_easypaisa_wallet_status_fields(payment_row)
 
 # 增加
 class addPartner(BaseHandler):
@@ -659,8 +733,26 @@ class getPartnerRank(BaseHandler):
 
 # 获取
 class getPayment(BaseHandler):
-    async def _runtime_owned_ids_for_table(self, table):
-        rows = await self.query(f"select id from {table} where bank_type in (97,98) or bank_type_id in (97,98)")
+    async def _easypaisa_ids_for_table(self, table):
+        rows = await self.query(f"select id from {table} where bank_type=97 or bank_type_id=97")
+        return {str(row["id"]) for row in rows or []}
+
+    async def _easypaisa_wallet_status_ids(self, table, kind):
+        if table != 'payment':
+            return set()
+        formula = (
+            "collection_status = 1"
+            if kind == "ds"
+            else "payout_status = 1"
+        )
+        rows = await self.query(
+            f"""
+            select id
+            from payment
+            where (bank_type=97 or bank_type_id=97)
+              and {formula}
+            """
+        )
         return {str(row["id"]) for row in rows or []}
 
     @staticmethod
@@ -672,15 +764,11 @@ class getPayment(BaseHandler):
             normalized.add(str(value))
         return normalized
 
-    async def _merged_online_ids(self, table, legacy_key, easypaisa_reader, jazzcash_reader, runtime_kind):
+    async def _merged_online_ids(self, table, legacy_key, runtime_reader, runtime_kind):
         legacy_ids = self._normalize_redis_members(await self.redis.smembers(legacy_key))
-        if runtime_kind == "ds":
-            runtime_ids = await easypaisa_reader.dispatch_ds_members()
-            runtime_ids |= await jazzcash_reader.dispatch_ds_members()
-        else:
-            runtime_ids = await easypaisa_reader.df_order_members()
-            runtime_ids |= await jazzcash_reader.df_order_members()
-        return (legacy_ids - await self._runtime_owned_ids_for_table(table)) | runtime_ids
+        easypaisa_ids = await self._easypaisa_ids_for_table(table)
+        mysql_ids = await self._easypaisa_wallet_status_ids(table, runtime_kind)
+        return (legacy_ids - easypaisa_ids) | mysql_ids
 
     @tornado.web.authenticated
     async def post(self):
@@ -692,10 +780,9 @@ class getPayment(BaseHandler):
         total = 0
 
         table = 'payment_d' if data['is_del'] else 'payment'
-        easypaisa_runtime_reader = EasyPaisaAdminRuntimeReader(self.redis)
-        jazzcash_runtime_reader = JazzCashAdminRuntimeReader(self.redis)
         keys = ['a.id', 'a.partner_id', 'b.status AS partner_status','b.type AS type', 'a.bank_type', 'a.upi', 'a.amount_top', 'a.sys_balance', 'a.balance', 'a.account', 'a.name',
-                'a.ifsc', 'a.account_type', 'a.gmail', 'a.gmail_pw', 'a.time_create', 'a.certified', 'a.status', 'a.manual_status', 'a.priority_collection', 'a.channel', 'a.net_id', 'a.net_trade_pw', 'a.net_pw', 'a.phone', 'a.bank_type_id']
+                'a.ifsc', 'a.account_type', 'a.gmail', 'a.gmail_pw', 'a.time_create', 'a.certified', 'a.status', 'a.manual_status', 'a.priority_collection', 'a.channel', 'a.net_id', 'a.net_trade_pw', 'a.net_pw', 'a.phone', 'a.bank_type_id', 'a.account_accno', payment_wallet_status_select_key(table)] + payment_business_status_select_keys(table)
+        runtime_reader = None
         sql_part = ''
         values = []
 
@@ -709,13 +796,7 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['collect']):
                 collect = condition['collect']
                 del condition['collect']
-                online_ids = await self._merged_online_ids(
-                    table,
-                    'payment_online_ds',
-                    easypaisa_runtime_reader,
-                    jazzcash_runtime_reader,
-                    "ds",
-                )
+                online_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -724,13 +805,7 @@ class getPayment(BaseHandler):
             if not await self.is_null(condition, ['pay']):
                 pay = condition['pay']
                 del condition['pay']
-                online_ids = await self._merged_online_ids(
-                    table,
-                    'payment_online_df',
-                    easypaisa_runtime_reader,
-                    jazzcash_runtime_reader,
-                    "df",
-                )
+                online_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
                 ids = await self.list_keys(online_ids) if online_ids else 0
                 if not ids:
                     ids = 0
@@ -776,20 +851,8 @@ class getPayment(BaseHandler):
         if r:
             data_r = r
             total = t
-        online_ds_ids = await self._merged_online_ids(
-            table,
-            'payment_online_ds',
-            easypaisa_runtime_reader,
-            jazzcash_runtime_reader,
-            "ds",
-        )
-        online_df_ids = await self._merged_online_ids(
-            table,
-            'payment_online_df',
-            easypaisa_runtime_reader,
-            jazzcash_runtime_reader,
-            "df",
-        )
+        online_ds_ids = await self._merged_online_ids(table, 'payment_online_ds', runtime_reader, "ds")
+        online_df_ids = await self._merged_online_ids(table, 'payment_online_df', runtime_reader, "df")
         count_r = {
             'online_ds': len(online_ds_ids),
             'online_df': len(online_df_ids)
@@ -842,17 +905,10 @@ class getPayment(BaseHandler):
             i['online_df'] = 0
             # 采集状态
             i['online_status'] = 0
-            if is_easypaisa_payment(i):
-                bank_type_id = 97
-            elif is_jazzcash_payment(i):
-                bank_type_id = 98
-            else:
-                bank_type_id = int(i.get('bank_type_id') or i['bank_type'])
+            bank_type_id = 97 if is_easypaisa_payment(i) else int(i.get('bank_type_id') or i['bank_type'])
             if bank_type_id in login_on.keys():
                 if bank_type_id == 97:
-                    await apply_easypaisa_runtime_fields(i, easypaisa_runtime_reader)
-                elif bank_type_id == 98:
-                    await apply_jazzcash_runtime_fields(i, jazzcash_runtime_reader)
+                    apply_easypaisa_wallet_status_fields(i)
                 elif await self.redis.get('login_on_{bank}_{id}'.format(bank=login_on[bank_type_id], id=i['id'])):
                     i['online_status'] = 1
 
@@ -881,7 +937,7 @@ class getPayment(BaseHandler):
                 self.logger.info(f"[状态未变] ID: {i['id']} 不在 Redis 中，保持 online_mobile_status=0")
 
 
-            if bank_type_id not in (97, 98):
+            if bank_type_id != 97:
                 i['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', i['id']) else 0
                 i['online_df'] = 1 if await self.redis.sismember('payment_online_df', i['id']) else 0
             # 获取当前的 monitor_status 值并将其赋值给 i['monitor_status']
@@ -971,60 +1027,26 @@ class updatePaymentMonitorStatus(BaseHandler):
         # 任一银行字段命中 EP 都必须走 runtime 写面
         payment_info = await self.get_result_by_condition(
             'payment',
-            ['bank_type', 'bank_type_id', 'status', 'certified', 'manual_status', 'phone', 'channel'],
+            ['bank_type', 'bank_type_id', 'wallet_status', 'status', 'certified', 'manual_status', 'collection_status'],
             {'id': payment_id},
         )
         is_ep_payment = is_easypaisa_payment(payment_info)
-        is_jc_payment = is_jazzcash_payment(payment_info)
 
         if monitor_status == 1:
             # Set the Redis key with a 300 seconds expiration
             await self.redis.setex(f'monitor_payment_online_{payment_id}', 300, "active")  # Store an appropriate value
             if is_ep_payment:
-                runtime_service = EasyPaisaAdminRuntimeService(self.redis)
-                await runtime_service.clear_manual_off(payment_id)
-                ds_enabled = (
-                    int((payment_info or {}).get('status') or 0) == 1
-                    and int((payment_info or {}).get('certified') or 0) == 1
-                    and int((payment_info or {}).get('manual_status') or 0) != 1
-                )
-                await runtime_service.set_ds_order_dispatch(
-                    payment_id,
-                    enabled=ds_enabled,
-                    channels=[c.strip() for c in channel if c.strip()],
-                    source="admin_monitor_on",
-                )
-            elif is_jc_payment:
-                runtime_service = JazzCashAdminRuntimeService(self.redis)
-                enabled = (
-                    int((payment_info or {}).get('status') or 0) == 1
-                    and int((payment_info or {}).get('certified') or 0) == 1
-                    and int((payment_info or {}).get('manual_status') or 0) != 1
-                )
-                await runtime_service.resume_order_dispatch(
-                    payment_id,
-                    ds_enabled=enabled,
-                    df_enabled=enabled,
-                    phone=(payment_info or {}).get('phone'),
-                    channels=[c.strip() for c in channel if c.strip()],
-                    source="admin_monitor_on",
-                )
+                update_fields = monitor_status_update_fields(payment_info, monitor_status)
+                if update_fields:
+                    await self.update_result('payment', update_fields, {'id': payment_id})
 
         elif monitor_status == 0:
             # Delete the key
             await self.redis.delete(f'monitor_payment_online_{payment_id}')
             if is_ep_payment:
-                # EP: route through runtime service for correct index management
-                runtime_service = EasyPaisaAdminRuntimeService(self.redis)
-                await runtime_service.set_manual_off(payment_id, reason="admin_manual")
-            elif is_jc_payment:
-                runtime_service = JazzCashAdminRuntimeService(self.redis)
-                await runtime_service.pause_order_dispatch(
-                    payment_id,
-                    phone=(payment_info or {}).get('phone'),
-                    channels=[c.strip() for c in channel if c.strip()],
-                    source="admin_monitor_off",
-                )
+                update_fields = monitor_status_update_fields(payment_info, monitor_status)
+                if update_fields:
+                    await self.update_result('payment', update_fields, {'id': payment_id})
             else:
                 # Non-EP: preserve original legacy writes
                 # Remove the Redis key
@@ -1121,7 +1143,11 @@ class updatePayment(BaseHandler):
             return await self.json_response(data=msg[10007])
         old_payment = await self.get_result_by_condition(
             'payment',
-            ['upi', 'status', 'channel', 'certified', 'manual_status', 'bank_type_id', 'bank_type', 'phone'],
+            [
+                'upi', 'status', 'channel', 'certified', 'manual_status',
+                'wallet_status', 'collection_status', 'payout_status',
+                'bank_type_id', 'bank_type', 'phone'
+            ],
             {'id': data['id']},
         )
         if not old_payment:
@@ -1138,6 +1164,10 @@ class updatePayment(BaseHandler):
                 return await self.json_response(msg[10007])
         else:
             upi = str(data.get('upi', '')).strip()
+            is_ep_payment = (
+                str(data.get('selectedBankType') or '') == '97'
+                or is_easypaisa_payment(old_payment)
+            )
             payment_data = {
                 key: value for key, value in {
                     'bank_type': data.get('selectedBankType'),
@@ -1162,6 +1192,31 @@ class updatePayment(BaseHandler):
                     'amount_top': data.get('amount_top'),
                 }.items() if value is not None and value != ''
             }
+            manual_status_only_update = False
+            if is_ep_payment:
+                next_status = _as_int(data.get('status', old_payment.get('status')))
+                next_certified = _as_int(data.get('certified', old_payment.get('certified')))
+                next_manual_status = _as_int(data.get('manual_status', old_payment.get('manual_status')))
+                next_wallet_status = _as_int(old_payment.get('wallet_status'))
+                if 'status' in data or 'certified' in data:
+                    payment_data.update(
+                        easypaisa_business_status_from_config(
+                            next_wallet_status,
+                            next_status,
+                            next_certified,
+                            next_manual_status,
+                        )
+                    )
+                if 'manual_status' in data and 'status' not in data and 'certified' not in data:
+                    payment_data['collection_status'] = easypaisa_business_status_from_config(
+                        next_wallet_status,
+                        next_status,
+                        next_certified,
+                        next_manual_status,
+                    )['collection_status']
+                    manual_status_only_update = set(payment_data.keys()).issubset(
+                        {'manual_status', 'collection_status'}
+                    )
 
             # 验证 upi 唯一性
             if upi:      
@@ -1178,7 +1233,21 @@ class updatePayment(BaseHandler):
                     if exists:
                         return await self.json_response(msg[10227])  # "UPI 已存在"
 
-            if not await self.update_result('payment', payment_data, {'id': data['id']}):
+            if manual_status_only_update:
+                manual_collection_status = payment_data.get('collection_status', 0)
+                sql = """
+                    update payment
+                    set manual_status=%s, collection_status=%s
+                    where id=%s limit 1
+                """
+                async with self.application.db.acquire() as conn:
+                    async with conn.cursor(DictCursor) as cur:
+                        await cur.execute(
+                            sql,
+                            (next_manual_status, manual_collection_status, data['id']),
+                        )
+                    await conn.commit()
+            elif not await self.update_result('payment', payment_data, {'id': data['id']}):
                 return await self.json_response(msg[10007])
         if 'status' in data.keys():
             channels = syncPaymentToMerchant.parse_target_payments(old_payment['channel'])
@@ -1238,76 +1307,6 @@ class updatePayment(BaseHandler):
                 await syncPaymentToMerchant.sync("remove", data['id'], self.application.db, self.logger)
             else:
                 pass
-
-        def _as_int(value, default=0):
-            try:
-                return int(value)
-            except Exception:
-                return default
-
-        is_ep_payment = (
-            str(data.get('selectedBankType') or '') == '97'
-            or is_easypaisa_payment(old_payment)
-        )
-        if is_ep_payment:
-            runtime_service = EasyPaisaAdminRuntimeService(self.redis)
-            runtime_channels = syncPaymentToMerchant.parse_target_payments(
-                data.get('channel') if 'channel' in data else old_payment.get('channel', '')
-            )
-            runtime_phone = data.get('phone') or old_payment.get('phone')
-            next_status = _as_int(data.get('status', old_payment.get('status')))
-            next_certified = _as_int(data.get('certified', old_payment.get('certified')))
-            next_manual_status = _as_int(data.get('manual_status', old_payment.get('manual_status')))
-
-            if 'status' in data and next_status == 0:
-                await runtime_service.pause_order_dispatch(
-                    data['id'],
-                    phone=runtime_phone,
-                    channels=runtime_channels,
-                    source="admin_payment_disable",
-                )
-            else:
-                if 'status' in data and next_status == 1:
-                    manual_off = await runtime_service.is_manual_off(data['id'])
-                    await runtime_service.resume_order_dispatch(
-                        data['id'],
-                        ds_enabled=next_certified == 1 and next_manual_status == 0 and not manual_off,
-                        df_enabled=next_certified == 1,
-                        phone=runtime_phone,
-                        channels=runtime_channels,
-                        source="admin_payment_enable",
-                    )
-                if 'manual_status' in data:
-                    if next_manual_status == 1:
-                        await runtime_service.set_manual_off(data['id'], reason="admin_manual")
-                    else:
-                        await runtime_service.clear_manual_off(data['id'])
-                        if next_status == 1 and next_certified == 1:
-                            await runtime_service.set_ds_order_dispatch(
-                                data['id'],
-                                enabled=True,
-                                phone=runtime_phone,
-                                channels=runtime_channels,
-                                source="admin_manual_clear",
-                            )
-                if 'certified' in data:
-                    if next_certified == 0:
-                        await runtime_service.pause_order_dispatch(
-                            data['id'],
-                            phone=runtime_phone,
-                            channels=runtime_channels,
-                            source="admin_certified_off",
-                        )
-                    elif next_status == 1:
-                        manual_off = await runtime_service.is_manual_off(data['id'])
-                        await runtime_service.resume_order_dispatch(
-                            data['id'],
-                            ds_enabled=next_manual_status == 0 and not manual_off,
-                            df_enabled=True,
-                            phone=runtime_phone,
-                            channels=runtime_channels,
-                            source="admin_certified_on",
-                        )
 
         result = dict(code=20000, msg='操作成功')
         return await self.json_response(result)
@@ -5116,11 +5115,9 @@ class resettingPayment(BaseHandler):
             await self.redis.lrem(f'payment_active_{channel}', 0, data['id'])
             self.logger.info(f"Removed payment_id from channel {channel}: {data['id']}")
         if is_easypaisa_payment(payment):
-            runtime_service = EasyPaisaAdminRuntimeService(self.redis)
-            await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
-        elif is_jazzcash_payment(payment):
-            runtime_service = JazzCashAdminRuntimeService(self.redis)
-            await runtime_service.force_reset(data['id'], source="admin_resetting_payment")
+            await self.execute(easypaisa_reset_account_fields_sql(), data['id'])
+            reset_result = await reset_easypaisa_redis_state(self.redis, data['id'], qr_channels)
+            self.logger.info(f"管理员id:{user_id}, EasyPaisa重置清理Redis完成:{reset_result}")
         result = dict(code=20000, msg='重置成功')
         return await self.json_response(result)
 
@@ -5151,7 +5148,7 @@ class batchDisablePayment(BaseHandler):
                 _key = 'login_off_amazon_{id}'.format(id=payment['id'])
                 await self.redis.set(_key, int(datetime.now().timestamp()), 190 * 60)
             ids.append(payment['id'])
-        sql_update = """update payment set certified=0,status=0 where id in ({ids})""".format(ids=','.join(['%s'] * len(ids)))
+        sql_update = batch_disable_payment_update_sql(len(ids))
         if not await self.execute(sql_update, *ids):
             return await self.json_response(msg[10007])
         sql_update = """update bank_type set status=0 where id = {id} """.format(

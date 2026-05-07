@@ -54,6 +54,9 @@ class UpiPaymentSchema(Schema):
     tpin_is_true = fields.Method('set_tpin_is_true')
     account_accno = fields.String(required=False, allow_none=True)
     account_iban = fields.String(required=False, allow_none=True)
+    wallet_status = fields.Int(required=False, allow_none=True)
+    collection_status = fields.Int(required=False, allow_none=True)
+    payout_status = fields.Int(required=False, allow_none=True)
 
     @staticmethod
     def set_status(obj):

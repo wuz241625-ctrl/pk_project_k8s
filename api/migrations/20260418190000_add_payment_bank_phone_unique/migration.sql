@@ -1,3 +1,23 @@
+UPDATE `payment` p
+JOIN (
+    SELECT `id`
+    FROM (
+        SELECT
+            `id`,
+            ROW_NUMBER() OVER (
+                PARTITION BY `bank_type_id`, `phone`
+                ORDER BY `status` DESC, `certified` DESC, `id` ASC
+            ) AS `rn`
+        FROM `payment`
+        WHERE `phone` IS NOT NULL
+          AND `phone` <> ''
+    ) ranked
+    WHERE ranked.`rn` > 1
+) duplicates ON duplicates.`id` = p.`id`
+SET p.`phone` = NULL
+WHERE p.`phone` IS NOT NULL
+  AND p.`phone` <> '';
+
 SET @idx_exists := (
     SELECT COUNT(*)
     FROM INFORMATION_SCHEMA.STATISTICS

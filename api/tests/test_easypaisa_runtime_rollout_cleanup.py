@@ -163,9 +163,9 @@ class EasyPaisaRuntimeRolloutCleanupTests(unittest.TestCase):
         self.assertEqual(plan["runtime_dispatch_df_payment_ids"], ["533280"])
         self.assertEqual(plan["runtime_dispatch_ds_payment_ids"], ["533280"])
         self.assertEqual(plan["runtime_schedule_collection_payment_ids"], ["533280"])
-        self.assertEqual(plan["job_hash_payment_ids"], ["533280"])
-        self.assertEqual(plan["job_set_payment_ids"], ["533280"])
         self.assertEqual(plan["runtime_updated_payment_ids"], ["533280"])
+        self.assertNotIn("job_hash_payment_ids", plan)
+        self.assertNotIn("job_set_payment_ids", plan)
 
     def test_execute_cleanup_removes_only_targeted_easypaisa_state(self):
         from application.easypaisa_runtime.rollout_cleanup import (
@@ -187,9 +187,9 @@ class EasyPaisaRuntimeRolloutCleanupTests(unittest.TestCase):
         self.assertEqual(result["removed_runtime_dispatch_df"], 1)
         self.assertEqual(result["removed_runtime_dispatch_ds"], 1)
         self.assertEqual(result["removed_runtime_schedule_collection"], 1)
-        self.assertEqual(result["removed_job_hash"], 1)
-        self.assertEqual(result["removed_job_set"], 1)
         self.assertEqual(result["removed_runtime_updated"], 1)
+        self.assertNotIn("removed_job_hash", result)
+        self.assertNotIn("removed_job_set", result)
 
         self.assertIsNone(self.redis.get("login_on_easypaisa_533280"))
         self.assertIsNone(self.redis.get("login_on_easypaisa_923045536108"))
@@ -209,12 +209,12 @@ class EasyPaisaRuntimeRolloutCleanupTests(unittest.TestCase):
         self.assertEqual(self.redis.smembers("easypaisa_runtime:index:dispatch_ds"), set())
         self.assertEqual(self.redis.zscore("easypaisa_runtime:schedule:collection", "533280"), None)
         self.assertEqual(self.redis.zscore("easypaisa_runtime:index:updated_at", "533280"), None)
-        self.assertEqual(self.redis.hkeys("hash_easypaisa"), [])
-        self.assertEqual(self.redis.zrange("set_easypaisa", 0, -1), [])
+        self.assertEqual(self.redis.hkeys("hash_easypaisa"), ["533280"])
+        self.assertEqual(self.redis.zrange("set_easypaisa", 0, -1), ["533280"])
 
         self.assertEqual(self.redis.get("login_on_jazzcash_533999"), "1")
 
-    def test_collect_cleanup_plan_also_removes_orphan_runtime_and_job_ids_missing_in_db(self):
+    def test_collect_cleanup_plan_does_not_use_worker_queue_as_runtime_candidates(self):
         from application.easypaisa_runtime.rollout_cleanup import (
             collect_cleanup_plan,
             execute_cleanup,
@@ -225,15 +225,15 @@ class EasyPaisaRuntimeRolloutCleanupTests(unittest.TestCase):
 
         plan = collect_cleanup_plan(self.redis, set())
 
-        self.assertIn("599999", plan["job_hash_payment_ids"])
-        self.assertIn("599999", plan["job_set_payment_ids"])
+        self.assertNotIn("job_hash_payment_ids", plan)
+        self.assertNotIn("job_set_payment_ids", plan)
 
         result = execute_cleanup(self.redis, plan)
 
-        self.assertGreaterEqual(result["removed_job_hash"], 2)
-        self.assertGreaterEqual(result["removed_job_set"], 2)
-        self.assertFalse("599999" in self.redis.hkeys("hash_easypaisa"))
-        self.assertFalse("599999" in self.redis.zrange("set_easypaisa", 0, -1))
+        self.assertNotIn("removed_job_hash", result)
+        self.assertNotIn("removed_job_set", result)
+        self.assertIn("599999", self.redis.hkeys("hash_easypaisa"))
+        self.assertIn("599999", self.redis.zrange("set_easypaisa", 0, -1))
 
 
 if __name__ == "__main__":

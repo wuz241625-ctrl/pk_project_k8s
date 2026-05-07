@@ -48,8 +48,6 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
     matched_keys = collect_matching_keys(redis_client)
     easypaisa_ids = set(normalize_payment_ids(easypaisa_payment_ids))
     easypaisa_ids.update(_extract_numeric_suffixes(matched_keys))
-    easypaisa_ids.update(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH)))
-    easypaisa_ids.update(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_ONLINE)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_COLLECT_ENABLED)))
     easypaisa_ids.update(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DF_ORDER_ENABLED)))
@@ -93,15 +91,6 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
         easypaisa_ids.intersection(normalize_payment_ids(redis_client.smembers(keyspace.INDEX_DISPATCH_DS))),
         key=int,
     )
-    job_hash_ids = sorted(
-        easypaisa_ids.intersection(normalize_payment_ids(redis_client.hkeys(keyspace.JOB_HASH))),
-        key=int,
-    )
-    job_set_ids = sorted(
-        easypaisa_ids.intersection(normalize_payment_ids(redis_client.zrange(keyspace.JOB_SET, 0, -1))),
-        key=int,
-    )
-
     runtime_updated_ids = []
     runtime_schedule_collection_ids = []
     for payment_id in sorted(easypaisa_ids, key=int):
@@ -122,8 +111,6 @@ def collect_cleanup_plan(redis_client, easypaisa_payment_ids: Iterable[object]) 
         "runtime_dispatch_df_payment_ids": runtime_dispatch_df_ids,
         "runtime_dispatch_ds_payment_ids": runtime_dispatch_ds_ids,
         "runtime_schedule_collection_payment_ids": runtime_schedule_collection_ids,
-        "job_hash_payment_ids": job_hash_ids,
-        "job_set_payment_ids": job_set_ids,
         "runtime_updated_payment_ids": runtime_updated_ids,
     }
 
@@ -140,8 +127,6 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
     runtime_dispatch_df_ids = plan.get("runtime_dispatch_df_payment_ids", [])
     runtime_dispatch_ds_ids = plan.get("runtime_dispatch_ds_payment_ids", [])
     runtime_schedule_collection_ids = plan.get("runtime_schedule_collection_payment_ids", [])
-    job_hash_ids = plan.get("job_hash_payment_ids", [])
-    job_set_ids = plan.get("job_set_payment_ids", [])
     runtime_updated_ids = plan.get("runtime_updated_payment_ids", [])
 
     deleted_keys = redis_client.delete(*matched_keys) if matched_keys else 0
@@ -188,12 +173,6 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
         if runtime_dispatch_ds_ids
         else 0
     )
-    removed_job_hash = (
-        redis_client.hdel(keyspace.JOB_HASH, *job_hash_ids) if job_hash_ids else 0
-    )
-    removed_job_set = (
-        redis_client.zrem(keyspace.JOB_SET, *job_set_ids) if job_set_ids else 0
-    )
     removed_runtime_updated = (
         redis_client.zrem(keyspace.INDEX_UPDATED_AT, *runtime_updated_ids) if runtime_updated_ids else 0
     )
@@ -215,8 +194,6 @@ def execute_cleanup(redis_client, plan: Dict[str, List[str]]) -> Dict[str, int]:
         "removed_runtime_dispatch_df": removed_runtime_dispatch_df,
         "removed_runtime_dispatch_ds": removed_runtime_dispatch_ds,
         "removed_runtime_schedule_collection": removed_runtime_schedule_collection,
-        "removed_job_hash": removed_job_hash,
-        "removed_job_set": removed_job_set,
         "removed_runtime_updated": removed_runtime_updated,
     }
 
@@ -234,7 +211,5 @@ def summarize_plan(plan: Dict[str, List[str]]) -> Dict[str, int]:
         "runtime_dispatch_df_payment_ids": len(plan.get("runtime_dispatch_df_payment_ids", [])),
         "runtime_dispatch_ds_payment_ids": len(plan.get("runtime_dispatch_ds_payment_ids", [])),
         "runtime_schedule_collection_payment_ids": len(plan.get("runtime_schedule_collection_payment_ids", [])),
-        "job_hash_payment_ids": len(plan.get("job_hash_payment_ids", [])),
-        "job_set_payment_ids": len(plan.get("job_set_payment_ids", [])),
         "runtime_updated_payment_ids": len(plan.get("runtime_updated_payment_ids", [])),
     }

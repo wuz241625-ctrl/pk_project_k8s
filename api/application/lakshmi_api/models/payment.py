@@ -48,6 +48,9 @@ class Payment(Base):
     account_entire = Column(LONGTEXT, comment='账户完整列表')
     account_accno: Mapped[str] = Column("account_accno", String(50))
     account_iban: Mapped[str] = Column("account_iban", String(50))
+    wallet_status: Mapped[int] = Column("wallet_status", Integer, default=0)
+    collection_status: Mapped[int] = Column("collection_status", Integer, default=0)
+    payout_status: Mapped[int] = Column("payout_status", Integer, default=0)
 
     user: Mapped["User"] = relationship("User", back_populates="payments")
     bank: Mapped["BankType"] = relationship("BankType", back_populates="payments")

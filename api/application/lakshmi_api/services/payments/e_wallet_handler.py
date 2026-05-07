@@ -1,12 +1,9 @@
 import json
 from datetime import datetime
 
-from application.easypaisa_runtime.reader import EasyPaisaRuntimeReader
-from application.easypaisa_runtime.runtime_service import EasyPaisaRuntimeService
-from application.jazzcash_runtime.reader import JazzCashRuntimeReader
-from application.jazzcash_runtime.runtime_service import JazzCashRuntimeService
 from application.lakshmi_api.base import ApiError, ApiInfo
 from application.lakshmi_api.models import Payment
+from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
 
 
 async def shared_handle_activation(self, payment, otp_key, limit_request_otp_key):
@@ -103,8 +100,6 @@ async def shared_send_otp(self, payment, bank_name, redis_key, is_prepare_login)
 
 
 class EWalletHandler:
-    EASYPAISA_BANK_TYPE_ID = 97
-    JAZZCASH_BANK_TYPE_ID = 98
     LOGIN_METHOD = None
     LOGOUT_PREFIX = None
     OTP_LIMIT_PREFIX = None
@@ -121,9 +116,16 @@ class EWalletHandler:
         with self.db_orm.sessionmaker() as session:
             payment = session.query(Payment).filter(Payment.id == payment_id).first()
             payment.certified = 1
+            if self._is_easypaisa_payment(payment):
+                business_enabled = int(payment.wallet_status or 0) == 1 and int(payment.status or 0) == 1
+                if business_enabled:
+                    payment.collection_status = 0 if int(payment.manual_status or 0) == 1 else 1
+                    payment.payout_status = 1
+                else:
+                    payment.collection_status = 0
+                    payment.payout_status = 0
             session.commit()
             await self.destroy_log_off_key(payment)
-            await self._sync_runtime_collection_dispatch(payment, enabled=True, source="app_selling_active")
             if payment.certified == 1:
                 return True
             else:
@@ -133,10 +135,12 @@ class EWalletHandler:
         with self.db_orm.sessionmaker() as session:
             payment = session.query(Payment).filter(Payment.id == payment_id).first()
             payment.certified = 0
+            if self._is_easypaisa_payment(payment):
+                payment.collection_status = 0
+                payment.payout_status = 0
             session.commit()
-            if payment.status and not self._is_runtime_owned_payment(payment):
+            if payment.status and not self._is_easypaisa_payment(payment):
                 await self.push_log_off_key(payment)
-            await self._sync_runtime_collection_dispatch(payment, enabled=False, source="app_selling_inactive")
             if payment.certified == 0:
                 return True
             else:
@@ -177,70 +181,44 @@ class EWalletHandler:
         key = f"{self.__class__.LOGOUT_PREFIX}_{payment.id}"
         await self.redis.delete(key)
 
-    def _use_easypaisa_runtime_reader(self):
+    def _use_easypaisa_mysql_final_status(self):
         return self.__class__.ONLINE_PREFIX == "login_on_easypaisa"
-
-    def _use_jazzcash_runtime_reader(self):
-        return self.__class__.ONLINE_PREFIX == "login_on_jazzcash"
 
     @staticmethod
     def _is_easypaisa_payment(payment):
         return (
-            str(getattr(payment, "bank_type_id", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
-            or str(getattr(payment, "bank_type", "")) == str(EWalletHandler.EASYPAISA_BANK_TYPE_ID)
+            str(getattr(payment, "bank_type_id", "") or "") == "97"
+            or str(getattr(payment, "bank_type", "") or "") == "97"
         )
 
-    @staticmethod
-    def _is_jazzcash_payment(payment):
-        return (
-            str(getattr(payment, "bank_type_id", "")) == str(EWalletHandler.JAZZCASH_BANK_TYPE_ID)
-            or str(getattr(payment, "bank_type", "")) == str(EWalletHandler.JAZZCASH_BANK_TYPE_ID)
-        )
+    def _read_mysql_business_status(self, payment_id):
+        if not self.db_orm:
+            return None
+        sessionmaker = getattr(self.db_orm, "sessionmaker", None)
+        if callable(sessionmaker):
+            session = sessionmaker()
+            if session is None:
+                return None
+            with session:
+                return self._read_mysql_business_status_from_session(session, payment_id)
+        return self._read_mysql_business_status_from_session(self.db_orm, payment_id)
 
-    @classmethod
-    def _is_runtime_owned_payment(cls, payment):
-        return cls._is_easypaisa_payment(payment) or cls._is_jazzcash_payment(payment)
-
-    async def _sync_runtime_collection_dispatch(self, payment, *, enabled: bool, source: str):
-        if self._is_easypaisa_payment(payment):
-            runtime_service = EasyPaisaRuntimeService(self.redis)
-        elif self._is_jazzcash_payment(payment):
-            runtime_service = JazzCashRuntimeService(self.redis)
-        else:
-            return
-        if enabled:
-            manual_status = int(getattr(payment, "manual_status", 0) or 0)
-            status_enabled = int(getattr(payment, "status", 0) or 0) == 1
-            await runtime_service.resume_order_dispatch(
-                payment.id,
-                ds_enabled=status_enabled and manual_status == 0,
-                df_enabled=status_enabled,
-                phone=getattr(payment, "phone", None),
-                channels=getattr(payment, "channel", None),
-                source=source,
-            )
-        else:
-            await runtime_service.pause_order_dispatch(
-                payment.id,
-                phone=getattr(payment, "phone", None),
-                channels=getattr(payment, "channel", None),
-                source=source,
-            )
+    def _read_mysql_business_status_from_session(self, session, payment_id):
+        payment = session.query(Payment).filter(Payment.id == payment_id).first()
+        if not payment:
+            return None
+        return {
+            "collection": can_dispatch_ds(payment),
+            "payout": can_dispatch_df(payment),
+        }
 
     # TODO: Fix use payment_id, different with others service problem
     async def selling_order_status(self, payment_id):
-        if self._use_easypaisa_runtime_reader():
-            reader = EasyPaisaRuntimeReader(self.redis)
-            value = await reader.is_selling_order_online(payment_id)
+        if self._use_easypaisa_mysql_final_status():
+            status = self._read_mysql_business_status(payment_id)
+            value = bool(status and status["collection"])
             self.logger.info(
-                f"selling_order_status() payment_id: {payment_id}, source: runtime_reader, value: {value}"
-            )
-            return value
-        if self._use_jazzcash_runtime_reader():
-            reader = JazzCashRuntimeReader(self.redis)
-            value = await reader.is_selling_order_online(payment_id)
-            self.logger.info(
-                f"selling_order_status() payment_id: {payment_id}, source: jazzcash_runtime_reader, value: {value}"
+                f"selling_order_status() payment_id: {payment_id}, source: mysql_business_status, value: {value}"
             )
             return value
         key = f"{self.__class__.ONLINE_PREFIX}_{payment_id}"
@@ -252,12 +230,9 @@ class EWalletHandler:
         return await self.redis.get(f"orders_ds_limit_{payment_id}") is not None
 
     async def place_order_status(self, payment_id):
-        if self._use_easypaisa_runtime_reader():
-            reader = EasyPaisaRuntimeReader(self.redis)
-            return await reader.is_place_order_online(payment_id)
-        if self._use_jazzcash_runtime_reader():
-            reader = JazzCashRuntimeReader(self.redis)
-            return await reader.is_place_order_online(payment_id)
+        if self._use_easypaisa_mysql_final_status():
+            status = self._read_mysql_business_status(payment_id)
+            return bool(status and status["payout"])
         return await self.redis.sismember('payment_online_df', payment_id)
 
     @staticmethod

@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import parse_qs
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -50,12 +50,15 @@ class FakeRedis:
         self.setex_calls.append((key, ttl, value))
         return True
 
-    async def delete(self, key):
-        self.delete_calls.append(key)
-        existed = key in self.storage
-        self.storage.pop(key, None)
-        self.ttl_map.pop(key, None)
-        return 1 if existed else 0
+    async def delete(self, *keys):
+        removed = 0
+        for key in keys:
+            self.delete_calls.append(key)
+            existed = key in self.storage
+            self.storage.pop(key, None)
+            self.ttl_map.pop(key, None)
+            removed += 1 if existed else 0
+        return removed
 
     async def hset(self, key, field, value):
         bucket = self.hash_buckets.setdefault(key, {})
@@ -210,31 +213,6 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
                         self._session(source), source, target, "test"
                     )
                 self.assertEqual(ctx.exception.code, "INVALID_TRANSITION")
-
-    def test_save_fingerprint_uses_root_fingerprint_mount_dir(self):
-        asyncio.run(self._run_save_fingerprint_root_mount_dir_case())
-
-    async def _run_save_fingerprint_root_mount_dir_case(self):
-        session = self._session(LoginStatus.FINGERPRINT_UPLOAD_REQUIRED)
-        self.easypaisa._save_payment = AsyncMock(return_value=True)
-        opened = mock_open()
-        with patch("application.app.login.banks.easypaisa.os.makedirs") as makedirs, patch(
-            "builtins.open", opened
-        ):
-            result = await self.easypaisa._save_fingerprint(
-                session,
-                b"zip-data",
-                "easypaisa",
-                533290,
-                "03445021275",
-            )
-
-        self.assertTrue(result)
-        fingerprint_path = self.easypaisa._save_payment.await_args.kwargs["fingerprint_path"]
-        self.assertEqual(fingerprint_path, "/fingerprint/easypaisa_533290_03445021275.zip")
-        makedirs.assert_called_once_with("/fingerprint/", exist_ok=True)
-        opened.assert_called_once_with(fingerprint_path, "wb")
-        opened().write.assert_called_once_with(b"zip-data")
 
     def test_verify_otp_replay_success_sets_fingerprint_uploaded(self):
         asyncio.run(self._run_verify_otp_replay_case(True, LoginStatus.FINGERPRINT_UPLOADED))
@@ -474,6 +452,9 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
     def test_perform_verify_fingerprint_corruption_maps_to_rejected(self):
         asyncio.run(self._run_perform_verify_fingerprint_corruption_case())
 
+    def test_perform_verify_fingerprint_business_500_maps_to_transient(self):
+        asyncio.run(self._run_perform_verify_fingerprint_business_500_case())
+
     async def _run_perform_verify_fingerprint_corruption_case(self):
         session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
         self.easypaisa._build_verify_fingerprint_request = MagicMock(return_value="payload")
@@ -493,6 +474,26 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "rejected")
         self.assertIn("Fingerprint data corruption", result["message"])
+
+    async def _run_perform_verify_fingerprint_business_500_case(self):
+        session = self._session(LoginStatus.FINGERPRINT_UPLOADED)
+        self.easypaisa._build_verify_fingerprint_request = MagicMock(return_value="payload")
+        self.easypaisa._log_response = MagicMock()
+        self.easypaisa.retry_make_request = MagicMock(
+            return_value=SimpleNamespace(status_code=200, text="raw-response")
+        )
+        self.easypaisa._decode_indus_response = MagicMock(
+            return_value={
+                "code": 500,
+                "msg": "Gateway timeout",
+                "data": None,
+            }
+        )
+
+        result = await self.easypaisa._perform_verify_fingerprint(session)
+
+        self.assertEqual(result["outcome"], "transient")
+        self.assertEqual(result["message"], "Gateway timeout")
 
     def test_verify_fingerprint_http_cleanup_db_failure_is_best_effort(self):
         asyncio.run(self._run_verify_fingerprint_cleanup_db_failure_case())
@@ -524,6 +525,12 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
     def test_second_login_http_needs_change_pin_sets_awaiting_pin_change(self):
         asyncio.run(self._run_second_login_needs_pin_change_case())
 
+    def test_second_login_http_bound_payment_without_redis_validates_owner(self):
+        asyncio.run(self._run_second_login_bound_payment_without_redis_case())
+
+    def test_second_login_http_bound_payment_other_partner_is_rejected(self):
+        asyncio.run(self._run_second_login_bound_payment_other_partner_case())
+
     async def _run_second_login_needs_pin_change_case(self):
         payment_id = 533280
         redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
@@ -545,6 +552,78 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(result["status"], "error")
         self.assertEqual(result["data"]["code"], "SL_NEEDS_PIN_CHANGE")
         self.assertEqual(result["data"]["phase"], LoginStatus.AWAITING_PIN_CHANGE)
+
+    async def _run_second_login_bound_payment_without_redis_case(self):
+        payment_id = 533280
+        payment = SimpleNamespace(
+            id=payment_id,
+            phone="03045536108",
+            user_id=7,
+            pin="1234",
+            net_trade_pw="pass",
+            name="tester",
+            account_entire=None,
+            account_accno="88521642",
+            account_iban="PK12TMFB0000000088521642",
+            channel="1001,1010",
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = payment
+        self.db_session.query = MagicMock(return_value=query)
+        self.easypaisa._get_bank_type_id = AsyncMock(return_value=97)
+        self.easypaisa._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.easypaisa._is_account_registered = AsyncMock(return_value=True)
+        self.easypaisa._perform_second_login = AsyncMock(return_value={"outcome": "success"})
+
+        result = await self.easypaisa.second_login_http(
+            {"bankname": "easypaisa", "payment_id": str(payment_id)}
+        )
+
+        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=str(payment_id))
+        stored = json.loads(await self.redis.get(redis_key))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(stored["status"], LoginStatus.SECOND_LOGIN_PASSED)
+        self.assertEqual(stored["phone"], "03045536108")
+        self.assertEqual(stored["partner_id"], 7)
+        self.easypaisa._is_account_registered.assert_awaited_once_with("03045536108")
+        self.easypaisa._perform_second_login.assert_awaited_once()
+
+    async def _run_second_login_bound_payment_other_partner_case(self):
+        payment_id = 533280
+        payment = SimpleNamespace(
+            id=payment_id,
+            phone="03045536108",
+            user_id=9,
+            pin="1234",
+            net_trade_pw="pass",
+            name="tester",
+            account_entire=None,
+            account_accno="88521642",
+            account_iban="PK12TMFB0000000088521642",
+            channel="1001,1010",
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = payment
+        self.db_session.query = MagicMock(return_value=query)
+        self.easypaisa._get_bank_type_id = AsyncMock(return_value=97)
+        self.easypaisa._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
+        self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.easypaisa._is_account_registered = AsyncMock(
+            side_effect=AssertionError("跨码商不能访问云机注册检查")
+        )
+        self.easypaisa._perform_second_login = AsyncMock(
+            side_effect=AssertionError("跨码商不能调用secondLogin")
+        )
+
+        with self.assertRaises(NewApiError) as ctx:
+            await self.easypaisa.second_login_http(
+                {"bankname": "easypaisa", "payment_id": str(payment_id)}
+            )
+
+        self.assertEqual(ctx.exception.code, "10402")
+        self.easypaisa._is_account_registered.assert_not_awaited()
+        self.easypaisa._perform_second_login.assert_not_awaited()
 
     def test_payment_status_http_is_read_only(self):
         asyncio.run(self._run_payment_status_read_only_case())
@@ -625,6 +704,12 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
     def test_pre_login_same_merchant_phone_reuses_existing_payment_id(self):
         asyncio.run(self._run_pre_login_same_merchant_phone_case())
 
+    def test_pre_login_first_time_phone_still_returns_send_sms(self):
+        asyncio.run(self._run_pre_login_first_time_phone_case())
+
+    def test_pre_login_payment_id_owned_by_other_partner_is_rejected(self):
+        asyncio.run(self._run_pre_login_payment_id_owned_by_other_partner_case())
+
     async def _run_pre_login_other_merchant_phone_case(self):
         self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
         self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
@@ -671,6 +756,7 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
         self.easypaisa._select_proxy_ip = AsyncMock(return_value="")
         self.easypaisa._get_session_data = AsyncMock(return_value=None)
+        self.easypaisa._is_account_registered = AsyncMock(return_value=True)
 
         result = await self.easypaisa.pre_login_http(
             {
@@ -685,41 +771,116 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"]["id"], 533280)
+        self.assertEqual(result["data"]["next_step"], "second_login")
         redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=533280)
-        stored = json.loads(await self.redis.get(redis_key))
-        self.assertEqual(stored["id"], 533280)
-        self.assertFalse(stored["is_new_user"])
+        self.assertIsNone(await self.redis.get(redis_key))
         self.easypaisa._check_payment.assert_awaited_once()
         self.easypaisa._get_payment_interface_lock.assert_awaited_once()
+        self.easypaisa._is_account_registered.assert_awaited_once_with("03045536108")
 
-    def test_pre_login_same_merchant_phone_persists_runtime_session_snapshot(self):
-        asyncio.run(self._run_pre_login_runtime_snapshot_case())
+        with self.assertRaises(NewApiError) as ctx:
+            await self.easypaisa.send_otp_http(
+                {"bankname": "easypaisa", "payment_id": "533280"}
+            )
+        self.assertEqual(ctx.exception.code, ErrorCode.SessionNotExist)
 
-    def test_pre_login_ignores_legacy_online_marker(self):
-        asyncio.run(self._run_pre_login_ignores_legacy_online_marker_case())
-
-    def test_pre_login_duplicate_lock_uses_runtime_lock_key(self):
-        asyncio.run(self._run_pre_login_duplicate_lock_runtime_key_case())
-
-    def test_pre_login_clears_stale_runtime_session_when_snapshot_offline(self):
-        asyncio.run(self._run_pre_login_clears_stale_runtime_session_case())
-
-    async def _run_pre_login_runtime_snapshot_case(self):
+    async def _run_pre_login_first_time_phone_case(self):
         self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
         self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
-        self.easypaisa._check_payment = AsyncMock(
-            return_value={
-                "id": 533280,
-                "phone": "03045536108",
-                "user_id": 7,
-            }
-        )
+        self.easypaisa._check_payment = AsyncMock(return_value=None)
         self.easypaisa._get_payment_interface_lock = AsyncMock(
             return_value={"lock_id": "lock", "lock_value": "value"}
         )
         self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
         self.easypaisa._select_proxy_ip = AsyncMock(return_value="")
         self.easypaisa._get_session_data = AsyncMock(return_value=None)
+        self.easypaisa._is_account_registered = AsyncMock(
+            side_effect=AssertionError("首次手机号不应检查已绑定云机")
+        )
+
+        result = await self.easypaisa.pre_login_http(
+            {
+                "step": "complete_login",
+                "bankname": "easypaisa",
+                "phone": "03045536108",
+                "password": "pass",
+                "pin": "1234",
+                "name": "tester",
+            }
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["data"]["id"], "03045536108")
+        self.assertEqual(result["data"]["next_step"], "send_sms")
+        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id="03045536108")
+        stored = json.loads(await self.redis.get(redis_key))
+        self.assertEqual(stored["status"], LoginStatus.PRE_LOGIN_CREATED)
+        self.easypaisa._is_account_registered.assert_not_awaited()
+
+    async def _run_pre_login_payment_id_owned_by_other_partner_case(self):
+        payment = SimpleNamespace(
+            id=533280,
+            phone="03045536108",
+            user_id=9,
+            bank_type=97,
+            bank_type_id=97,
+            pin="1234",
+            upi="03045536108",
+            status=1,
+            created_at=None,
+            account_entire=None,
+            account_accno="88521642",
+            account_iban="PK12TMFB0000000088521642",
+        )
+        query = MagicMock()
+        query.filter.return_value.first.return_value = payment
+        self.db_session.query = MagicMock(return_value=query)
+        self.easypaisa._get_bank_type_id = AsyncMock(return_value=97)
+        self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
+        self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
+        self.easypaisa._get_payment_interface_lock = AsyncMock(
+            side_effect=AssertionError("跨码商 payment_id 不应继续获取接口锁")
+        )
+
+        with self.assertRaises(NewApiError) as ctx:
+            await self.easypaisa.pre_login_http(
+                {
+                    "step": "complete_login",
+                    "bankname": "easypaisa",
+                    "phone": "03045536108",
+                    "password": "pass",
+                    "pin": "1234",
+                    "name": "tester",
+                    "payment_id": "533280",
+                }
+            )
+
+        self.assertEqual(ctx.exception.code, "10402")
+        self.easypaisa._get_payment_interface_lock.assert_not_awaited()
+
+    def test_pre_login_same_merchant_phone_persists_pre_login_session_only(self):
+        asyncio.run(self._run_pre_login_pre_login_session_case())
+
+    def test_pre_login_ignores_legacy_online_marker(self):
+        asyncio.run(self._run_pre_login_ignores_legacy_online_marker_case())
+
+    def test_pre_login_duplicate_lock_uses_login_lock_key(self):
+        asyncio.run(self._run_pre_login_duplicate_lock_login_key_case())
+
+    def test_pre_login_clears_stale_active_session_when_mysql_wallet_offline(self):
+        asyncio.run(self._run_pre_login_clears_stale_active_session_case())
+
+    async def _run_pre_login_pre_login_session_case(self):
+        self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
+        self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
+        self.easypaisa._check_payment = AsyncMock(return_value=None)
+        self.easypaisa._get_payment_interface_lock = AsyncMock(
+            return_value={"lock_id": "lock", "lock_value": "value"}
+        )
+        self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
+        self.easypaisa._select_proxy_ip = AsyncMock(return_value="")
+        self.easypaisa._get_session_data = AsyncMock(return_value=None)
+        self.easypaisa._is_account_registered = AsyncMock(return_value=True)
 
         await self.easypaisa.pre_login_http(
             {
@@ -733,14 +894,11 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
             }
         )
 
-        runtime_session = json.loads(await self.redis.get("easypaisa_runtime:session:533280"))
-        runtime_snapshot = json.loads(await self.redis.get("easypaisa_runtime:snapshot:533280"))
-        self.assertEqual(runtime_session["schema_version"], 1)
-        self.assertEqual(runtime_session["status"], LoginStatus.PRE_LOGIN_CREATED)
-        self.assertEqual(runtime_snapshot["payment_id"], 533280)
-        self.assertEqual(runtime_snapshot["session_phase"], LoginStatus.PRE_LOGIN_CREATED)
-        self.assertEqual(runtime_snapshot["channels"], ["1001"])
-        self.assertFalse(runtime_snapshot["online"])
+        pre_login_session = json.loads(await self.redis.get("pre_login_easypaisa_03045536108"))
+        self.assertEqual(pre_login_session["status"], LoginStatus.PRE_LOGIN_CREATED)
+        self.assertEqual(pre_login_session["qr_channel"], 1001)
+        self.assertIsNone(await self.redis.get("easypaisa_runtime:session:03045536108"))
+        self.assertIsNone(await self.redis.get("easypaisa_runtime:snapshot:03045536108"))
 
     async def _run_pre_login_ignores_legacy_online_marker_case(self):
         await self.redis.set("login_on_easypaisa_533280", "1")
@@ -761,6 +919,7 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
         self.easypaisa._select_proxy_ip = AsyncMock(return_value="")
         self.easypaisa._get_session_data = AsyncMock(return_value=None)
+        self.easypaisa._is_account_registered = AsyncMock(return_value=True)
 
         result = await self.easypaisa.pre_login_http(
             {
@@ -775,9 +934,10 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["data"]["id"], 533280)
+        self.assertEqual(result["data"]["next_step"], "second_login")
 
-    async def _run_pre_login_duplicate_lock_runtime_key_case(self):
-        await self.redis.set(keyspace.lock_phone_key("03045536108"), "1")
+    async def _run_pre_login_duplicate_lock_login_key_case(self):
+        await self.redis.set(self.easypaisa._login_lock_phone_key("03045536108"), "1")
 
         self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
         self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
@@ -801,8 +961,19 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, ErrorCode.Logined)
         self.easypaisa._get_payment_interface_lock.assert_not_awaited()
 
-    async def _run_pre_login_clears_stale_runtime_session_case(self):
-        payment_id = 533280
+    async def _run_pre_login_clears_stale_active_session_case(self):
+        payment_id = "03045536108"
+        pre_login_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
+        await self.redis.set(
+            pre_login_key,
+            json.dumps(
+                {
+                    "id": payment_id,
+                    "phone": "03045536108",
+                    "status": LoginStatus.ACTIVE_SUCCESSFUL,
+                }
+            ),
+        )
         await self.redis.set(
             keyspace.session_key(payment_id),
             json.dumps(
@@ -827,21 +998,24 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
                 }
             ),
         )
+        await self.redis.set(keyspace.legacy_login_on_payment_key(payment_id), "1")
 
         self.easypaisa._check_login_failed_attempts = AsyncMock(return_value=False)
         self.easypaisa._verify_payment_password_bcrypt = AsyncMock(return_value=True)
-        self.easypaisa._check_payment = AsyncMock(
-            return_value={
-                "id": payment_id,
-                "phone": "03045536108",
-                "user_id": 7,
-            }
-        )
+        self.easypaisa._check_payment = AsyncMock(return_value=None)
         self.easypaisa._get_payment_interface_lock = AsyncMock(
             return_value={"lock_id": "lock", "lock_value": "value"}
         )
         self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
         self.easypaisa._select_proxy_ip = AsyncMock(return_value="")
+        self.easypaisa._is_account_registered = AsyncMock(return_value=True)
+        self.easypaisa._query_payment = AsyncMock(
+            return_value={
+                "id": payment_id,
+                "phone": "03045536108",
+                "wallet_status": 0,
+            }
+        )
 
         result = await self.easypaisa.pre_login_http(
             {
@@ -855,15 +1029,18 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
             }
         )
 
-        runtime_session = json.loads(await self.redis.get(keyspace.session_key(payment_id)))
         self.assertEqual(result["status"], "success")
-        self.assertEqual(runtime_session["status"], LoginStatus.PRE_LOGIN_CREATED)
-        self.assertIn(keyspace.session_key(payment_id), self.redis.delete_calls)
+        self.assertEqual(result["data"]["next_step"], "send_sms")
+        refreshed_session = json.loads(await self.redis.get(pre_login_key))
+        self.assertEqual(refreshed_session["status"], LoginStatus.PRE_LOGIN_CREATED)
+        self.assertIsNone(await self.redis.get(keyspace.session_key(payment_id)))
+        self.assertIsNone(await self.redis.get(keyspace.snapshot_key(payment_id)))
+        self.assertIsNone(await self.redis.get(keyspace.legacy_login_on_payment_key(payment_id)))
 
-    def test_select_accts_http_persists_runtime_active_snapshot(self):
-        asyncio.run(self._run_select_accts_runtime_snapshot_case())
+    def test_select_accts_http_persists_mysql_final_state_without_runtime_snapshot(self):
+        asyncio.run(self._run_select_accts_mysql_final_state_case())
 
-    async def _run_select_accts_runtime_snapshot_case(self):
+    async def _run_select_accts_mysql_final_state_case(self):
         payment_id = 533280
         redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
         session = self._session(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
@@ -895,96 +1072,19 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
             {"bankname": "easypaisa", "payment_id": payment_id, "accno": "88521643"}
         )
 
-        runtime_snapshot = json.loads(await self.redis.get("easypaisa_runtime:snapshot:533280"))
         self.assertEqual(result["status"], "success")
-        self.assertEqual(runtime_snapshot["session_phase"], LoginStatus.ACTIVE_SUCCESSFUL)
-        self.assertTrue(runtime_snapshot["online"])
-        self.assertTrue(runtime_snapshot["dispatch_df"])
-        self.assertEqual(runtime_snapshot["channels"], ["1001"])
-        self.assertEqual(runtime_snapshot["selected_accno"], "88521643")
-        self.assertEqual(runtime_snapshot["selected_iban"], "PK12HABB0000000088521643")
-        self.assertTrue(await self.redis.sismember("payment_online_df", 533280))
+        self.assertIsNone(await self.redis.get("easypaisa_runtime:snapshot:533280"))
+        self.assertIsNone(await self.redis.get("easypaisa_runtime:session:533280"))
+        self.assertFalse(await self.redis.sismember("payment_online_df", 533280))
+        update_kwargs = self.easypaisa._update_payment.call_args.kwargs
+        self.assertEqual(update_kwargs["account_accno"], "88521643")
+        self.assertEqual(update_kwargs["account_iban"], "PK12HABB0000000088521643")
+        self.assertEqual(update_kwargs["account_type"], 20)
 
-    def test_select_accts_http_activates_payment_and_runtime_dispatch(self):
-        asyncio.run(self._run_select_accts_activates_payment_and_runtime_dispatch_case())
+    def test_payment_status_http_ignores_retired_runtime_snapshot_when_session_missing(self):
+        asyncio.run(self._run_payment_status_ignores_runtime_case())
 
-    async def _run_select_accts_activates_payment_and_runtime_dispatch_case(self):
-        payment_id = 533280
-        redis_key = self.easypaisa.PRELOGIN_KEY.format(bankname="easypaisa", payment_id=payment_id)
-        session = self._session(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
-        session["qr_channel"] = 1001
-        session["account_entire"] = json.dumps(
-            [
-                {
-                    "accno": "88521643",
-                    "accountStatus": "ACTIVE",
-                    "accountName": "Easypaisa Wallet",
-                    "IBAN": "PK12TMFB0000000088521643",
-                }
-            ]
-        )
-        await self.redis.setex(redis_key, 300, json.dumps(session))
-        await self.redis.set(
-            keyspace.snapshot_key(payment_id),
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "payment_id": payment_id,
-                    "phone": session["phone"],
-                    "session_phase": LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-                    "online": False,
-                    "collect_enabled": False,
-                    "ds_order_enabled": False,
-                    "df_order_enabled": False,
-                    "dispatch_ds": False,
-                    "dispatch_df": False,
-                    "channels": ["1001"],
-                }
-            ),
-        )
-
-        captured_update = {}
-
-        async def capture_update(payment_id_arg, session_arg, **kwargs):
-            captured_update["payment_id"] = payment_id_arg
-            captured_update["status"] = session_arg.get("status")
-            captured_update["kwargs"] = kwargs
-            return True
-
-        self.easypaisa._get_payment_interface_lock = AsyncMock(return_value={"lock_id": "lock", "lock_value": "value"})
-        self.easypaisa._release_payment_interface_lock = AsyncMock(return_value=True)
-        self.easypaisa._update_payment = AsyncMock(side_effect=capture_update)
-
-        result = await self.easypaisa.select_accts_http(
-            {"bankname": "easypaisa", "payment_id": payment_id, "accno": "88521643"}
-        )
-
-        runtime_snapshot = json.loads(await self.redis.get(keyspace.snapshot_key(payment_id)))
-        stored_session = json.loads(await self.redis.get(redis_key))
-
-        self.assertEqual(result["status"], "success")
-        self.assertEqual(captured_update["payment_id"], payment_id)
-        self.assertEqual(captured_update["status"], LoginStatus.ACTIVE_SUCCESSFUL)
-        self.assertEqual(captured_update["kwargs"]["account_accno"], "88521643")
-        self.assertEqual(captured_update["kwargs"]["account_iban"], "PK12TMFB0000000088521643")
-        self.assertEqual(stored_session["status"], LoginStatus.ACTIVE_SUCCESSFUL)
-        self.assertEqual(runtime_snapshot["session_phase"], LoginStatus.ACTIVE_SUCCESSFUL)
-        self.assertTrue(runtime_snapshot["online"])
-        self.assertTrue(runtime_snapshot["collect_enabled"])
-        self.assertTrue(runtime_snapshot["ds_order_enabled"])
-        self.assertTrue(runtime_snapshot["df_order_enabled"])
-        self.assertTrue(runtime_snapshot["dispatch_ds"])
-        self.assertTrue(runtime_snapshot["dispatch_df"])
-        self.assertTrue(await self.redis.sismember(keyspace.INDEX_COLLECT_ENABLED, payment_id))
-        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DS_ORDER_ENABLED, payment_id))
-        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DF_ORDER_ENABLED, payment_id))
-        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DISPATCH_DS, payment_id))
-        self.assertTrue(await self.redis.sismember(keyspace.INDEX_DISPATCH_DF, payment_id))
-
-    def test_payment_status_http_prefers_runtime_snapshot_when_session_missing(self):
-        asyncio.run(self._run_payment_status_from_runtime_case())
-
-    async def _run_payment_status_from_runtime_case(self):
+    async def _run_payment_status_ignores_runtime_case(self):
         await self.redis.set(
             "easypaisa_runtime:snapshot:533280",
             json.dumps(
@@ -1006,11 +1106,9 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "success")
-        self.assertEqual(result["datas"][0]["status"], LoginStatus.FINGERPRINT_VERIFIED)
-        self.assertEqual(result["datas"][0]["next_action"], "second_login")
-        self.assertEqual(result["datas"][0]["cd_until"], 123456)
+        self.assertEqual(result["datas"], [])
 
-    def test_force_logout_updates_runtime_snapshot_and_kickoff_keys(self):
+    def test_force_logout_updates_mysql_final_state_without_kickoff_keys(self):
         asyncio.run(self._run_force_logout_runtime_cleanup_case())
 
     async def _run_force_logout_runtime_cleanup_case(self):
@@ -1070,25 +1168,22 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         result = await self.easypaisa._force_logout(payment_id, "easypaisa", "URM10004_SESSION_EXPIRED")
 
         self.assertTrue(result)
-        runtime_snapshot = json.loads(await self.redis.get(keyspace.snapshot_key(payment_id)))
-        self.assertEqual(runtime_snapshot["session_phase"], "offline")
-        self.assertFalse(runtime_snapshot["online"])
-        self.assertEqual(runtime_snapshot["last_transition"], "URM10004_SESSION_EXPIRED")
-        self.assertEqual(await self.redis.get(keyspace.kickoff_key(payment_id)), "1")
-        self.assertEqual(await self.redis.ttl(keyspace.kickoff_key(payment_id)), 1200)
-        self.assertEqual(await self.redis.get(keyspace.legacy_kickoff_key(payment_id)), "1")
-        self.assertEqual(await self.redis.ttl(keyspace.legacy_kickoff_key(payment_id)), 1200)
+        self.assertIsNone(await self.redis.get(keyspace.snapshot_key(payment_id)))
+        self.assertIsNone(await self.redis.get(keyspace.kickoff_key(payment_id)))
+        self.assertIsNone(await self.redis.get(keyspace.legacy_kickoff_key(payment_id)))
         self.assertIsNone(await self.redis.get(keyspace.session_key(payment_id)))
         self.assertIsNone(await self.redis.get(keyspace.pre_login_key(payment_id)))
         self.assertFalse(await self.redis.sismember("payment_online_df", payment_id))
         self.assertFalse(await self.redis.sismember("payment_online_ds", payment_id))
         self.assertEqual(self.redis.list_buckets["payment_active_df"], [])
         self.assertEqual(self.redis.list_buckets["payment_active_1001"], [])
+        params = force_logout_session.execute.call_args.args[0].compile().params
+        self.assertEqual(params["wallet_status"], 0)
 
         status_result = await self.easypaisa.payment_status_http(
             {"bankname": "easypaisa", "payment_ids": str(payment_id)}
         )
-        self.assertEqual(status_result["datas"][0]["status"], "offline")
+        self.assertEqual(status_result["datas"], [])
 
     def test_create_payment_unique_conflict_reuses_existing_same_merchant_payment(self):
         conflict = DummySession()
@@ -1248,6 +1343,37 @@ class EasyPaisaBusinessFlowV2Tests(unittest.TestCase):
         self.assertEqual(payment.account_iban, "PK12HABB0000000088521643")
         self.assertEqual(payment.account_type, 20)
         self.db_session.execute.assert_called_once()
+        self.db_session.commit.assert_called_once()
+
+    def test_update_payment_writes_wallet_and_business_status_after_account_selection(self):
+        session = self._session(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
+        query = MagicMock()
+        query.filter.return_value.first.return_value = SimpleNamespace(
+            status=1,
+            certified=1,
+            manual_status=0,
+        )
+        self.db_session.query = MagicMock(return_value=query)
+
+        result = asyncio.run(
+            self.easypaisa._update_payment(
+                533280,
+                session,
+                account_accno="88521643",
+                account_iban="PK12HABB0000000088521643",
+                account_type=20,
+            )
+        )
+
+        self.assertEqual(result, 533280)
+        statement = self.db_session.execute.call_args.args[0]
+        params = statement.compile().params
+        self.assertEqual(params["account_accno"], "88521643")
+        self.assertEqual(params["account_iban"], "PK12HABB0000000088521643")
+        self.assertEqual(params["account_type"], 20)
+        self.assertEqual(params["wallet_status"], 1)
+        self.assertEqual(params["collection_status"], 1)
+        self.assertEqual(params["payout_status"], 1)
         self.db_session.commit.assert_called_once()
 
 

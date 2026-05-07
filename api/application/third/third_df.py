@@ -10,6 +10,7 @@ import ipaddress
 from urllib import parse
 from urllib.parse import urlencode, quote
 
+import pytz
 import requests
 import asyncio
 
@@ -21,7 +22,6 @@ from requests.auth import HTTPBasicAuth
 from application.base import BaseHandler
 from application.sign import SignatureAndVerification
 from application.message import msg
-from application.timezone import format_for_display
 from application.websocket.callback import success_third_df, cancel_third_df, revert_third_df
 from urllib3.util.retry import Retry
 from urllib.parse import urlparse
@@ -3403,7 +3403,8 @@ class CatsPay(BaseHandler):
         # 商户订单号与平台订单号择一即可，两者均传入时需为同一张订单
         data_post['merchant_id'] = mer_id
         data_post['merchant_orderid'] = _order_info['code']
-        data_post['datetime'] = format_for_display()
+        beijing_tz = pytz.timezone('Asia/Shanghai')
+        data_post['datetime'] = datetime.now(beijing_tz).strftime('%Y-%m-%d %H:%M:%S')
         data_post["sign"] = SignatureAndVerification.md5_sign(data_post, mer_key, 'catspay')
         try:
             # 构造请求头 ， 查询订单
@@ -4368,7 +4369,7 @@ class gamepayer(BaseHandler):
             data_get = {
                 'merchant_id': r_t[0]['mer_id'],
                 'merchant_orderid': _order_info['code'],
-                "datetime": format_for_display()
+                "datetime": datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
             }
             data_get['sign'] = SignatureAndVerification.md5_sign(data_get, r_t[0]['mer_key'], "catspay")
 

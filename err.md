@@ -20,6 +20,7 @@ api/err.md
 
 本轮 EasyPaisa 分层真相源边界排错项：
 
+- `api/err.md` 的 `0.20 D7pay 合并 pk_project 业务主线时覆盖 JazzCashBusiness runtime`
 - `api/err.md` 的 `0.19 Pakistanpay worker 调试日志重新读取 EasyPaisa legacy 投影`
 
 常用检查：

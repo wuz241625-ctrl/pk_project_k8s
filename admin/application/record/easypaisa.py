@@ -13,7 +13,6 @@ import pytz
 
 from application.base import BaseHandler
 from application.message import msg
-from application.record.upstream_config import conf_get
 
 # 添加配置路径
 parent_directory = os.path.dirname(__file__)  # application/record
@@ -28,9 +27,9 @@ from config import get_config
 conf = get_config()
 
 # EasyPaisa API配置参数
-EASYPAISA_API_URL = conf_get(conf, 'easypaisa_api_url', 'http://34.150.42.92:83')
-EASYPAISA_USER_ID = conf_get(conf, 'easypaisa_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
-EASYPAISA_SECRET_KEY = conf_get(conf, 'easypaisa_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
+EASYPAISA_API_URL = getattr(conf, 'easypaisa_api_url', 'http://34.150.42.92:83')
+EASYPAISA_USER_ID = getattr(conf, 'easypaisa_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
+EASYPAISA_SECRET_KEY = getattr(conf, 'easypaisa_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
 
 # 银行名称常量
 BANK_NAME_EASYPAISA = 'EASYPAISA'

@@ -16,8 +16,6 @@ import tornado
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
-from application.easypaisa_runtime.reader import EasyPaisaAdminRuntimeReader
-from application.jazzcash_runtime.reader import JazzCashAdminRuntimeReader
 from application.message import msg
 import hashlib
 import requests
@@ -29,6 +27,17 @@ from .query_third_order_status import query_lucky_order, query_apay_order, query
 query_ospay_order, query_ospay_upi_order, query_TataPay_order, query_789pay_upi_order, query_789pay_order, query_TataPay_t100037_order,query_Vibrapay_order,query_qqpay_order, query_gamepayer_order, query_easypay_order
 
 
+def build_order_ds_default_time_create_between(now=None):
+    current = now or datetime.now()
+    day = current.date()
+    day_end = datetime.combine(day, datetime.max.time()).replace(microsecond=0)
+    return {'key': 'time_create', 'start': day, 'end': day_end}
+
+
+def should_apply_order_ds_default_time_create_between(condition, between):
+    return not (condition or {}).get('code') and not between
+
+
 def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=None):
     if third_party_name == 'easypay':
         trans_id = str((query_result or {}).get('transactionId') or '').strip()
@@ -38,44 +47,10 @@ def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=Non
     return {'field': 'utr', 'value': utr, 'message_key': 10229}
 
 
-def is_easypaisa_payment(payment):
-    return (
-        str((payment or {}).get('bank_type_id') or '') == '97'
-        or str((payment or {}).get('bank_type') or '') == '97'
-    )
-
-
-def is_jazzcash_payment(payment):
-    return (
-        str((payment or {}).get('bank_type_id') or '') == '98'
-        or str((payment or {}).get('bank_type') or '') == '98'
-    )
-
-
 async def requeue_df_if_online(handler, payment_id):
-    payment = await handler.get_result_by_condition(
-        'payment',
-        ['bank_type', 'bank_type_id'],
-        {'id': payment_id},
-    )
-    if not payment:
-        await handler.redis.lrem('payment_active_df', 0, payment_id)
-        return False
-    if is_easypaisa_payment(payment):
-        bank_type = 97
-        reader = EasyPaisaAdminRuntimeReader(handler.redis)
-    elif is_jazzcash_payment(payment):
-        bank_type = 98
-        reader = JazzCashAdminRuntimeReader(handler.redis)
-    else:
-        bank_type = (payment or {}).get('bank_type_id') or (payment or {}).get('bank_type')
-        reader = EasyPaisaAdminRuntimeReader(handler.redis)
-    if not await reader.is_payment_online_df(payment_id, bank_type=bank_type):
-        await handler.redis.lrem('payment_active_df', 0, payment_id)
-        return False
+    """EasyPaisa 代付不再回写旧 payment_active_df，只清理残留。"""
     await handler.redis.lrem('payment_active_df', 0, payment_id)
-    await handler.redis.rpush('payment_active_df', payment_id)
-    return True
+    return False
 
 
 class BaseOrderHandler(BaseHandler):
@@ -431,8 +406,8 @@ class getOrderDs(BaseHandler):
         if not between:
             between = time_success_between
 
-        if not condition or not condition['code'] and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+        if should_apply_order_ds_default_time_create_between(condition, between):
+            between = build_order_ds_default_time_create_between()
         keys_count = ['amount', 'status','realpay','earn_merchant','earn_partner','earn_system']
         # data_r, total, count = await self.get_result('orders_ds', ['*'], keys_count, condition, between,
         #                                              data['size'], data['page'])
@@ -836,8 +811,8 @@ class getOrderDsCd(BaseHandler):
         if not between:
             between = created_at_between
 
-        if not condition or not condition['code'] and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+        if should_apply_order_ds_default_time_create_between(condition, between):
+            between = build_order_ds_default_time_create_between()
         keys_count = ['amount', 'status','realpay','earn_merchant','earn_partner','earn_system']
         # data_r, total, count = await self.get_result('orders_ds', ['*'], keys_count, condition, between,
         #                                              data['size'], data['page'])
@@ -2420,12 +2395,6 @@ class getDFMerchantFinishOrProcessing(BaseHandler):
 #                 # sql_update = """update orders_df set partner_id=null,payment_id=null,status=0 where code=%s and status=%s limit 1"""
 #                 # if not await self.execute(sql_update, *(data['code'], data['status'])):
 #                 #     return await self.json_response(msg[10007])
-#                 # # 重新派单
-#                 # await self.redis.publish('order_df_push', '{code}_{amount}'.format(code=data['code'], amount=order['amount']))
-#                 # # 码继续接单
-#                 # if await self.redis.sismember('payment_online_df', order['payment_id']):
-#                 #     await self.redis.lrem('payment_active_df', 0, order['payment_id'])
-#                 #     await self.redis.rpush('payment_active_df', order['payment_id'])
 #         elif data['type'] == 4:
 #             self.logger.info('获取,code={code},管理员={e}'.format(code=data['code'], e=self.current_user['id']))
 #             # 指派
@@ -2551,13 +2520,6 @@ class HandleOrderdfType3(BaseHandler):
                 # sql_update = """update orders_df set partner_id=null,payment_id=null,status=0 where code=%s and status=%s limit 1"""
                 # if not await self.execute(sql_update, *(code, status)):
                 #     return await self.json_response(msg[10007])
-                # # 重新派单
-                # await self.redis.publish('order_df_push', '{code}_{amount}'.format(code=code, amount=order['amount']))
-                # # 码继续接单
-                # if await self.redis.sismember('payment_online_df', order['payment_id']):
-                #     await self.redis.lrem('payment_active_df', 0, order['payment_id'])
-                #     await self.redis.rpush('payment_active_df', order['payment_id'])
-                
         return await self.json_response(msg[20000])  # 改派成功
 
 class HandleOrderdfType4(BaseHandler):

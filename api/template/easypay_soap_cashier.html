@@ -202,7 +202,7 @@
         $('#timer').text(timeLeft);
 
         $.ajax({
-            url: '{{reverse_url("easypay_initiate")}}',
+            url: '/api/easypay/initiate',
             type: 'POST',
             dataType: 'json',
             data: { token: envToken, msisdn: msisdn },

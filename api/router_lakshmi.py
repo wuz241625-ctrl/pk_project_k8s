@@ -51,7 +51,6 @@ urls = [
     url("/user/upi/(?P<payment_id>[0-9]+)/selling", upi_controller.UpiSelling),
     url("/user/upi/(?P<payment_id>[0-9]+)/assign", upi_controller.AssignUpi),
     url("/user/upi/(?P<payment_id>[0-9]+)/cookie", upi_controller.StoreCookie),
-    url("/user/upi/payment/selling", upi_controller.UpiSelling),        # 前端说没有用到此接口
     url('/user/upi/send_sms_success', upi_controller.SendSmsSuccess),  # 发送短信成功接口
     url('/user/upi/grabOTP', upi_controller.GrabOTP),  # 获取OTP(临时接口)
     url('/user/upi/login_progress', upi_controller.LoginProgress),  # 获取登录进度

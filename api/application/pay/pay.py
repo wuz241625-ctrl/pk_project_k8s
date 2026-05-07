@@ -37,6 +37,10 @@ from application.sign import SignatureAndVerification
 from application.pay.payout_channel_guard import is_jazzcash_payout_request
 from application.pay.thirdPart import Razorpay_upi_origin
 from application.pay.thirdPart import lucky_payment, apay_payment, kingpay_payment, wepay_payment, pay777pay_payment, swiftpay_payment, quickpay_payment, snakepay_payment, hkpay_payment, skpay_payment, ospay_payment, tatapay_payment,vibrapay_payment,qqpay_payment,gamepayer_payment
+from application.payment_eligibility import (
+    can_dispatch_ds,
+    collection_sql_condition,
+)
 
 EASYPAISA_BANK_TYPE_ID = "97"
 JAZZCASH_BANK_TYPE_ID = "98"
@@ -71,26 +75,46 @@ async def _redis_get_value(redis_client, key):
     return value
 
 
-async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None, bank_type=None):
+def _collection_dispatch_extra_sql_condition(alias="pay", channel_code=None) -> str:
+    return collection_sql_condition(alias, channel_code)
+
+
+def _is_collection_dispatch_enabled(payment) -> bool:
+    return can_dispatch_ds(payment)
+
+
+async def _is_collection_payment_online(self, payment_id, bank_type_id, runtime_reader=None, bank_type=None, payment=None):
     if _is_easypaisa_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
-        runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
-        return await runtime_reader.is_collection_order_online(payment_id)
+        if payment is None:
+            payment = await self.get_result_by_condition(
+                'payment',
+                ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
+                {'id': payment_id},
+            )
+        return _is_collection_dispatch_enabled(payment)
     if _is_jazzcash_payment_type(bank_type_id=bank_type_id, bank_type=bank_type):
+        if not hasattr(self.redis, "get"):
+            return False
         jazzcash_reader = JazzCashRuntimeReader(self.redis)
         return await jazzcash_reader.is_collection_order_online(payment_id)
-    return await self.redis.sismember('payment_online_ds', payment_id)
+    return False
 
 
-async def _collection_online_payment_ids(self, runtime_reader=None):
-    runtime_reader = runtime_reader or EasyPaisaRuntimeReader(self.redis)
-    jazzcash_reader = JazzCashRuntimeReader(self.redis)
-    raw_ids = await self.redis.smembers('payment_online_ds')
-    legacy_ids = {_redis_text(value).strip() for value in raw_ids}
-    runtime_ids = set(await runtime_reader.collection_online_payment_ids())
-    runtime_ids.update(await jazzcash_reader.collection_online_payment_ids())
-    legacy_ids.difference_update(runtime_ids)
-    payment_ids = await _non_runtime_legacy_collection_ids(self, legacy_ids)
-    payment_ids.update(runtime_ids)
+async def _mysql_collection_ids(self, channel_code=None):
+    sql = """
+        select id
+        from payment pay
+        where {condition}
+    """.format(condition=_collection_dispatch_extra_sql_condition("pay", channel_code))
+    rows = await self.query(sql)
+    return {str(row["id"]) for row in rows or []}
+
+
+async def _collection_online_payment_ids(self, runtime_reader=None, channel_code=None):
+    payment_ids = await _mysql_collection_ids(self, channel_code)
+    if hasattr(self.redis, "get"):
+        jazzcash_reader = JazzCashRuntimeReader(self.redis)
+        payment_ids.update(await jazzcash_reader.collection_online_payment_ids())
     return sorted((payment_id for payment_id in payment_ids if payment_id.isdigit()), key=int)
 
 
@@ -118,7 +142,7 @@ async def _non_runtime_legacy_collection_ids(self, payment_ids):
 async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=None):
     payment = await self.get_result_by_condition(
         'payment',
-        ['bank_type', 'bank_type_id'],
+        ['bank_type', 'bank_type_id', 'wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
         {'id': payment_id},
     )
     if not payment:
@@ -129,6 +153,7 @@ async def _is_collection_payment_online_by_id(self, payment_id, runtime_reader=N
         (payment or {}).get('bank_type_id'),
         runtime_reader,
         bank_type=(payment or {}).get('bank_type'),
+        payment=payment,
     )
 
 
@@ -1862,6 +1887,10 @@ class Pay(BaseHandler):
                         _payment_ids = ','.join(batch_payment_ids)
                         self.logger.info(f"Step 1.3.3: 当前处理批次支付码: {batch_payment_ids}, 订单 {code}, 金额 {amount}")
                         
+                        collection_dispatch_condition = _collection_dispatch_extra_sql_condition(
+                            "pay",
+                            data.get("channel_code"),
+                        )
                         # 获取银行信息
                         self.logger.info(f"Step 3: 获取银行信息, 订单 {code}, 金额 {amount}")
                         bank_type_list = await self.query("select id from bank_type where status=0")
@@ -1873,9 +1902,13 @@ class Pay(BaseHandler):
                                     pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                                     from payment pay 
                                     left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1
+                                    where pay.id in ({_payment_ids}) and {collection_dispatch_condition}
                                     and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                                    and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, amount=amount)
+                                    and p.certified=1 and p.status=1""".format(
+                                        _payment_ids=_payment_ids,
+                                        amount=amount,
+                                        collection_dispatch_condition=collection_dispatch_condition,
+                                    )
                         else:
                             for i in bank_type_list:
                                 _bank_type_list.append(i['id'])
@@ -1886,12 +1919,17 @@ class Pay(BaseHandler):
                                     pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
                                     from payment pay 
                                     left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 
+                                    where pay.id in ({_payment_ids}) and {collection_dispatch_condition}
                                     and pay.bank_type not in ({_bank_type_list})
                                     and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
                                     and p.balance>={amount}
                                     and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                                    and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount)
+                                    and p.certified=1 and p.status=1""".format(
+                                        _payment_ids=_payment_ids,
+                                        _bank_type_list=_bank_type_list,
+                                        amount=amount,
+                                        collection_dispatch_condition=collection_dispatch_condition,
+                                    )
 
                         self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
 
@@ -1990,13 +2028,14 @@ class Pay(BaseHandler):
                                     pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max 
                                 from payment pay 
                                 left join partner p on pay.partner_id = p.id 
-                                where pay.manual_status = 1 and pay.id in ({payment_ids})
-                                and pay.certified=1 and pay.status=1
+                                where pay.id in ({payment_ids})
+                                and {collection_dispatch_condition}
                                 and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
                                 and p.certified=1 and p.status=1
                             """.format(
                                   payment_ids=_payment_ids
-                                  ,amount=amount)  # 使用占位符生成动态 SQL
+                                  ,amount=amount,
+                                  collection_dispatch_condition=collection_dispatch_condition)  # 使用占位符生成动态 SQL
                             
                             self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
 
@@ -2080,14 +2119,15 @@ class Pay(BaseHandler):
                                 pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max 
                             from payment pay 
                             left join partner p on pay.partner_id = p.id 
-                            where pay.manual_status = 1 and pay.id in ({payment_ids})
-                            and pay.certified=1 and pay.status=1
+                            where pay.id in ({payment_ids})
+                            and {collection_dispatch_condition}
                             and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
                             and p.certified=1 and p.status=1
 
                         """.format(
                                   payment_ids=_payment_ids
-                                  ,amount=amount)  # 使用占位符生成动态 SQL
+                                  ,amount=amount,
+                                  collection_dispatch_condition=collection_dispatch_condition)  # 使用占位符生成动态 SQL
 
 
                         self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
@@ -2313,19 +2353,23 @@ class Pay(BaseHandler):
             _payment_ids = ','.join(str(id) for id in payment_id_list)
         else:
             return is_push
+        collection_dispatch_condition = _collection_dispatch_extra_sql_condition(
+            "pay",
+            data.get("channel_code"),
+        )
         # 获取银行信息
         bank_type_list = await self.query("select id from bank_type where status=0")
         self.logger.warn('code: {code}, bank_type_list时间：{t}'.format(code=code, t=datetime.datetime.now().timestamp() - start_time))
         _bank_type_list = []
         if not bank_type_list:
             # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p. ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, amount=amount)
+            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and {collection_dispatch_condition} and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p. ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, amount=amount, collection_dispatch_condition=collection_dispatch_condition)
         else:
             for i in bank_type_list:
                 _bank_type_list.append(i['id'])
             _bank_type_list = ','.join(str(id) for id in _bank_type_list)
             # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and pay.certified=1 and pay.status=1 and pay.manual_status=0 and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list})) and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount)
+            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id, p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max from payment pay left join partner p on pay.partner_id=p.id where pay.id in ({_payment_ids}) and {collection_dispatch_condition} and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list})) and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(_payment_ids=_payment_ids, _bank_type_list=_bank_type_list, amount=amount, collection_dispatch_condition=collection_dispatch_condition)
         # 获取vip信息
         vip_list = await self.get_results_no_condition('vip', ['*'])
         _vip_list = []
