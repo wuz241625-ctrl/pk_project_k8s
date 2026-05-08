@@ -233,7 +233,7 @@ class EWalletHandler:
         if self._use_mysql_final_status():
             status = self._read_mysql_business_status(payment_id)
             return bool(status and status["payout"])
-        return await self.redis.sismember('payment_online_df', payment_id)
+        return False
 
     @staticmethod
     async def status_to_word(status):

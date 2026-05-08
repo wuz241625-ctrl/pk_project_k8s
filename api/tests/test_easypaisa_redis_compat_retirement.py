@@ -87,6 +87,24 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
 
         self.assertNotIn("easypaisa_" + "runtime:", source)
 
+    def test_lakshmi_place_order_status_does_not_use_legacy_payment_online_df(self):
+        source = (
+            API_ROOT
+            / "application"
+            / "lakshmi_api"
+            / "services"
+            / "payments"
+            / "e_wallet_handler.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("payment_" + "online_df", source)
+        self.assertIn("mysql_business_status", source)
+
+    def test_base_clear_active_does_not_clean_legacy_active_channel_projection(self):
+        source = (API_ROOT / "application" / "base.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("payment_" + "active_channel_", source)
+
     def test_retired_runtime_audit_script_is_removed(self):
         repo_root = API_ROOT.parent
 

@@ -46,8 +46,7 @@ def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=Non
 
 
 async def requeue_df_if_online(handler, payment_id):
-    """EasyPaisa 代付不再回写旧 payment_active_df，只清理残留。"""
-    await handler.redis.lrem('payment_active_df', 0, payment_id)
+    """代付回队已退役，MySQL payout_status 是唯一资格源。"""
     return False
 
 

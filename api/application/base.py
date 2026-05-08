@@ -194,13 +194,7 @@ class BaseHandler(tornado.web.RequestHandler):
 
     # 清除当前用户的接单
     async def clear_active(self, partner_id):
-        for i in await self.redis.keys('payment_active_channel_*'):
-            payment_len = await self.redis.llen(i)
-            if payment_len > 0:
-                for j in range(payment_len):
-                    key = await self.redis.lindex(i, j)
-                    if key and key.split('_')[0] == str(partner_id):
-                        await self.redis.lrem(i, 0, key)
+        return None
 
     # 生成token
     async def encode_token(self, partner_id):

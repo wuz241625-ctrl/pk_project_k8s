@@ -90,10 +90,10 @@ class WebsocketMonitorEPDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.redis.sismember('payment_online_ds', 999999))
         self.assertEqual(await self.redis.lrange('payment_active_1001', 0, -1), [b'999999'])
 
-    async def test_non_ep_online_ds_preserves_legacy_write(self):
+    async def test_non_ep_online_ds_does_not_write_legacy_business_projection(self):
         handler = self._handler({'certified': 1, 'channel': '1003', 'bank_type': '98'})
 
         await handler.qrcode_online(online=True, _type='ds')
 
-        self.assertTrue(await self.redis.sismember('payment_online_ds', 533294))
-        self.assertEqual(await self.redis.lrange('payment_active_1003', 0, -1), [b'533294'])
+        self.assertFalse(await self.redis.sismember('payment_online_ds', 533294))
+        self.assertEqual(await self.redis.lrange('payment_active_1003', 0, -1), [])
