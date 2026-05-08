@@ -72,7 +72,8 @@ class JazzCashAutoPayoutV16SourceTests(unittest.TestCase):
         self.assertIn("manual_confirm", source)
         self.assertIn("elif code == 500", source)
         self.assertIn("elif code == 503", source)
-        self.assertIn("code in [402, 423, 503]", source)
+        self.assertIn("error_code == 402", source)
+        self.assertNotIn("error_code in [402, 423, 503]", source)
 
     def test_extracted_payout_modules_keep_methods_on_classes(self):
         from jobs.jazzcash.payout import (

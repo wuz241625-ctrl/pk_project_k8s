@@ -501,45 +501,7 @@ class TransferExecutor:
                         'payer_phone': phone_number  # 新增：付款手机号，用于更新orders_df.utr字段
                     }
                 elif code == 402:
-                    # PaymentFail - 转账失败，可以重试
-                    # 🔥 特殊处理：检查 msgCd，某些错误码需要驳回订单
-                    msg_cd = None
-                    if data and isinstance(data, dict):
-                        # 尝试从 data 直接获取 msgCd
-                        msg_cd = data.get('msgCd')
-
-                        # 如果没有，尝试从 body 获取
-                        if not msg_cd:
-                            body = data.get('body', {})
-                            if isinstance(body, dict):
-                                msg_cd = body.get('msgCd')
-
-                    self.logger.warning(f"转账失败(可重试): code={code}, msgCd={msg_cd}, msg={msg}")
-
-                    # 🔥 特定 msgCd 需要驳回订单（JazzCash使用与EasyPaisa相同的错误码）
-                    reject_msg_codes = ['CIO41915', 'URM00000', 'PWM80422']
-                    if msg_cd in reject_msg_codes:
-                        self.logger.error(f"⚠️ 检测到需驳回订单的错误码: msgCd={msg_cd}")
-
-                        # 记录失败的交易
-                        self.transaction_logger.log_complete_transaction(
-                            order_data, account_info, inner_payload, api_result,
-                            f"rejected_{msg_cd.lower()}",
-                            error_message=f"msgCd={msg_cd}: {msg}",
-                            start_time=start_time,
-                            before_balance=before_balance,
-                            process_details=process_details
-                        )
-
-                        # 🔥 不再直接调用驳回函数，只返回驳回标记，由外层统一处理事务
-                        return {
-                            'success': False,
-                            'reject': True,  # 标记需要驳回
-                            'reject_reason': msg,  # 直接使用 API 返回的 msg 内容
-                            'message': f'Detected rejection error: msgCd={msg_cd}, {msg}'
-                        }
-
-                    # 其他 code=402 情况继续按原逻辑处理（可重试）
+                    # PaymentFail 是明确失败：外层统一按 402 次数处理，不再按 msgCd 分叉。
                     self.logger.warning(f"转账失败(可重试): {msg}")
 
                     # 添加失败时的流程信息
@@ -592,8 +554,8 @@ class TransferExecutor:
                         'account_invalid': True
                     }
                 elif code == 423:
-                    # ServerBusy - 服务器忙，可重试
-                    self.logger.warning(f"服务器忙碌: {msg}")
+                    # ServerBusy 结果不确定，不自动重试，交给订单状态机进入人工待确认。
+                    self.logger.warning(f"服务器忙碌，进入人工待确认: {msg}")
 
                     # 记录完整的交易记录（服务器忙碌）
                     self.transaction_logger.log_complete_transaction(order_data, account_info, inner_payload, api_result,
@@ -602,8 +564,9 @@ class TransferExecutor:
 
                     return {
                         'success': False,
-                        'message': f'JazzCash服务器忙碌: {msg}',
-                        'can_retry': True,
+                        'message': f'JazzCash服务器忙碌待人工确认: {msg}',
+                        'manual_confirm': True,
+                        'can_retry': False,
                         'code': code
                     }
                 elif code == 403:
@@ -637,8 +600,8 @@ class TransferExecutor:
                         'code': code
                     }
                 elif code == 503:
-                    # NetworkError - 网络问题，可重试
-                    self.logger.warning(f"网络异常，可重试: {msg}")
+                    # NetworkError 结果不确定，不自动重试，避免重复出款。
+                    self.logger.warning(f"网络异常，进入人工待确认: {msg}")
 
                     self.transaction_logger.log_complete_transaction(order_data, account_info, inner_payload, api_result,
                                                 "network_retry", error_message=msg, start_time=start_time,
@@ -646,8 +609,9 @@ class TransferExecutor:
 
                     return {
                         'success': False,
-                        'message': f'JazzCash网络异常可重试: {msg}',
-                        'can_retry': True,
+                        'message': f'JazzCash网络异常待人工确认: {msg}',
+                        'manual_confirm': True,
+                        'can_retry': False,
                         'code': code
                     }
                 else:
@@ -662,7 +626,8 @@ class TransferExecutor:
                     return {
                         'success': False,
                         'message': f'JazzCash未知错误: {msg}',
-                        'can_retry': True,
+                        'manual_confirm': True,
+                        'can_retry': False,
                         'code': code
                     }
             else:

@@ -50,8 +50,6 @@ SECRET_KEY = conf['easypaisa_secret_key']
 class BankLogin:
     def __init__(self, name):
         self.name = name
-        self.if_callback_key = f"if_callback_{name}"  # 存放已经第一次采集或这已经回调过的账单,使用有序集合存放,分数为时间,在2分钟内不成功回调会自动再回调
-        self.clean_if_callback_key_time = 60 * 60 * 24 * 60 # 清理 if_callback_key 中时间较久的utr ,避免已经回调过的utr数据量过大
         self.lock_time = 30 # 操作锁的锁定时间
         self.statement_ds_window_seconds = 7 * 60
         self.statement_df_window_seconds = 10 * 60
@@ -686,26 +684,11 @@ class BankLogin:
             result['error_message'] = error_message
         return result
 
-    # 检测交易是否已回调过。
-    def if_callback(self, utr: str, account_context) -> bool:
-        """检测交易是否已回调过的"""
-        # 判断有序集合中是否存在元素
-        if self.redis.zscore(self.if_callback_key, f"{account_context['id']}_{utr}") is not None:
-            # 已经回调过
-            return True
-        else:
-            return False
-
-    # 将账单记录标记为已回调过。
-    def mark_transaction_callback(self, utr: str, account_context):
-        self.redis.zadd(self.if_callback_key, {f"{account_context['id']}_{utr}": int(time.time())})
-
     async def callback_transaction(self, utr: str, mapped_trans: Dict, account_context) -> bool:
         callback_success = await self.transaction_callback(mapped_trans, account_context)
         if callback_success:
-            self.mark_transaction_callback(utr, account_context)
             return True
-        self.logger.error(f"easypaisa {account_context['id']}, 交易 {utr} 回调失败，不写入已回调标记")
+        self.logger.error(f"easypaisa {account_context['id']}, 交易 {utr} 回调失败，等待下轮账单扫描由 MySQL 幂等重试")
         return False
 
     # 爬取账单
@@ -748,10 +731,6 @@ class BankLogin:
                 utr = transaction['orderNo']
                 if 'appTransaction' not in transaction or transaction['appTransaction'] != True:
                     self.logger.error(f"easypaisa {account_context['id']}, 状态不为成功 {utr}")
-                    continue
-                # 检查是否已回调
-                if self.if_callback(utr, account_context):
-                    self.logger.info(f"easypaisa {account_context['id']}, 交易 {utr} 已回调过，跳过")
                     continue
                 self.logger.info(f"easypaisa {account_context['id']}, 准备回调交易 {utr}")
 
@@ -950,14 +929,6 @@ class BankLogin:
             self.logger.error(f"回调交易记录失败 {transaction['approvalRefNum']}: {str(e)}")
             return False
 
-    # 清理 if_callback_key 中时间较久的utr ,避免已经回调过的utr数据量过大
-    def clean_if_callback_key(self):
-        # 设定时间阈值
-        threshold = int(time.time()) - self.clean_if_callback_key_time
-        # 移除有序集合if_callback_key中，所有时间戳早于threshold的成员
-        removed_count = self.redis.zremrangebyscore(self.if_callback_key, '-inf', threshold)
-        self.logger.info(f" {self.if_callback_key} 移除过期的utr数据： {removed_count} 个")
-
     # 添加多进程分片和并发处理方法
     def get_active_processes_count(self):
         """获取当前活跃进程数量"""
@@ -1075,7 +1046,6 @@ class BankLogin:
 
             if not due_payment_ids:
                 self.logger.info("EasyPaisa MySQL账单调度没有待处理 payment_id")
-                self.clean_if_callback_key()
                 time.sleep(2)
                 return
 

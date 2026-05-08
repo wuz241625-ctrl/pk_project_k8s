@@ -65,8 +65,6 @@ class BankLogin:
         self.list_key = f"list_{name}"
         self.hash_key = f"hash_{name}"
         self.set_key = f"set_{name}"
-        self.if_callback_key = f"if_callback_{name}"  # 存放已经第一次采集或这已经回调过的账单,使用有序集合存放,分数为时间,在2分钟内不成功回调会自动再回调
-        self.clean_if_callback_key_time = 60 * 60 * 24 * 60 # 清理 if_callback_key 中时间较久的utr ,避免已经回调过的utr数据量过大
         self.lock_time = 30 # 操作锁的锁定时间
         self.time_grab = 40  # 短时间频繁爬取
         self.time_grab2 = 10 * 60  # 长时间爬取
@@ -755,20 +753,6 @@ class BankLogin:
             result['error_message'] = error_message
         return result
 
-    # 检测交易是否已回调过的, 原 is_transaction_synced
-    def if_callback(self, utr: str, login_data) -> bool:
-        """检测交易是否已回调过的"""
-        # 判断有序集合中是否存在元素
-        if self.redis.zscore(self.if_callback_key, f"{login_data['id']}_{utr}") is not None:
-            # 已经回调过
-            return True
-        else:
-            return False
-
-    # 将账单记录标记为已回调过的,原 mark_transaction_synced
-    def mark_transaction_callback(self, utr: str, login_data):
-        self.redis.zadd(self.if_callback_key, {f"{login_data['id']}_{utr}": int(time.time())})
-
     # 爬取账单和upi
     async def grabstatement(self, login_data, if_first_time=False):
         try:
@@ -870,13 +854,7 @@ class BankLogin:
                 #     self.logger.error(f"{login_data['id']}, 状态不为成功 {utr}, {transaction}")
                 #     continue
                 if if_first_time:
-                    # 首次爬取账单, 将账单记录标记为已回调过的
-                    self.mark_transaction_callback(utr, login_data)
-                    self.logger.info(f"{login_data['id']}, 首次爬取账单, 将账单记录标记为已回调过的 {utr} 已回调过，跳过")
-                    continue
-                # 检查是否已回调
-                if self.if_callback(utr, login_data):
-                    self.logger.info(f"{login_data['id']}, 交易 {utr} 已回调过，跳过")
+                    self.logger.info(f"{login_data['id']}, 首次爬取账单跳过历史流水 {utr}")
                     continue
                 self.logger.info(f"{login_data['id']}, 准备回调交易 {utr}, {transaction}")
 
@@ -1037,8 +1015,6 @@ class BankLogin:
                 # 回调
                 self.logger.info(f"grabstatement 数据编号{counter}封装后的数据: mapped_trans {mapped_trans} 。")
                 await self.transaction_callback(mapped_trans, login_data)
-                # 将账单记录标记为已回调过的
-                self.mark_transaction_callback(utr, login_data)
                 counter += 1
             # 首次爬取之后设置为非首次爬取
             login_data['if_first_time'] = False
@@ -1210,15 +1186,6 @@ class BankLogin:
             self.logger.error(f"回调交易记录失败 {transaction['approvalRefNum']}: {str(e)}")
             return False
 
-    # 清理 if_callback_key 中时间较久的utr ,避免已经回调过的utr数据量过大
-    def clean_if_callback_key(self):
-        # 设定时间阈值
-        threshold = int(time.time()) - self.clean_if_callback_key_time
-        # 移除有序集合if_callback_key中，所有时间戳早于threshold的成员
-        removed_count = self.redis.zremrangebyscore(self.if_callback_key, '-inf', threshold)
-        self.logger.info(f" {self.if_callback_key} 移除过期的utr数据： {removed_count} 个")
-        # 后面可添加清理 f'{self.name}_device' 相关的hash key数据
-
     # 添加多进程分片和并发处理方法
     def get_active_processes_count(self):
         """获取当前活跃进程数量"""
@@ -1316,10 +1283,6 @@ class BankLogin:
 
                 self.logger.info(f"verify_and_handle_abnormal_payout 交易流水获取: Transaction {counter}:{detail_dto}。")
                 utr = trans['TRANS_ID']
-                # 检查是否已回调
-                if self.if_callback(utr, login_data):
-                    self.logger.info(f"{login_data['id']}, 交易 {utr} 已回调过，跳过")
-                    continue
                 self.logger.info(f"{login_data['id']}, 准备回调交易 {utr}, {trans}")
                 # 数据封装
                 self.logger.info(f"交易流水获取: Transaction {counter}:{trans.get('TRANS_ID')}。")
@@ -1491,8 +1454,6 @@ class BankLogin:
                     }
                     # 调用 transaction_callback
                     await self.transaction_callback(mapped_trans, login_data)
-                    # 将账单记录标记为已回调过的
-                    self.mark_transaction_callback(utr, login_data)
                     self.logger.info(f"成功处理了第 {counter} 条记录。") # 添加这一行
                     counter += 1
                     break
@@ -1713,8 +1674,6 @@ class BankLogin:
 
             if not members:
                 self.logger.info(f"{self.set_key} min:0, max:{zrangebyscore_max} set中没有数据")
-                # 清理 if_callback_key 中时间较久的utr ,避免已经回调过的utr数据量过大
-                self.clean_if_callback_key()
                 time.sleep(2)
                 return
 

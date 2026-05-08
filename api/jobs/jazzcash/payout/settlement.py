@@ -294,7 +294,7 @@ class Settlement:
             cur.execute(sql_update_payment, (-amount, self.qr_id))
             self.logger.info(f"更新支付账户{self.qr_id}系统余额: {self._format_sql(cur, sql_update_payment, (-amount, self.qr_id))}")
 
-            # 8. 更新订单信息（状态status=3已在转账成功时更新）
+            # 8. 更新订单信息。成功结算必须只从执行中(status=1)推进到待通知(status=3)。
             # 获取付款手机号用于更新utr字段（如果之前未更新）
             payer_phone = result.get('payer_phone', '')
             if not payer_phone:
@@ -302,10 +302,25 @@ class Settlement:
             else:
                 self.logger.info(f"订单{order_code}付款手机号: {payer_phone}")
 
-            # 🔥 优化：只更新earn_merchant字段，status=3已在转账成功时更新
-            sql_update = "UPDATE orders_df SET earn_merchant=%s WHERE code=%s"
-            cur.execute(sql_update, (earn_merchant, order_code))
-            self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
+            transaction_id = result.get('transaction_id') or result.get('utr') or ''
+            sql_update = """
+                UPDATE orders_df
+                SET earn_merchant=%s,
+                    status=3,
+                    time_payed=NOW(),
+                    time_success=NOW(),
+                    utr=CASE
+                        WHEN (utr IS NULL OR utr = '') THEN %s
+                        ELSE utr
+                    END
+                WHERE code=%s AND status=1
+                LIMIT 1
+            """
+            cur.execute(sql_update, (earn_merchant, transaction_id, order_code))
+            if cur.rowcount == 0:
+                self.logger.warning(f'订单{order_code}状态不是1，成功结算更新失败，跳过通知')
+                return False
+            self.logger.info(f'更新订单成功态{self._format_sql(cur, sql_update, (earn_merchant, transaction_id, order_code))}')
 
             # 9. 代付资格继续由 payment.payout_status 控制，不再回写旧 Redis 活跃队列
             if self.qr_id:
