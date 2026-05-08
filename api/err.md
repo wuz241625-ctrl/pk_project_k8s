@@ -67,3 +67,27 @@ test "$(git ls-files api/jobs/freecharge-monitor/php | wc -l | tr -d ' ')" = "0"
 test "$(git ls-files api/static/v2 | wc -l | tr -d ' ')" = "0"
 test -z "$(git ls-files api/jobs/easypaisa/auto_payout.py.bak api/docker-compose.yml api/docker api/application/app/login/banks/gcash_bank.py api/application/app/login/banks/indus_bank.py api/jobs/induspay api/jobs/jio api/jobs/maha merchant/.config.py.swp apkdownload/public/files/android/lakshmi/lakshmi_v1.0.0.202406232042.apk apkdownload/public/files/android/ashrafi/ashrafi_v0.1.6_202604280158.apk)"
 ```
+
+## 0.4 旧印度钱包和 PhonePe 残留不能回流
+
+现象：
+
+- `api/application/lakshmi_api/services/payment_services.py` 再次注册 `FREECHARGE`、`PHONEPE`、`MOBIKWIK`、`AIRTEL`、`AMAZON`、`INDUS`、`ULCASH`、`JIO` 或 `MAHA`。
+- `api/main.py` 再次启动 `application.phonepe.redissub` 后台线程。
+- `api/router.py` 再次暴露 `/phonepe/ws` 或 `/phonepe/api/*`。
+- `api/router_lakshmi.py` 再次暴露 Indus/Amazon 专用的 `pin_pre_sign_in`、`cookie` 或 `grabOTP` 路由。
+- 仓库重新出现旧 Redis 维护脚本：`check_proxy.py`、`clear_redis_dsdf.py`、`clear_redis_inactive_payment.py`、`collect_partner_status.py`、`order_push.py`、`weight.py`。
+
+处理：
+
+- 参考 `/Users/tear/pk_project` 当前文件，Lakshmi API 只注册 `EASYPAISA` 与 `JAZZCASH`。
+- API 启动不再创建 PhonePe 订阅线程。
+- 删除旧 PhonePe websocket/http 路由和旧印度钱包专用 App 路由。
+- 代收派单以 MySQL `collection_status` 为候选真相源，不回退到旧 `payment_active_*`。
+
+验证：
+
+```bash
+rg "application\\.phonepe|PhonepeService|FreechargeService|IndusPayService|MahaService|MobikwikService|AirtelService|AmazonService|UlCashPayService|JioService|/phonepe|PaymentPINPreSignIn|StoreCookie|GrabOTP" api --glob '!*.md'
+test -z "$(git ls-files api/application/phonepe api/jobs/check_proxy.py api/jobs/clear_redis_dsdf.py api/jobs/clear_redis_inactive_payment.py api/jobs/collect_partner_status.py api/jobs/order_push.py api/jobs/weight.py api/static/images/india_transaction/PhonePe.svg)"
+```

@@ -68,7 +68,7 @@ Expected: Git 暂存删除记录。
 
 - [x] **Step 2: 保留不可误删说明**
 
-写明 `api/application/lakshmi_api` 当前仍承载 App `/v1` 接口，`application/phonepe` 和旧银行代码仍挂在路由或订单回调中，不能在本轮当成垃圾删除。
+写明 `api/application/lakshmi_api` 当前仍承载 App `/v1` 接口；`application/phonepe` 和旧银行代码已在 2026-05-08 后续清理中参考 `/Users/tear/pk_project` 当前文件移除。本文件保留为当时阶段记录。
 
 ### Task 3: 验证与提交
 

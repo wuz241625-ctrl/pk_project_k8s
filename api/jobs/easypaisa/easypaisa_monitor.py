@@ -29,6 +29,7 @@ sys.path.insert(0, parent2_dir)
 
 import config
 from application.payment_eligibility import can_collect_statement, can_dispatch_df, can_dispatch_ds
+from jobs.easypaisa.wallet_status_service import WorkerWalletStatusService
 
 # EasyPaisa自动代付监控系统
 
@@ -430,8 +431,6 @@ class AutoPayoutMonitor:
         
         # Redis键名配置
         self.REDIS_KEYS = {
-            'retired_payment_online_df': 'payment_online_df',     # 旧代付观察集合，仅用于残留清理和排错观测
-            'retired_payment_active_df': 'payment_active_df',     # 旧代付活跃队列，仅用于残留清理和排错观测
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # 余额有序集合（auto_payout.py使用）
             'easypaisa_status_prefix': 'easypaisa_status:',         # 状态缓存前缀（仅自动代付监控系统使用）
             'easypaisa_monitor_report': 'easypaisa_monitor_report', # 监控报告（仅自动代付监控系统使用）
@@ -1588,7 +1587,7 @@ class AutoPayoutMonitor:
                     self.logger.warning(f"账号 {account_id} API健康检查失败但不下线: {status_info.get('error_message')}")
                 else:
                     self.pause_payment_dispatch_for_health_error(account_id, status_info.get('status') or 'health_error')
-                    self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改在线态")
+                    self.logger.info(f"账号 {account_id} monitor 状态更新为 {status_info['status']}，不改 Redis 在线态")
             
             self.logger.debug(f"账号 {account_id} Redis缓存更新完成")
             return False  # 正常处理，账号未删除
@@ -1955,11 +1954,7 @@ class AutoPayoutMonitor:
             hash_deleted = self.redis.hdel(self.hash_key, account_id)
             zset_deleted = self.redis.zrem(self.set_key, account_id)
             
-            # 2. 删除在线状态相关
-            self.redis.srem('payment_online_df', account_id)
-            self.redis.srem('payment_online_ds', account_id)
-            
-            # 3. 删除EasyPaisa特定缓存
+            # 2. 删除EasyPaisa特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
             # balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
             # balance_deleted = self.redis.zrem(balance_sorted_set, account_id)
@@ -1971,13 +1966,10 @@ class AutoPayoutMonitor:
             # limits_deleted = self.redis.hdel(limits_hash_key, account_id)
             limits_deleted = 0  # 不删除限额数据
             
-            # 4. 删除登录状态键
+            # 3. 删除登录状态键
             self.redis.delete(f'login_on_{self.name}_{account_id}')
-            
-            # 5. 删除踢下线标记（如果有）
-            self.redis.delete(f'kick_off_{account_id}')
-            
-            # 🔥 6. 更新数据库payment表状态为下线
+
+            # 🔥 4. 更新数据库payment表状态为下线
             try:
                 self.update_payment_status_to_offline(account_id, reason)
             except Exception as db_e:
@@ -2148,27 +2140,15 @@ class AutoPayoutMonitor:
             )
             
             try:
-                with connection.cursor() as cur:
-                    # 更新payment表状态为0（下线）
-                    sql = """
-                        UPDATE payment 
-                        SET status = 0,
-                            wallet_status = 0,
-                            collection_status = 0,
-                            payout_status = 0,
-                            time_update = NOW()
-                        WHERE id = %s
-                    """
-                    
-                    affected_rows = cur.execute(sql, (account_id,))
-                    connection.commit()
-                    
-                    if affected_rows > 0:
-                        self.logger.info(f"✅ 已将payment表中账号 {account_id} 状态更新为下线，原因: {reason}")
-                    else:
-                        self.logger.warning(f"⚠️ payment表中未找到账号 {account_id}，可能已被删除")
-                    
-                    return affected_rows > 0
+                service = WorkerWalletStatusService(connection, self.logger, redis_client=self.redis)
+                affected_rows = service.mark_offline(account_id, reason)
+
+                if affected_rows > 0:
+                    self.logger.info(f"✅ 已将payment表中账号 {account_id} 状态更新为下线，原因: {reason}")
+                else:
+                    self.logger.warning(f"⚠️ payment表中未找到账号 {account_id}，可能已被删除")
+
+                return affected_rows > 0
                     
             finally:
                 connection.close()
@@ -2183,7 +2163,7 @@ class AutoPayoutMonitor:
             if _on == 1:
                 self.logger.info(f"{login_data['id']}, {self.name} 监控在线：派单态以 MySQL 为准")
                 return True
-            self.logger.error(f"{login_data['id']}, {self.name} 监控离线：不写在线态")
+            self.logger.error(f"{login_data['id']}, {self.name} 监控离线：不写 Redis 在线态")
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -2777,7 +2757,7 @@ class AutoPayoutMonitor:
                         if self.restore_online_payment_from_db(payment_data):
                             if hash_existed and set_existed:
                                 skipped_count += 1
-                                self.logger.info(f"⏩ 账号 payment_id:{payment_id} 采集投影已存在，采集状态已按顺序确认")
+                                self.logger.info(f"⏩ 账号 payment_id:{payment_id} 采集投影已存在，已按顺序确认")
                             else:
                                 added_count += 1
                                 self.logger.info(

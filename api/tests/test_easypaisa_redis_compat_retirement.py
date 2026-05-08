@@ -13,24 +13,6 @@ for path in (str(API_ROOT), str(JOBS_ROOT)):
         sys.path.insert(0, path)
 
 
-class FakeRedis:
-    def __init__(self):
-        self.lists = {}
-
-    def lrem(self, key, count, value):
-        target = str(value)
-        bucket = self.lists.setdefault(key, [])
-        self.lists[key] = [item for item in bucket if item != target]
-        return True
-
-    def rpush(self, key, value):
-        self.lists.setdefault(key, []).append(str(value))
-        return True
-
-    def get(self, key):
-        return None
-
-
 class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
     def test_pay_df_no_longer_publishes_order_df_push(self):
         pay_py = API_ROOT / "application" / "pay" / "pay.py"
@@ -38,19 +20,11 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
 
         self.assertNotIn("order_df_push", source)
 
-    def test_auto_payout_does_not_return_accounts_to_payment_active_df(self):
-        from jobs.easypaisa.auto_payout import EasyPaisaAutoPayout
+    def test_auto_payout_no_longer_contains_retired_queue_cleanup_helpers(self):
+        source = (JOBS_ROOT / "easypaisa" / "auto_payout.py").read_text(encoding="utf-8")
 
-        service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
-        service.redis = FakeRedis()
-        service.logger = MagicMock()
-        service.REDIS_KEYS = {"retired_payment_active_df": "payment_active_df"}
-        service.redis.rpush("payment_active_df", "533280")
-
-        self.assertFalse(service.clear_retired_df_queue_residue("533280"))
-        service.clear_retired_account_queue_residue({"payment_id": "533280", "phone": "03000000000"})
-
-        self.assertEqual(service.redis.lists["payment_active_df"], [])
+        self.assertNotIn("clear_retired_", source)
+        self.assertNotIn("payment_" + "active_", source)
 
     def test_auto_payout_uses_account_order_batches_parameter_name(self):
         from inspect import signature
@@ -102,6 +76,22 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
         service._check_account_online_via_api = AsyncMock(return_value=True)
 
         self.assertTrue(asyncio.run(service.check_account_online_status("533280")))
+
+    def test_bill_worker_does_not_use_realtime_logout_redis_key(self):
+        source = (JOBS_ROOT / "pakistanpay_v2.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("login_off_" + "realtime_", source)
+
+    def test_app_login_no_longer_touches_retired_runtime_keys(self):
+        source = (API_ROOT / "application" / "app" / "login" / "banks" / "easypaisa.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("easypaisa_" + "runtime:", source)
+
+    def test_retired_runtime_audit_script_is_removed(self):
+        repo_root = API_ROOT.parent
+
+        self.assertFalse((repo_root / "scripts" / "ep_state_audit.py").exists())
+        self.assertFalse((repo_root / "scripts" / "ep_dispatch_trace.py").exists())
 
 
 if __name__ == "__main__":

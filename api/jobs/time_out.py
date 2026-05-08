@@ -151,9 +151,8 @@ def order_timeout(conn, rds):
                         rds.delete(busy_key)
                         continue
                     logging.info(
-                        "订单超时已完成退款，payment_id=%s 不再回推旧 payment_active_%s 队列",
+                        "订单超时已完成退款，payment_id=%s 不再回推旧代收队列",
                         payment_id,
-                        i['channel_code'],
                     )
                     key = 'msg_timeout_{partner_id}'.format(partner_id=partner_id)
                     rds.set(key, 1, 60)    # 保持60秒

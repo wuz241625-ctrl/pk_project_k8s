@@ -13,7 +13,6 @@ from application.lakshmi_api.schema.deposit_order_schema import OrderDataSchema,
 from application.lakshmi_api.schema.partner_schema import PartnerSchema
 from application.lakshmi_api.services.copy_button_service import CopyButtonService
 from application.lakshmi_api.services.pagination_service import PaginationService
-from application.lakshmi_api.services.payments.maha_service import MahaService
 from application.lakshmi_api.services.query_filter_service import QueryFilterService
 from application.lakshmi_api.error_handler import handle_errors
 from datetime import datetime, timedelta
@@ -410,7 +409,6 @@ class Order(OrderHandler):
                     deposit_order.payment_id = payment.id
                     session.commit()
 
-                    # 如果是maha银行，redis通知maha协议进行添加受益人及付款
                     await self.save_order_to_redis_cache(deposit_order, payment)
                     await self._unlock_row_by_redis(serial_number)
 
@@ -442,36 +440,11 @@ class Order(OrderHandler):
             raise ApiError('You have incomplete order.')
 
     """
-    保存要支付的订单到缓存
+    保存要支付的订单到缓存。
+    历史专用钱包协议已退役，当前不再写旧协议缓存。
     """
     async def save_order_to_redis_cache(self, order: DepositOrder, payment: Payment):
-
-        if MahaService.BANK_TYPE_ID != payment.bank_type_id:
-            # 如果不是maha银行，则跳过
-            return
-        key = f"orders_df_maha_payment:{order.payment_id}:{order.serial_number}"
-        # maha IMPS 方式 付款： "payment_name": order.payment_name[0:16].strip(),
-        hash_data = {
-            "id": order.id,
-            "code": order.serial_number,
-            "amount": str(order.amount),
-            "realpay": str(order.real_pay),
-            "poundage": str(order.poundage),
-            "status": order.status,
-            "payment_name": order.payment_name.strip(),
-            "payment_account": order.payment_account,
-            "payment_bank": order.payment_bank,
-            "ifsc": order.ifsc,
-            "merchant_id": order.merchant_id,
-            "merchant_code": order.merchant_code,
-            "partner_id": str(order.user_id),
-            "payment_id": str(order.payment_id),
-            "bank_type_id": payment.bank_type_id,
-            "hash_code": HashUtils.generate_short_version(data = order.serial_number)[0:8]
-        }
-        await self.redis.hset(name=key, mapping=hash_data)
-        # 设置过期时间
-        await self.redis.expire(key, 60 * 30)
+        return
 
 
 class DepositOrders(OrderHandler):

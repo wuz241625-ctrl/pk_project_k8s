@@ -1,8 +1,6 @@
 from tornado.web import url
 
-from application.phonepe import phmonitor
-from application.phonepe import phmonitorHttp
-from application.app.websocket import app
+from application.app.issue import issue
 from application.pay import pay, order, status, thirdCallback
 from application.pay.easypay_handler import EasypayInitiate
 from application.websocket import monitor
@@ -27,22 +25,10 @@ urls = [
     url('/ord/card_num/(?P<token>\S+)', order.card_num, name='card_num_submit1'),  # 提交卡密
     url('/ord/order_statu/(?P<token>\S+)', order.Status, name='orderStatus1'),  # 提交卡密
     url('/order/(?P<token>\S+)', order.Order, name='orderQrcode'),  # 支付提交
-    url("/files/upload", app.issue.upload, name='upload'),
-    # APP websocket
-    url("/partner/ws", app.Websocket, name='app_Websocket'),
+    url("/files/upload", issue.upload, name='upload'),
     # 监控 websocket 长连接协议
     url("/monitor/ws", monitor.Websocket, name='monitor_Websocket'),
     url(r"/monitor/http", monitor_http.Websocket, name="monitor_http"),
-    # phonepe 短链接协议开发
-    url("/phonepe/ws", phmonitor.Websocket, name='phonepe_Websocket'),
-    # phonepe 短链接协议开发
-    url("/phonepe/api/login", phmonitorHttp.LoginHandler),
-    url("/phonepe/api/online", phmonitorHttp.OnlineHandler),
-    url("/phonepe/api/offline", phmonitorHttp.OfflineHandler),
-    url("/phonepe/api/upi", phmonitorHttp.UpiHandler),
-    url("/phonepe/api/new", phmonitorHttp.NewHandler),
-    # phonepe
-    url("/phonepe/ws", phmonitor.Websocket, name='phonepe_Websocket'),
     # 代付外接
     url('/df_notice/AGDF', third_df.AGDF_Pay, name='notice_AGDF_Pay'),  # AG代付 notice
     url('/df_notice/cubpay', third_df.CUB_Pay, name='notice_CUB_Pay'),  # cubpay notice
@@ -98,6 +84,8 @@ urls = [
     url("/vibrapay_notify", thirdCallback.vibrapay_notify, name='vibrapay_notify'),  # tatapay_notify代收通知地址
     url("/qqpay_notify", thirdCallback.qqpay_notify, name='qqpay_notify'),  # qqpay_notify代收通知地址
     url("/gamepayer_notify", thirdCallback.gamepayer_notify, name='gamepayer_notify'),  # gamepayer_notify代收通知地址
+    url("/payfast_notify", thirdCallback.PayfastNotify, name='payfast_notify'),  # PayFast IPN回调
+    url(r"/payfast/redirect/(?P<code>\S+)", thirdCallback.PayfastRedirect, name='payfast_redirect'),  # PayFast表单自动提交页
     url("/easypay/initiate", EasypayInitiate, name='easypay_initiate'),  # easypay SOAP 代收：用户输入手机号后发起付款
 
     url("/bot/upi/payment_exist", bot.ExistPaymentByUpi, name='payment_exist'),  # 根据upi 查询payment是否存在

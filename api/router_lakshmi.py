@@ -50,14 +50,11 @@ urls = [
     url("/user/upi/(?P<payment_id>[0-9]+)/active", upi_controller.UpiActive),
     url("/user/upi/(?P<payment_id>[0-9]+)/selling", upi_controller.UpiSelling),
     url("/user/upi/(?P<payment_id>[0-9]+)/assign", upi_controller.AssignUpi),
-    url("/user/upi/(?P<payment_id>[0-9]+)/cookie", upi_controller.StoreCookie),
     url('/user/upi/send_sms_success', upi_controller.SendSmsSuccess),  # 发送短信成功接口
-    url('/user/upi/grabOTP', upi_controller.GrabOTP),  # 获取OTP(临时接口)
     url('/user/upi/login_progress', upi_controller.LoginProgress),  # 获取登录进度
     url('/partner/watch_tutorial_videos', partner_controller.watchTutorialVideos),  # 观看新手引导视频 POST 前端调用
     url('/partner/get_beginner_task_progress', partner_controller.getBeginnerTaskProgress),  # 查看指定新手任务进度 POST 前端调用
     url('/user/upi/upi_detail', upi_controller.UpiDetail),
-    url("/payment/pin_pre_sign_in", payment_controller.PaymentPINPreSignIn),
     url("/payment/tpin", payment_controller.PaymentTpin),
     url("/member_reports", members_controller.Summary),
     url("/members", members_controller.FindMember),

@@ -53,6 +53,128 @@ def _is_collection_dispatch_enabled(payment) -> bool:
     return can_dispatch_ds(payment)
 
 
+def _parse_payment_id_list(value) -> List[str]:
+    if not value:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_items = value
+    else:
+        raw_items = str(value).replace(' ', '').strip(',').split(',')
+    payment_ids = []
+    seen = set()
+    for item in raw_items:
+        payment_id = str(item).strip()
+        if payment_id.isdigit() and payment_id not in seen:
+            seen.add(payment_id)
+            payment_ids.append(payment_id)
+    return payment_ids
+
+
+def build_ds_candidate_sql(
+    amount,
+    channel_code,
+    target_payment_ids=None,
+    dedicated_payment_ids=None,
+    limit=20,
+) -> Tuple[str, List[object]]:
+    target_payment_ids = _parse_payment_id_list(target_payment_ids)
+    dedicated_payment_ids = _parse_payment_id_list(dedicated_payment_ids)
+    limit = max(1, int(limit or 20))
+    collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", channel_code)
+
+    params: List[object] = [
+        amount,
+        amount,
+        amount,
+        amount,
+        amount,
+        amount,
+        amount,
+    ]
+    target_condition = ""
+    if target_payment_ids:
+        placeholders = ",".join(["%s"] * len(target_payment_ids))
+        target_condition = f"AND pay.id IN ({placeholders})"
+        params.extend(target_payment_ids)
+    elif dedicated_payment_ids:
+        placeholders = ",".join(["%s"] * len(dedicated_payment_ids))
+        target_condition = f"AND pay.id NOT IN ({placeholders})"
+        params.extend(dedicated_payment_ids)
+    params.append(limit)
+
+    sql = f"""
+        SELECT
+            pay.id,
+            pay.partner_id,
+            pay.amount_top,
+            pay.upi,
+            pay.bank_type,
+            pay.manual_status,
+            pay.weight,
+            pay.bank_type_id,
+            pay.wallet_status,
+            pay.account_accno,
+            pay.collection_status,
+            pay.status AS payment_status,
+            pay.certified AS payment_certified,
+            pay.account_iban,
+            p.pid,
+            p.balance,
+            p.status,
+            p.certified,
+            p.vip,
+            p.type,
+            p.ds_min,
+            p.ds_max,
+            v.ds_min AS vip_ds_min,
+            v.ds_max AS vip_ds_max,
+            v.deposit_ratio,
+            v.conditions,
+            COALESCE(pend.pending_amount, 0) AS pending_amount,
+            (p.balance - COALESCE(pend.pending_amount, 0)) AS available_amount
+        FROM payment pay
+        JOIN partner p ON pay.partner_id = p.id
+        JOIN vip v ON v.vip = p.vip
+        LEFT JOIN (
+            SELECT partner_id, COALESCE(SUM(amount), 0) AS pending_amount
+            FROM orders_ds
+            WHERE time_create >= CURDATE()
+              AND status IN (0, 1, 2)
+            GROUP BY partner_id
+        ) pend ON pend.partner_id = p.id
+        WHERE {collection_dispatch_condition}
+          AND pay.account_iban IS NOT NULL
+          AND pay.account_iban <> ''
+          AND pay.bank_type NOT IN (SELECT id FROM bank_type WHERE status = 0)
+          AND (pay.bank_type_id IS NULL OR pay.bank_type_id NOT IN (SELECT id FROM bank_type WHERE status = 0))
+          AND p.balance >= %s
+          AND (p.ds_min <= %s OR p.ds_min = 0)
+          AND (p.ds_max >= %s OR p.ds_max = 0)
+          AND p.certified = 1
+          AND p.status = 1
+          AND v.ds_min <= %s
+          AND v.ds_max >= %s
+          AND (p.balance - COALESCE(pend.pending_amount, 0)) >= %s
+          AND (
+              pay.amount_top IS NULL
+              OR pay.amount_top = 0
+              OR pay.amount_top >= (
+                  %s + (
+                      SELECT COALESCE(SUM(o.amount), 0)
+                      FROM orders_ds o
+                      WHERE o.payment_id = pay.id
+                        AND o.time_create >= CURDATE()
+                        AND o.status > 0
+                  )
+              )
+          )
+          {target_condition}
+        ORDER BY COALESCE(pend.pending_amount, 0) ASC, COALESCE(pay.weight, 1) DESC, pay.id ASC
+        LIMIT %s
+    """
+    return sql, params
+
+
 def _manual_lock_update_fields(payment):
     return {"manual_status": 1, "collection_status": 0}
 
@@ -562,36 +684,6 @@ class Pay(BaseHandler):
                     self.logger.info(f"三方支付{other_pay_info[0]['name']}接入自有收银台: {merchant_channel['otherpay']}")
                     order_pay_url = self.application.pay_url + '{token}'.format(token=order_token)
 
-            if not order_pay_url and not merchant_channel['otherpay']:
-                # 无码接单临时限制码未接单
-                # 调用 push_order_new 方法
-                # 在执行 push_order_new 之前和之后打印日志
-                self.logger.warning(f"没有支付网关，调用 push_order_new 尝试派单")
-                try:
-                    # Step 1: 记录订单数据
-                    self.logger.info(f"push_order_new准备派单，订单数据: {order_data}")
-
-                    # Step 2: 调用 push_order_new 方法尝试派单
-                    ret = await self.push_order_new(order_data)
-                    self.logger.info(f"push_order_new派单结果: {ret}")
-
-                    # Step 3: 判断派单是否成功
-                    if ret and ret.get('success'):
-                        upi = ret.get('upi')
-                        self.logger.info(f"upi: {upi}")
-                        push_success = True
-                        order_pay_url = self.application.pay_url + '{token}'.format(token=order_token)
-                        self.logger.info(f"派单成功，生成支付链接: {order_pay_url}")
-                    else:
-                        self.logger.warning("派单未成功，可能需要重试或检查原因")
-                except Exception as e:
-                    # 捕获异常并打印详细信息
-                    exception_type = type(e).__name__
-                    exception_message = str(e)
-                    stack_trace = traceback.format_exc()  # 获取完整的异常堆栈信息
-                    self.logger.error(f"派单过程中发生异常，订单数据: {order_data}, 异常类型: {exception_type}, 异常信息: {exception_message}")
-                    self.logger.error(f"完整堆栈信息:\n{stack_trace}")
-
             # 新追加的通道1005 才具备小数点的功能
             self.logger.info(f'检测到 {gateway} =={push_success}，准备处理小数点回调逻辑')
 
@@ -815,7 +907,29 @@ class Pay(BaseHandler):
         else:
             self.logger.info('未查询到商户指定码内容')
         return target_payment_set
-		
+
+    async def fetch_mysql_dedicated_payment_ids(self):
+        target_payment_rows = await self.query(
+            "SELECT target_payment FROM merchant WHERE target_payment IS NOT NULL AND target_payment != '';"
+        )
+        dedicated_payment_ids = []
+        for row in target_payment_rows or []:
+            dedicated_payment_ids.extend(_parse_payment_id_list(row.get('target_payment')))
+        return _parse_payment_id_list(dedicated_payment_ids)
+
+    async def fetch_ds_candidate_rows(self, amount, channel_code, target_payment_ids=None, limit=20):
+        dedicated_payment_ids = []
+        if not target_payment_ids:
+            dedicated_payment_ids = await self.fetch_mysql_dedicated_payment_ids()
+        sql, params = build_ds_candidate_sql(
+            amount=amount,
+            channel_code=channel_code,
+            target_payment_ids=target_payment_ids,
+            dedicated_payment_ids=dedicated_payment_ids,
+            limit=limit,
+        )
+        return await self.query(sql, *params)
+
     async def generate_unique_decimal_amount(self, original_amount, decimal_min, decimal_max, channel_code, order_code, payment_id):
         """
         生成唯一的小数点金额，使用新的 List + Hash 设计方案
@@ -1040,1185 +1154,14 @@ class Pay(BaseHandler):
         return False
 
 
-    # 定义从 Redis 获取支付码的函数
-    async def fetch_payment_ids_from_redis(self):
-        """
-        从 Redis 中获取所有匹配模式 `send_orders_ds_limit_*` 的键，并提取其中的 payment_id。
-        使用 KEYS 命令一次性获取匹配的所有键。
-        """
-        # 初始化模式和支付 ID 列表
-        self.logger.info("初始化变量：pattern = 'send_orders_ds_limit_*', payment_id_list = []")
-        pattern = "send_orders_ds_limit_*"
-        payment_id_list = []
-
-        try:
-            # 使用 KEYS 获取所有匹配的键
-            self.logger.info("使用 KEYS 命令获取所有匹配的键。")
-            keys = await self.redis.keys(pattern)  # 使用 KEYS 命令获取匹配的所有键
-            self.logger.info(f"获取到的键列表: {keys}")
-
-            # 遍历获取的键列表，提取 payment_id
-            for key in keys:
-                self.logger.info(f"处理键：{key}")
-
-                # 如果键是字节类型，解码为字符串
-                if isinstance(key, bytes):
-                    key_str = key.decode('utf-8')
-                    self.logger.info(f"键为字节类型，已解码为字符串：{key_str}")
-                else:
-                    key_str = key  # 如果键已经是字符串，直接使用
-
-                # 判断键是否符合预期模式
-                if key_str.startswith("send_orders_ds_limit_"):
-                    self.logger.info(f"键匹配模式，提取 payment_id。")
-                    payment_id = key_str.split('_')[-1]  # 从键中提取 payment_id
-                    payment_id_list.append(payment_id)
-                    self.logger.info(f"提取到的 payment_id: {payment_id}, 已添加到列表。")
-
-            # 输出最终的 payment_id 列表
-            self.logger.info(f"最终的 payment_id_list: {payment_id_list}")
-            # 打乱 payment_id_list 的顺序
-            random.shuffle(payment_id_list)
-            self.logger.info(f"打乱后的 payment_id_list: {payment_id_list}")
-
-        except Exception as e:
-            # 捕获整个方法的错误并打印详细信息
-            error_details = traceback.format_exc()
-            self.logger.error(f"在 fetch_payment_ids_from_redis 方法中发生错误: {e}\n错误详情:\n{error_details}")
-            raise  # 根据需要决定是否重新抛出异常
-
-        # 返回 payment_id 列表
-        return payment_id_list
-
-    async def process_payment_list(
-        self, 
-        back_key,
-        new_payment_list, 
-        new_partner_list, 
-        code, 
-        amount, 
-        _new_vip_list, 
-        data
-    ):
-        """
-        处理支付码逻辑
-        :param new_payment_list: 新的支付码列表
-        :param new_partner_list: 新的码商列表
-        :param code: 订单代码
-        :param amount: 订单金额
-        :param _new_vip_list: VIP信息列表
-        :param data: 其他订单相关信息
-        :return: back_key (处理失败的支付码列表), count (处理次数)
-        """
-        # back_key = []
-        is_push = False
-        upi = ''
-        for payment_id, payment_info in new_payment_list.items():
-            try:
-                self.logger.info(f"Step 10: 选择支付码 {payment_id} 进行处理, 订单 {code}, 金额 {amount}")
-                payment = new_payment_list[int(payment_id)]
-                partner_id = payment['partner_id']
-                bank_id = payment['bank_type_id']
-                # 获取 payment 信息（条件：id = payment_id）
-                paymentNew = await self.get_result_by_condition(
-                    'payment',
-                    ['account_iban'],
-                    {'id': payment_id}
-                )
-                
-                bank = await self.get_result_by_condition(
-                    'bank_type',
-                    ['name'],
-                    {'id': bank_id}
-                )
-                self.logger.info(f"Step 10: bank_id {bank_id}, {bank}")
-                # bank_id = paymentNew['bank_type_id'] if paymentNew and 'bank_type_id' in paymentNew else None
-                # 检查 account_iban 是否为空或不存在
-                if not paymentNew or not paymentNew.get('account_iban'):
-                    # 如果条件满足，记录警告日志
-                    self.logger.warn(f"在获取 ID 为 {payment_id} 的支付信息时，account_iban 键不存在或为空，已跳过, code: {code}")
-                    # 然后跳过当前循环
-                    continue
-
-                # 4. 如果所有检查都通过
-                self.logger.info(f"成功获取 ID 为 {payment_id} 的支付信息，account_iban 存在 {paymentNew.get('account_iban')}, code: {code}")
-
-                self.logger.info(f"从 payment 中获取 bank_type_id，赋值 bank_id = {bank_id}")
-                self.logger.info(f"从 payment 中获取 partner_id，赋值 partner_id = {partner_id}")
-                partner = new_partner_list[partner_id]
-
-                # 检查码商限制
-                if await self.redis.get(f'partner_grab_order_limit_{partner_id}'):
-                    self.logger.warn(f"码商 {partner_id}, 码 {payment_id} 暂停6分钟接单, code: {code}")
-                    continue
-
-                # 检查支付码是否在线
-                if not await _is_collection_payment_online(
-                    self,
-                    payment_id,
-                    bank_id,
-                    bank_type=payment.get('bank_type'),
-                    payment=payment,
-                ):
-                    self.logger.warn(f"码 {payment_id} 已停止接单，不允许接单 code: {code}")
-                    continue
-
-                # 检查支付码是否在列表中
-                if int(payment_id) not in new_payment_list.keys():
-                    self.logger.warn(f"Step 10: code: {code}, payment_id 不在 new_payment_list 中: {payment_id}")
-                    continue
-
-                # 检查时间间隔限制
-                # _send_orders_interval = await self.redis.get(f"send_orders_interval_{payment_id}")
-                # if _send_orders_interval:
-                #     self.logger.warn(f"码商 {partner_id} 的码 {payment_id} 时间间隔 {_send_orders_interval}s 内有单, 不允许接单, code: {code}")
-                #     continue
-
-                # 动态限制：每个银行 bank_id 在 accept_interval 秒内最多接 max_count 单
-                accept_interval_key = f"send_orders_max_sec_{bank_id}"
-                max_count_key = f"send_orders_max_count_{bank_id}"
-
-                accept_interval = await self.redis.get(accept_interval_key)
-                max_count = await self.redis.get(max_count_key)
-
-                self.logger.info(f"[动态限制] 获取 Redis Key：{accept_interval_key} = {accept_interval}")
-                self.logger.info(f"[动态限制] 获取 Redis Key：{max_count_key} = {max_count}")
-
-                # 校验是否设置动态限制
-                if accept_interval and max_count:
-                    accept_interval = int(accept_interval)
-                    max_count = int(max_count)
-
-                    # 查询 orders_ds 表，统计时间窗口内该payment_id已接单数量
-                    # 361需求：只判断待支付
-                    sql = """
-                        SELECT COUNT(*) AS count
-                        FROM orders_ds
-                        WHERE payment_id = %s AND time_create >= NOW() - INTERVAL %s SECOND AND status = 1
-                    """
-                    result = await self.query(sql, payment_id, accept_interval)
-                    order_count = result[0]['count'] if result and 'count' in result[0] else 0
-
-                    self.logger.info(
-                        f"[动态限制] payment_id: {payment_id}, bank_id: {bank_id}, 时间窗口: {accept_interval}s, 当前接单数: {order_count}, 最大允许: {max_count}"
-                    )
-
-                    if order_count >= max_count:
-                        self.logger.warning(
-                            f"[动态限制] payment_id: {payment_id}, 银行 {bank_id} 在过去 {accept_interval}s 内已接 {order_count} 单，超过最大限制 {max_count}，不允许再次接单，code: {code}"
-                        )
-                        continue
-                else:
-                    self.logger.info(
-                        f"[动态限制] 未配置 payment_id: {payment_id}, bank_id={bank_id} 的动态限制（accept_interval 或 max_count 缺失），跳过此限制"
-                    )
-
-                    # # 固定限制：每个码 payment_id 每 6 分钟只能接一单
-                    # send_orders_interval = await self.redis.get("send_orders_interval")
-                    # _send_orders_interval = await self.redis.get(f"send_orders_interval_{payment_id}")
-                    # current_ts = int(time.time())
-
-                    # self.logger.info(f"从 Redis 获取 send_orders_interval 全局配置值: {send_orders_interval}")
-                    # self.logger.info(f"从 Redis 获取 send_orders_interval_{payment_id} 的值: {_send_orders_interval}")
-
-                    # # 检查固定限制
-                    # if _send_orders_interval:
-                    #     last_ts = int(_send_orders_interval)
-                    #     interval = current_ts - last_ts
-
-                    #     self.logger.info(
-                    #         f"[固定限制] 当前时间戳: {current_ts}，上次接单时间戳: {last_ts}，间隔: {interval} 秒"
-                    #     )
-
-                    #     if interval < int(send_orders_interval):
-                    #         self.logger.warning(
-                    #             f"[固定限制] 码商 {partner_id} 的码 {payment_id} 在 {interval}s 前接过单，未满 {int(send_orders_interval)} 秒，不允许再次接单，code: {code}"
-                    #         )
-                    #         continue
-                    # else:
-                    #     self.logger.info(f"[固定限制] Redis 中未找到 send_orders_interval_{payment_id}，视为首次接单或记录已过期")
-                    # 默认值 360 秒 (6 分钟)
-                    default_interval = 360 
-                    send_orders_interval_global = await self.redis.get("send_orders_interval")
-
-                    if data['channel_code'] in (1002, 1003):
-                        # 【固定 3 分钟逻辑】: 1002 和 1003 固定为 180 秒
-                        interval_seconds = 180
-                        self.logger.info(f"[固定限制] 通道 {data['channel_code']}，固定接单间隔为 180 秒 (3 分钟)")
-                    else:
-                        # 其他通道使用全局配置，若无配置则使用默认值 360 秒
-                        try:
-                            interval_seconds = int(send_orders_interval_global)
-                        except (TypeError, ValueError):
-                            interval_seconds = default_interval
-                        self.logger.info(f"[固定限制] 通道 {data['channel_code']}，全局接单间隔为 {interval_seconds} 秒")
-
-                    # 2. 检查固定限制 (使用 Redis EXISTS 替代时间戳比较)
-                    key_interval = f"send_orders_interval_{payment_id}"
-
-                    # 检查 Key 是否存在。如果存在，表示码商仍在冷却期内。
-                    if await self.redis.exists(key_interval):
-                        # 如果需要查看剩余时间，可以使用 TTL
-                        # ttl = await self.redis.ttl(key_interval)
-                        
-                        self.logger.warning(
-                            f"[固定限制] 码 {payment_id} 正在冷却期 ({interval_seconds} 秒限制)，不允许再次接单，code: {code}"
-                        )
-                        continue
-
-                    self.logger.info(f"[固定限制] Redis 中未找到 {key_interval}，可以接单")
-                # 检查成功率限制
-                # send_orders_ds_limit = await self.redis.get(f"send_orders_ds_limit_{payment_id}")
-                # if send_orders_ds_limit and not partner['type'] == 0:
-                #     self.logger.warn(f"码商 {partner_id} 的码 {payment_id} 成功率低, 暂停接单, code: {code}")
-                #     continue
-
-                # 检查码商状态
-                if not partner or not partner['vip']:
-                    self.logger.warn(f"码商 {partner_id} 状态异常, 不允许接单, code: {code}")
-                    continue
-
-                # 检查人工锁定状态
-                # if payment['manual_status'] == 1:
-                #     self.logger.warn(f"码商 {partner_id} 的码 {payment_id} 失败次数过多, 人工锁定, 不允许接单, code: {code}")
-                #     continue
-
-                # 检查订单金额范围
-                # partner_amount = _new_vip_list[partner['vip']]
-                # if amount < partner_amount['ds_min'] or amount > partner_amount['ds_max']:
-                #     self.logger.info(f"Step 11: 码商 {partner_id} 不满足 VIP 等级代收范围, 订单金额 {amount}, code: {code}")
-                #     back_key.append(payment_id)
-                #     continue
-
-                partner_amount = _new_vip_list[partner['vip']]
-
-                # 打印当前 partner 的 VIP 等级和范围信息
-                self.logger.info(f"Step 1: 当前码商 ID: {partner_id}, VIP 等级: {partner['vip']}, 范围信息: {partner_amount}")
-
-                # 打印当前订单金额和最小、最大代收范围
-                self.logger.info(f"Step 2: 检查订单金额 {amount} 是否在范围内 ({partner_amount['ds_min']}, {partner_amount['ds_max']})")
-
-                # 判断订单金额是否超出范围
-                if amount < partner_amount['ds_min']:
-                    self.logger.info(f"Step 3: 订单金额 {amount} 小于最小代收范围 {partner_amount['ds_min']}")
-                    self.logger.info(f"Step 11: 码商 {partner_id} 不满足 VIP 等级代收范围, 订单金额 {amount}, code: {code}")
-                    back_key.append(payment_id)
-                    continue
-
-                if amount > partner_amount['ds_max']:
-                    self.logger.info(f"Step 4: 订单金额 {amount} 大于最大代收范围 {partner_amount['ds_max']}")
-                    self.logger.info(f"Step 11: 码商 {partner_id} 不满足 VIP 等级代收范围, 订单金额 {amount}, code: {code}")
-                    back_key.append(payment_id)
-                    continue
-
-                # 如果金额在范围内
-                self.logger.info(f"Step 5: 订单金额 {amount} 在范围内 ({partner_amount['ds_min']}, {partner_amount['ds_max']})")
-
-                # 检查余额
-                partner_balance = await self.removeDeposit(partner['balance'], partner_amount['conditions'], partner_amount['deposit_ratio'])
-                if partner_balance < amount:
-                    self.logger.warn(f"Step 12: 码商 {partner_id} 余额不足, 余额: {partner_balance}, 订单金额: {amount}, code: {code}")
-                    back_key.append(payment_id)
-                    continue
-
-                # 构造订单数据并处理
-                self.logger.info(f"Step 13: 构造订单数据, 订单 {code}, 金额 {amount}")
-                channel = await self.get_result_by_condition('channel', ['rate', 'rates'], {'code': data['channel_code']})
-                rates = Decimal(channel['rate'])  # 基础费率
-                earn_partner_self = amount * rates  # 码商自身收益
-
-                # 如果存在父级码商，累加费率
-                self.logger.info(f"Step 14: 如果存在父级码商，累加费率, 订单 {code}, 金额 {amount}")
-                if partner['pid']:
-                    rates += Decimal(channel['rates'].split(',')[0])  # 一级码商分成费率
-                    parent_partner = await self.get_result_by_condition('partner', ['pid'], {'id': partner['pid']})
-                    if parent_partner and parent_partner['pid']:
-                        rates += Decimal(channel['rates'].split(',')[1])  # 二级码商分成费率
-                earn_partner = amount * rates  # 总码商收益
-
-                # 系统收益计算
-                self.logger.info(f"Step 15: 系统收益计算, 订单 {code}, 金额 {amount}")
-                earn_system = data['poundage'] - earn_partner - data['earn_merchant']
-
-                # 校验系统收益
-                self.logger.info(f"Step 15: 系统收益计算, 订单 {code}, 金额 {amount}")
-                if earn_system < 0:
-                    self.logger.warn(f"Step 17: 费率设置错误，系统收益为负，码商 {partner_id} 不允许接单, code: {code}, 金额 {amount}")
-                    back_key.append(payment_id)
-                    continue
-
-                order_data = dict()
-                order_data['partner_id'] = partner_id
-                order_data['payment_id'] = payment_id
-                order_data['upi'] = payment['upi']
-                order_data['earn_partner'] = earn_partner
-                order_data['earn_partner_self'] = earn_partner_self
-                order_data['status'] = 1
-                order_data['earn_system'] = earn_system
-                order_data['time_accept'] = datetime.datetime.now()
-
-                # 数据库操作
-                async with self.application.db.acquire() as conn:
-                    async with conn.cursor(DictCursor) as cur:
-                        try:
-                            # 扣除余额
-                            self.logger.info(f"Step 18: 扣除余额，操作订单 {code}, 码商 {partner_id}, 金额 {amount}")
-                            if not await self.change_balance(conn, cur, 'partner', partner['id'], -data['amount'], data['code'], 0):
-                                await conn.rollback()
-                                self.logger.warning(f"Step 19: 码商 {partner_id} 扣除账户余额失败，订单代码: {code}, 金额 {amount}")
-                                continue
-
-                            # 修改订单状态
-                            key_update, val_update = await self.dict_to_equal(order_data)
-                            sql = 'update orders_ds set {keys} where code=%s and status=0'.format(keys=key_update)
-                            if not await cur.execute(sql, (*val_update, data['code'])):
-                                await conn.rollback()
-                                self.logger.warning(f"Step 20: 码商 {partner_id} 修改订单状态失败，订单代码: {code}, 金额: {amount}")
-                                continue
-                        except Exception as e:
-                            await conn.rollback()
-                            self.logger.exception(f"Step 21: 订单处理异常，订单代码 {code}: {e}\n{traceback.format_exc()}, 金额 {amount}")
-                            continue
-                        else:
-                            await conn.commit()
-                            back_key.append(payment_id)
-                            is_push = True
-                            self.logger.info(f"Step 22: 派单成功，订单代码: {code}, 金额 {amount}")
-                            # 记录订单数据中的 UPI 值
-                            self.logger.info(f"订单数据: {order_data}")
-
-                            # 确保 order_data 包含 'upi' 键
-                            if 'upi' in order_data:
-                                self.logger.info(f"从 order_data 获取到 UPI: {order_data['upi']}")
-                            else:
-                                self.logger.warn("order_data 中没有 'upi' 字段，可能会导致 UPI 为空")
-                            # 添加upi返回
-                            # self.upi = order_data['upi']
-                            # 记录赋值后的 UPI 值
-                            # self.logger.info(f"赋值后的 self.upi: {self.upi}")
-                            # 派单时间间隔
-                            send_orders_interval = await self.redis.get("send_orders_interval")
-                            self.logger.info(f"获取 send_orders_interval 的值: {send_orders_interval}")  # 记录获取到的值
-
-                            if send_orders_interval and not partner['type'] == 0:  # 外部码商
-                                # self.logger.info(f"partner['type'] 值为: {partner['type']}, 符合条件，准备设置 send_orders_interval_{payment_id}")
-                                # # await self.redis.set(
-                                # #     f"send_orders_interval_{payment_id}",
-                                # #     int(send_orders_interval),
-                                # #     int(send_orders_interval)
-                                # # )
-                                # # self.logger.info(f"已设置 redis 键 send_orders_interval_{payment_id}，值为: {int(send_orders_interval)}，过期时间为: {int(send_orders_interval)}")
-                                # ts_now = int(time.time())
-                                # self.logger.info(f"准备设置 Redis 键 send_orders_interval_{payment_id}，当前时间戳: {ts_now}")
-
-                                # await self.redis.set(
-                                #     f"send_orders_interval_{payment_id}",
-                                #     ts_now,
-                                #     ex=int(send_orders_interval)  # 设置过期时间为360秒，自动过期
-                                # )
-
-                                # self.logger.info(f"已设置 send_orders_interval_{payment_id}，值: {ts_now}，过期时间: {int(send_orders_interval)} 秒")
-
-                                # ... (假设 payment_id 和 partner 变量已定义)
-                                ts_now = int(time.time())
-
-                                send_orders_interval_global = await self.redis.get("send_orders_interval")
-                                self.logger.info(f"获取 send_orders_interval 的值: {send_orders_interval_global}")
-
-                                # 1. 确定最终的冷却时间 (interval_seconds)
-                                # 默认值 360 秒 (6 分钟)
-                                default_interval = 360 
-
-                                if send_orders_interval_global:
-                                    try:
-                                        # 默认使用全局配置
-                                        interval_seconds = int(send_orders_interval_global)
-                                    except (TypeError, ValueError):
-                                        interval_seconds = default_interval
-                                else:
-                                    interval_seconds = default_interval
-
-                                # 检查是否为 1002 或 1003 通道
-                                if data.get('channel_code') in (1002, 1003):
-                                    # 【固定 3 分钟逻辑】: 1002 和 1003 固定为 180 秒
-                                    interval_seconds = 180 
-                                    self.logger.info(f"通道 {data.get('channel_code')} 命中固定 3 分钟限制，设置过期时间为 180 秒")
-
-
-                                if send_orders_interval_global and not partner['type'] == 0:
-                                    self.logger.info(f"partner['type'] 值为: {partner['type']}, 符合条件，准备设置 send_orders_interval_{payment_id}")
-                                    
-                                    self.logger.info(f"准备设置 Redis 键 send_orders_interval_{payment_id}，当前时间戳: {ts_now}")
-
-                                    await self.redis.set(
-                                        f"send_orders_interval_{payment_id}",
-                                        ts_now,
-                                        ex=interval_seconds  # ✅ 使用计算出的最终冷却时间
-                                    )
-
-                                    self.logger.info(f"已设置 send_orders_interval_{payment_id}，值: {ts_now}，过期时间: {interval_seconds} 秒")
-
-                            # 添加一个redis key用于提示加速爬取账单，按最短时间爬取一次
-                            await self.redis.set(f"crawl_frequently_{payment_id}", 1, 60 * 8)
-                            self.logger.info(f"[代收] push_order_new 成功设置 Redis 键: crawl_frequently_{payment_id}, paymentid: {payment_id}, 过期时间为 {8} 分钟。")
-                            
-                            # 调用封装好的函数
-                            self.logger.info(
-                                f"===========payment==============={payment}====={payment['upi']}====={amount}==="
-                            )
-                            if bank.get('name') == 'EASYPAISA':
-                                qr_code = await self.generate_qr_code(payment['id'], payment['upi'], amount)
-                                await self.redis.set('order_ds_third_qr_{}'.format(code), qr_code, 60 * 20)
-                                upi = qr_code
-                                if qr_code:
-                                    self.logger.info(f"订单代码 {code}  , 金额 {amount} 生成的QR码文本是: {qr_code}")
-                                else:
-                                    self.logger.info(f"订单代码 {code}  , 金额 {amount} 未能生成QR码。")    
-                            elif bank.get('name') == 'JAZZCASH':
-                                await self.redis.set(f"crawl_frequently_{payment_id}", 1, 60 * 3)
-                                self.logger.info(f"[代收] push_order_new 成功设置 Redis 键: crawl_frequently_{payment_id}, paymentid: {payment_id}, 过期时间为 {3} 分钟。")
-                            
-                                pass
-
-                            return is_push, back_key, upi  # 派单成功后退出循环
-
-            except Exception as e:
-                self.logger.exception(f"Step 23: 派单异常处理，订单代码 {code}: {e}\n{traceback.format_exc()}, 金额 {amount}")
-                if 'back_key' not in locals():
-                    back_key = []  # 确保异常路径中也能初始化
-                continue
-
-        return is_push, back_key, upi
-
-
-    # 二维码生成
-    async def generate_qr_code(
-            self,
-            payment_id: str,
-            account_id: str,
-            amount: str,
-            logger=None
-        ):
-        """
-        调用第三方API为特定账户和金额生成二维码。配置参数从数据库动态获取。
-
-        参数:
-            self: 包含数据库连接和日志对象的实例。
-            payment_id: payment_id
-            account_id: 收款方的账户ID。
-            amount: 支付金额。
-            logger: 用于记录详细日志的日志对象。默认为标准日志。
-
-        返回:
-            成功时返回二维码文本（base64编码的图像数据），否则返回 None。
-        """
-        log = logger or self.logger
-
-        # 检查基本输入
-        if not account_id or not amount:
-            log.error(f"无效的输入数据：account_id={account_id}, amount={amount}")
-            return None
-
-        log.info(f'generate_qr_code====================1===========account_id={account_id}, amount={amount}===============')
-        # 从otherpay表中查询配置信息
-        account_iban = ''
-        async with self.application.db.acquire() as conn:
-            async with conn.cursor(DictCursor) as cur:
-                
-                
-                sql_select_payment = """
-                    SELECT * FROM payment WHERE id = %s LIMIT 1
-                """
-                await cur.execute(sql_select_payment, (payment_id,))
-                payment_info = await cur.fetchone()
-                log.info(f'payment_info======={payment_info}=============')
-                if not payment_info:
-                    log.error(f"未在数据库中找到 ID 为 {payment_id} 的有效payment。")
-                    return None
-                
-                account_iban = payment_info.get('account_iban')
-
-        if not account_iban:
-            log.error(f"payment_id={payment_id} 缺少 account_iban，无法生成 EasyPaisa QR。")
-            return None
-
-        log.info(f'generate_qr_code======account_iban======={account_iban}=======')
-        expires_at = int(time.time()) + 7 * 60
-        qr = build_payload_amount(iban=account_iban, amount=amount, timestamp=expires_at)
-        log.info(f'qr======取得二维码数据=============={qr}')
-        return qr
-
-    # 二维码生成存档
-    async def generate_qr_code_bak(
-            self,
-            payment_id: str,
-            account_id: str,
-            amount: str,
-            logger=None
-        ):
-        """
-        调用第三方API为特定账户和金额生成二维码。配置参数从数据库动态获取。
-
-        参数:
-            self: 包含数据库连接和日志对象的实例。
-            payment_id: payment_id
-            account_id: 收款方的账户ID。
-            amount: 支付金额。
-            logger: 用于记录详细日志的日志对象。默认为标准日志。
-
-        返回:
-            成功时返回二维码文本（base64编码的图像数据），否则返回 None。
-        """
-        # 检查基本输入
-        if not account_id or not amount:
-            logger.error(f"无效的输入数据：account_id={account_id}, amount={amount}")
-            return None
-
-        api_url = None
-        user_id = None
-        secret_key = None
-        otherpay_id = 'pakistanpay'
-        account_selected = ''
-
-        try:
-            self.logger.info(f'generate_qr_code====================1===========account_id={account_id}, amount={amount}===============')
-            # 从otherpay表中查询配置信息
-            async with self.application.db.acquire() as conn:
-                async with conn.cursor(DictCursor) as cur:
-                    sql_select_otherpay = """
-                        SELECT * FROM otherpay WHERE name = %s AND status = 1 LIMIT 1
-                    """
-                    await cur.execute(sql_select_otherpay, (otherpay_id,))
-                    otherpay_info = await cur.fetchone()
-
-                    if not otherpay_info:
-                        logger.error(f"未在数据库中找到 ID 为 {otherpay_id} 的有效三方支付配置。")
-                        return None
-
-                    # 提取配置参数
-                    api_url = otherpay_info.get('pay_url')
-                    user_id = otherpay_info.get('merchant_id')
-                    secret_key = otherpay_info.get('key')
-                    
-                    if not all([api_url, user_id, secret_key]):
-                        logger.error(f"数据库中ID为{otherpay_id}的配置信息不完整。")
-                        return None
-                    
-                    sql_select_payment = """
-                        SELECT id, account_enable, account_selected FROM payment WHERE id = %s LIMIT 1
-                    """
-                    await cur.execute(sql_select_payment, (payment_id,))
-                    payment_info = await cur.fetchone()
-                    self.logger.info(f'payment_info======={payment_info}=============')
-                    if not payment_info:
-                        logger.error(f"未在数据库中找到 ID 为 {payment_id} 的有效payment。")
-                        return None
-                    
-                    account_enable = payment_info.get('account_enable')
-                    if account_enable == 1:
-                        account_selected = otherpay_info.get('account_selected')
-
-            self.logger.info('generate_qr_code====================2')
-            # 1. 构建 API 请求的 payload
-            payload = {
-                "id": str(uuid.uuid4()),
-                "action": "mkQrcode",
-                "payload": {
-                    "account_id": account_id,
-                    "amount": str(amount),
-                    "accno": account_selected
-                }
-            }
-            
-            self.logger.info(f'generate_qr_code=================3======={payload}')
-            # 2. 对 payload 进行签名
-            payload_str = simplejson.dumps(payload, separators=(',', ':'))
-            self.logger.info('generate_qr_code====================4=============')
-            data_base64 = base64.b64encode(payload_str.encode('utf-8')).decode('utf-8')
-            self.logger.info('generate_qr_code====================5===========')
-            sign_str = data_base64 + secret_key
-            sign = hashlib.md5(sign_str.encode('utf-8')).hexdigest()
-            self.logger.info('generate_qr_code====================6============')
-            request_data = {'user_id': user_id, 'data': data_base64, 'sign': sign}
-            self.logger.info('generate_qr_code====================7============')
-
-            self.logger.info("--- 生成QR码请求详情 ---")
-            self.logger.info(f"请求域名: {api_url}")
-            self.logger.info(f"Payload JSON: {payload_str}")
-            self.logger.info(f"Base64 编码: {data_base64}")
-            self.logger.info(f"签名: {sign}")
-            self.logger.info(f"请求数据: {request_data}")
-            self.logger.info("-----------------------\n")
-            
-            self.logger.info('generate_qr_code====================8===============')
-            # 3. 发送异步 HTTP POST 请求
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.post(api_url, data=request_data) as response:
-                        # 4. 检查 HTTP 状态码
-                        if response.status != 200:
-                            self.logger.error(f"API请求失败，HTTP状态码: {response.status}")
-                            self.logger.error(f"响应内容（原始文本）:\n{await response.text()}")
-                            return None
-
-                        # 5. 检查 Content-Type
-                        content_type = response.headers.get('Content-Type', '')
-                        if 'application/json' not in content_type:
-                            self.logger.error(f"API响应非JSON格式，Content-Type: {content_type}")
-                            self.logger.error(f"响应内容（原始文本）:\n{await response.text()}")
-                            return None
-                        
-                        response_json = await response.json()
-                        self.logger.info("--- API响应成功 ---")
-                        self.logger.info(json.dumps(response_json, indent=4, ensure_ascii=False))
-
-                        # 6. 检查业务码并提取 QR 码
-                        if response_json.get('code') == 200:
-                            qr_code_text = response_json.get('data', {}).get('body', {}).get('qrCode')
-                            if qr_code_text:
-                                self.logger.info("成功获取QR码文本。")
-                                return qr_code_text
-                            else:
-                                self.logger.error(f"API响应成功，但缺少'qrCode'字段。")
-                                return None
-                        else:
-                            error_msg = response_json.get('msg', '未知错误')
-                            self.logger.error(f"API调用失败，业务错误信息: {error_msg}")
-                            return None
-
-                except aiohttp.ClientError as e:
-                    self.logger.error(f"网络请求失败: {e}")
-                    return None
-                except simplejson.JSONDecodeError as e:
-                    self.logger.error(f"API响应JSON解析失败: {e}")
-                    return None
-
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            self.logger.error(f"处理QR码时发生意外错误: {e}\n{tb_str}")
-            return None
-
-    async def push_order_new(self, data):
-        is_push = False
-        code = data['code']
-        amount = Decimal(data['amount'])
-
-        # 定义 Redis 列表名
-        list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-        collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", data.get("channel_code"))
-
-        self.logger.info(f"开始处理订单 {code}, 金额 {amount}, 渠道 {data['channel_code']}")  # 添加日志
-        payment_id_list = []
-        
-        # 确保初始化
-        back_key = []
-        self.logger.info("初始化 back_key")
-
-        try:
-            # 从 Redis 中重新获取支付码
-            self.logger.info(f"Step 1: 从 Redis 中获取支付码列表, 订单 {code}, 金额 {amount}")
-            payment_id_list = await self.fetch_payment_ids_from_redis()
-            self.logger.info(f"Step 1: 从 Redis 获取到的支付码列表: {payment_id_list}, 订单 {code}, 金额 {amount}")
-
-            # 如果没有低成功率支付码，直接返回，不执行派单逻辑
-            if not payment_id_list:
-                self.logger.warn(f"没有低成功率支付码需要处理，结束派单, 订单 {code}, 金额 {amount}")
-                # return is_push
-                try:
-                    # 从 Redis 获取 send_orders_ds_false_limit 的值
-                    self.logger.info("从 Redis 获取 send_orders_ds_false_limit 的值")
-                    redis_send_orders_ds_false_limit = await self.redis.get('send_orders_ds_false_limit')
-
-                    if redis_send_orders_ds_false_limit:
-                        # 如果 Redis 中有值，则将其解码为字符串，并分割成列表
-                        payment_id_list = redis_send_orders_ds_false_limit.split(',')
-                        self.logger.info(f"从 Redis 获取到的假码列表: {payment_id_list}")
-                    else:
-                        self.logger.warning("Redis 中没有假码，跳过假码剔除步骤")
-                        return is_push
-                except Exception as e:
-                    self.logger.exception(f"从 Redis 获取假码时发生异常: {e}\n{traceback.format_exc()}")
-                    return is_push
-
-
-            self.logger.info(f"从 Redis 获取到的支付码列表: {payment_id_list}, 订单 {code}, 金额 {amount}")  # 添加日志
-
-            # 将低成功率支付码加入支付码列表
-            # low_success_payment_ids = payment_id_list
-            # _payment_ids = ','.join(low_success_payment_ids)
-
-            # 获取 VIP 信息并构建 _new_vip_list
-            self.logger.info(f"Step 2: 获取 VIP 信息并构建新 VIP 列表, 订单 {code}, 金额 {amount}")
-            vip_list = await self.get_results_no_condition('vip', ['*'])
-            _new_vip_list = {}
-            for i in vip_list:
-                _new_vip_list[i['vip']] = {
-                    'ds_min': Decimal(i['ds_min']),
-                    'ds_max': Decimal(i['ds_max']),
-                    'deposit_ratio': Decimal(i['deposit_ratio']),
-                    'conditions': i['conditions']
-                }
-            self.logger.info(f"Step 2: VIP 信息: {_new_vip_list}, 订单 {code}, 金额 {amount}")
-
-            if not payment_id_list:
-                self.logger.warning(f"Step 2.1: Redis 中没有可用支付码，结束处理, 订单 {code}, 金额 {amount}")
-                # 尝试从 sys_info 获取备用支付码
-                try:
-                    # 从 Redis 获取 send_orders_ds_false_limit 的值
-                    self.logger.info(f"Step 2.2: 从 Redis 获取 send_orders_ds_false_limit 的值, 订单 {code}, 金额 {amount}")
-                    redis_send_orders_ds_false_limit = await self.redis.get('send_orders_ds_false_limit')
-
-                    if redis_send_orders_ds_false_limit:
-                        # 如果 Redis 中有值，则将其解码为字符串，并分割成列表
-                        payment_id_list = redis_send_orders_ds_false_limit.split(',')
-                        self.logger.info(f"Step 2.3: 从 Redis 获取到备用支付码: {payment_id_list}, 订单 {code}, 金额 {amount}")
-                    else:
-                        self.logger.warning(f"Step 2.4: Redis 中没有备用支付码，结束处理, 订单 {code}, 金额 {amount}")
-                        return is_push  # 停止处理
-
-                except Exception as e:
-                    self.logger.error(f"Step 2.5: 从 Redis 获取备用支付码时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    return is_push  # 停止处理
-
-
-            # 初始化翻页参数
-            batch_size = 500  # 每次处理的支付码数量
-            try:
-                if not payment_id_list:
-                    self.logger.warning(f"Step 1.3.1: Redis 中没有可用支付码，结束处理, 订单 {code}, 金额 {amount}")
-                else:
-                    self.logger.info(f"Step 1.3.2: 从 Redis 获取到 {len(payment_id_list)} 个支付码，开始处理, 订单 {code}, 金额 {amount}")
-
-                    # 使用 low_success_payment_ids 来存储待处理的支付码
-                    low_success_payment_ids = payment_id_list.copy()
-
-                    # 直接处理所有支付码
-                    while low_success_payment_ids:
-                        start_time = datetime.datetime.now().timestamp()
-                        # 获取当前批次支付码
-                        batch_payment_ids = low_success_payment_ids[:batch_size]
-                        _payment_ids = ','.join(batch_payment_ids)
-                        self.logger.info(f"Step 1.3.3: 当前处理批次支付码: {batch_payment_ids}, 订单 {code}, 金额 {amount}")
-                        
-                        # 获取银行信息
-                        self.logger.info(f"Step 3: 获取银行信息, 订单 {code}, 金额 {amount}")
-                        bank_type_list = await self.query("select id from bank_type where status=0")
-                        self.logger.warn(f'Step 3: 获取银行信息 code: {code}, bank_type_list：{bank_type_list}, 订单 {code}, 金额 {amount}')
-                        _bank_type_list = []
-                        if not bank_type_list:
-                            self.logger.info(f"Step 3: 无银行信息，使用默认查询条件, 订单 {code}, 金额 {amount}")
-                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
-                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
-                                    pay.status as payment_status, pay.certified as payment_certified,
-                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-                                    from payment pay 
-                                    left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids})
-                                    and {collection_dispatch_condition}
-                                    and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                                    and p.certified=1 and p.status=1""".format(
-                                        _payment_ids=_payment_ids,
-                                        amount=amount,
-                                        collection_dispatch_condition=collection_dispatch_condition,
-                                    )
-                        else:
-                            for i in bank_type_list:
-                                _bank_type_list.append(i['id'])
-                            _bank_type_list = ','.join(str(id) for id in _bank_type_list)
-                            self.logger.info(f"最终的逗号分隔字符串: {_bank_type_list}")
-                            # 联表查询
-                            sql = """ select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
-                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
-                                    pay.status as payment_status, pay.certified as payment_certified,
-                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-                                    from payment pay 
-                                    left join partner p on pay.partner_id=p.id 
-                                    where pay.id in ({_payment_ids})
-                                    and {collection_dispatch_condition}
-                                    and pay.bank_type not in ({_bank_type_list})
-                                    and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
-                                    and p.balance>={amount}
-                                    and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                                    and p.certified=1 and p.status=1""".format(
-                                        _payment_ids=_payment_ids,
-                                        _bank_type_list=_bank_type_list,
-                                        amount=amount,
-                                        collection_dispatch_condition=collection_dispatch_condition,
-                                    )
-
-                        self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
-
-                        # 查询支付码数据
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                await cur.execute(sql)
-                                _list = await cur.fetchall()
-
-                        self.logger.info(f"Step 5: 查询到的支付码和合作伙伴信息: {_list}, 订单 {code}, 金额 {amount}")
-                        new_payment_list = dict()
-                        new_partner_list = dict()
-
-                        # 提取支付码和合作伙伴信息
-                        payment_key = [
-                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
-                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
-                            'payment_status', 'payment_certified'
-                        ]
-                        partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
-                        for i in _list:
-                            new_payment = {key: i[key] for key in payment_key}
-                            new_payment_list[i['id']] = new_payment
-                            new_partner = {key: i[key] for key in partner_key}
-                            new_partner['id'] = i['partner_id']
-                            new_partner_list[i['partner_id']] = new_partner
-
-                        self.logger.info(f"Step 6: 查询到的支付码和合作伙伴信息: {new_payment_list}, {new_partner_list}, 订单 {code}, 金额 {amount}")  # 添加日志
-
-                        # 检查支付码和合作伙伴列表是否有效
-                        if not new_payment_list or not new_partner_list:
-                            self.logger.warn(f"没有有效的支付码或合作伙伴，结束派单, 订单 {code}, 金额 {amount}")
-                            self.logger.warn(f"Debug Step 6.1: 没有有效的支付码或合作伙伴，检查输入参数。")
-                            self.logger.info(f"Debug Step 6.2: 当前支付码列表: {low_success_payment_ids}")
-                            self.logger.info(f"Debug Step 6.3: 当前批次处理的支付码: {batch_payment_ids}")
-                            self.logger.info(f"Debug Step 6.4: 查询结果 new_payment_list: {new_payment_list}")
-                            self.logger.info(f"Debug Step 6.5: 查询结果 new_partner_list: {new_partner_list}")
-                            
-                            self.logger.info(f"没有有效的支付码或合作伙伴，结束派单, 订单 {code}, 金额 {amount}")
-                            low_success_payment_ids = low_success_payment_ids[batch_size:]  # 跳过当前批次
-                            self.logger.info(f"Debug Step 6.6: 更新后的支付码列表: {low_success_payment_ids}")
-                            continue
-
-                        # 检查是否超时
-                        elapsed_time = datetime.datetime.now().timestamp() - start_time
-                        if elapsed_time > 30:
-                            self.logger.info(f"Debug Step 7.1: 当前处理批次耗时 {elapsed_time:.2f} 秒，超出 30 秒限制。")
-                            self.logger.info(f"Debug Step 7.2: 当前支付码列表: {low_success_payment_ids}")
-                            self.logger.info(f"Debug Step 7.3: 当前批次处理的支付码: {batch_payment_ids}")
-                            self.logger.warn(f"Step 7: 超过30秒，派单超时，结束处理，订单代码: {code}, 金额 {amount}")
-                            low_success_payment_ids = low_success_payment_ids[batch_size:]  # 跳过当前批次
-                            self.logger.info(f"Debug Step 7.4: 更新后的支付码列表: {low_success_payment_ids}")
-                            continue
-
-                        # # 低成功率支付码列表为空时退出
-                        # if not batch_payment_ids:
-                        #     self.logger.warn(f"Step 8: 低成功率支付码处理完毕，订单代码: {code}, 金额 {amount}")
-                        #     low_success_payment_ids = low_success_payment_ids[batch_size:]
-                        #     continue
-
-                        # 派单逻辑
-                        # back_key = []
-                        self.logger.info(f"new_payment_list 内容: {new_payment_list}")
-                        self.logger.info(f"new_payment_list 元素个数: {len(new_payment_list)}")
-                        # for payment_id, payment_info in new_payment_list.items():
-                        # 调用 process_payment_list 方法并获取返回值
-                        if not is_push:
-                            is_push, back_key, upi = await self.process_payment_list(
-                                back_key, new_payment_list, new_partner_list, code, amount, _new_vip_list, data
-                            )
-                            # 打印返回结果
-                            self.logger.info(f"处理失败的支付码列表: {back_key}")
-                            self.logger.info(f"is_push: {is_push} upi: {upi}")
-
-                        # 移除已处理的支付码
-                        low_success_payment_ids = low_success_payment_ids[batch_size:]
-
-                    if not is_push:
-                        self.logger.info("第一次处理失败，开始第二次处理")
-
-                        try:
-                            sys_info_list = await _collection_online_payment_ids(self, channel_code=data.get("channel_code"))
-                            if sys_info_list:
-                                self.logger.info(f"从 Redis 获取到支付码列表: {sys_info_list}")
-                            else:
-                                self.logger.warning("Redis 中没有可用的支付码，设置为空列表")
-
-                        except Exception as e:
-                            self.logger.exception(f"从 Redis 获取支付码时发生异常: {e}\n{traceback.format_exc()}")
-                            sys_info_list = []
-
-
-                        # 判断 sys_info_list 是否为空，避免 SQL 拼接错误
-                        if sys_info_list:
-                            _payment_ids = ','.join(str(id) for id in sys_info_list)
-                            self.logger.info(f"Final _payment_ids: {_payment_ids}")
-                            # 构造 SQL 查询
-                            sql = """
-                                select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
-                                    pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
-                                    pay.status as payment_status, pay.certified as payment_certified,
-                                    p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-                                from payment pay 
-                                left join partner p on pay.partner_id = p.id 
-                                where pay.id in ({payment_ids})
-                                and {collection_dispatch_condition}
-                                and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                                and p.certified=1 and p.status=1
-                            """.format(
-                                  payment_ids=_payment_ids
-                                  ,amount=amount,
-                                  collection_dispatch_condition=collection_dispatch_condition)  # 使用占位符生成动态 SQL
-                            
-                            self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
-
-                            # 查询支付码数据
-                            async with self.application.db.acquire() as conn:
-                                async with conn.cursor(DictCursor) as cur:
-                                    await cur.execute(sql)
-                                    _list = await cur.fetchall()
-
-                        else:
-                            self.logger.warning("支付码列表为空，不执行查询。")
-
-
-                        new_payment_list = dict()
-                        new_partner_list = dict()
-
-                        # 提取支付码和合作伙伴信息
-                        payment_key = [
-                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
-                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
-                            'payment_status', 'payment_certified'
-                        ]
-                        partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
-                        for i in _list:
-                            self.logger.info(f"正在处理支付码 ID: {i['id']}，合作伙伴 ID: {i['partner_id']}")
-
-                            # 判断支付码是否在线
-                            is_online = await _is_collection_payment_online(
-                                self,
-                                i['id'],
-                                i.get('bank_type_id'),
-                                bank_type=i.get('bank_type'),
-                                payment=i,
-                            )
-                            self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
-
-                            if not is_online:
-                                self.logger.warning(f"支付码 ID: {i['id']} 不在线，跳过")
-                                continue  # 跳过不在线的支付码
-
-                            new_payment = {key: i[key] for key in payment_key}
-                            new_payment_list[i['id']] = new_payment
-                            new_partner = {key: i[key] for key in partner_key}
-                            new_partner['id'] = i['partner_id']
-                            new_partner_list[i['partner_id']] = new_partner
-
-                        self.logger.info(f"Step 6: 查询到的支付码和合作伙伴信息: {new_payment_list}, {new_partner_list}, 订单 {code}, 金额 {amount}")
-
-                        # 调用处理函数
-                        is_push, back_key, upi  = await self.process_payment_list(
-                            back_key, new_payment_list, new_partner_list, code, amount, _new_vip_list, data
-                        )
-
-                        # 打印第二次处理的返回结果
-                        self.logger.info(f"第二次处理失败的支付码列表: {back_key}")
-                        self.logger.info(f"第二次 is_push: {is_push} upi: {upi}")
-
-
-                    if not is_push:
-                        self.logger.info("第一次处理失败，开始第三次处理(假码处理)")
-                        try:
-                            # 从 Redis 获取 send_orders_ds_false_limit 的值
-                            redis_send_orders_ds_false_limit = await self.redis.get('send_orders_ds_false_limit')
-
-                            if redis_send_orders_ds_false_limit:
-                                # 如果 Redis 中有值，则将其解码为字符串，并分割成列表
-                                sys_info_list = redis_send_orders_ds_false_limit.split(',')
-                                self.logger.info(f"从 Redis 获取到假码列表: {sys_info_list}")
-                            else:
-                                self.logger.warning("Redis 中没有备用支付码，跳过假码剔除步骤")
-                                sys_info_list = 'NULL'
-
-                        except Exception as e:
-                            self.logger.exception(f"从 Redis 获取假码时发生异常: {e}\n{traceback.format_exc()}")
-                            sys_info_list = 'NULL'
-
-                        # 将剩余支付码列表转换为字符串，以便后续使用
-                        # _payment_ids = ','.join(str(id) for id in payment_id_list)
-                        _payment_ids = ','.join(str(id) for id in sys_info_list)
-                        self.logger.info(f"Final _payment_ids: {_payment_ids}")
-
-                        # 构造 SQL 查询
-                        sql = """
-                            select pay.id, pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight,
-                                pay.bank_type_id, pay.wallet_status, pay.account_accno, pay.collection_status,
-                                pay.status as payment_status, pay.certified as payment_certified,
-                                p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-                            from payment pay 
-                            left join partner p on pay.partner_id = p.id 
-                            where pay.id in ({payment_ids})
-                            and {collection_dispatch_condition}
-                            and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) 
-                            and p.certified=1 and p.status=1
-
-                        """.format(
-                                  payment_ids=_payment_ids
-                                  ,amount=amount,
-                                  collection_dispatch_condition=collection_dispatch_condition)  # 使用占位符生成动态 SQL
-
-
-                        self.logger.info(f"Step 4: 执行查询 SQL: {sql}, 订单 {code}, 金额 {amount}")
-
-                        # 查询支付码数据
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                await cur.execute(sql)
-                                _list = await cur.fetchall()
-
-                        new_payment_list = dict()
-                        new_partner_list = dict()
-
-                        # 提取支付码和合作伙伴信息
-                        payment_key = [
-                            'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
-                            'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
-                            'payment_status', 'payment_certified'
-                        ]
-                        partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
-                        for i in _list:
-                            
-                            self.logger.info(f"正在处理支付码 ID: {i['id']}，合作伙伴 ID: {i['partner_id']}")
-
-                            # 判断支付码是否在线
-                            is_online = await _is_collection_payment_online(
-                                self,
-                                i['id'],
-                                i.get('bank_type_id'),
-                                bank_type=i.get('bank_type'),
-                                payment=i,
-                            )
-                            self.logger.info(f"支付码 ID: {i['id']} 在线状态: {is_online}")
-
-                            if not is_online:
-                                self.logger.warning(f"支付码 ID: {i['id']} 不在线，跳过")
-                                continue  # 跳过不在线的支付码
-                            
-                            new_payment = {key: i[key] for key in payment_key}
-                            new_payment_list[i['id']] = new_payment
-                            new_partner = {key: i[key] for key in partner_key}
-                            new_partner['id'] = i['partner_id']
-                            new_partner_list[i['partner_id']] = new_partner
-
-                        self.logger.info(f"Step 6: 查询到的支付码和合作伙伴信息: {new_payment_list}, {new_partner_list}, 订单 {code}, 金额 {amount}")  # 添加日志
-
-                        is_push, back_key, upi = await self.process_payment_list(
-                            back_key, new_payment_list, new_partner_list, code, amount, _new_vip_list, data
-                        )
-
-                        # 打印第三次调用的返回结果
-                        self.logger.info(f"第三次处理失败的支付码列表: {back_key}")
-                        self.logger.info(f"第三次 is_push: {is_push} upi: {upi}")
-
-                    self.logger.info(f"所有支付码均已处理完成, 订单 {code}, 金额 {amount}")
-
-            except Exception as e:
-                # 捕获获取支付码或处理的异常
-                self.logger.error(f"获取支付码或处理支付时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-
-        except Exception as e:
-            self.logger.exception(f"Step final: 派单异常处理，订单代码 {code}: {e}\n{traceback.format_exc()}, 金额 {amount}")
-
-        self.logger.info(f"Step 24: 开始处理能继续接单的任务, 订单 {code}, 金额 {amount}")
-
-        try:
-            if not isinstance(back_key, list):
-                self.logger.warning(f"Step 24.0: back_key 未正确初始化，将其设置为空列表")
-                back_key = []
-                
-            # 能继续接单的重新加入队列
-            for i in back_key:
-                self.logger.info(f"Step 24.1: 当前处理的 back_key 是 {back_key}, 订单 {code}, 金额 {amount}")
-                self.logger.info(f"Step 24.2: 当前处理的 i 是 {i}, 订单 {code}, 金额 {amount}")
-
-                
-                # 接单资格只看 MySQL payment 字段，不再通过 Redis 在线集合二次判定。
-                try:
-                    payment = await self.get_result_by_condition(
-                        'payment',
-                        ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
-                        {'id': i},
-                    )
-                    if not payment:
-                        continue
-                    is_member = await _is_collection_payment_online(
-                        self,
-                        i,
-                        None,
-                        payment=payment,
-                    )
-                    self.logger.info(f"Step 24.3: {i} MySQL 接单资格: {is_member}, 订单 {code}, 金额 {amount}")
-                    if not is_member:
-                        continue
-                except Exception as e:
-                    self.logger.error(f"Step 24.3: 检查 MySQL 接单资格时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    continue
-
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, i):
-                #     self.logger.warn(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                #     continue
-                position = await self.redis.lpos(list_name, i)
-
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                    continue
-                else:
-                    # 元素存在
-                    self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-
-                self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-
-                # 移除列表中的元素
-                try:
-                    result_lrem = await self.redis.lrem(list_name, 0, i)
-                    self.logger.info(f"Step 24.6: 从 {list_name} 中移除了 {i}, 操作结果: {result_lrem}, 订单 {code}, 金额 {amount}")
-                except Exception as e:
-                    self.logger.error(f"Step 24.6: 从 {list_name} 中移除 {i} 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    continue
-
-                # 将元素重新推入列表
-                try:
-                    result_rpush = await self.redis.rpush(list_name, i)
-                    self.logger.info(f"Step 24.7: 已将 {i} 重新推入到 {list_name}, 操作结果: {result_rpush}, 订单 {code}, 金额 {amount}")
-                    self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
-                except Exception as e:
-                    self.logger.error(f"Step 24.7: 将 {i} 推入 {list_name} 时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-                    continue
-
-            # 记录结束状态
-            self.logger.info(f"Step 24: 结束处理订单 {code}, 是否成功推送: {is_push}, 金额 {amount}")
-
-        except Exception as e:
-            # 捕获最外层异常并打印完整堆栈信息
-            self.logger.error(f"Step 24: 处理订单时发生异常: {e}\n{traceback.format_exc()}, 订单 {code}, 金额 {amount}")
-
-        # 返回是否成功推送的结果
-        return {"success": is_push, "upi": upi}
-
     async def push_order(self, data, target_payment):
-        list_name = 'payment_active_{channel_code}'.format(channel_code=data['channel_code'])
-        collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", data.get("channel_code"))
         is_push = False
-        back_key = []  # 重新加入list的key
         code = data['code']
         amount = data['amount']
         start_time = datetime.datetime.now().timestamp()
         upi = ''
 
-        payment_id_list = list(await _mysql_collection_ids(self, data.get("channel_code")))
-        self.logger.info(f"从 MySQL 获取到 {len(payment_id_list)} 个可接单支付码")
-
-        gonghu_ds_payment = await self.redis.get("gonghu_ds_payment")
         gonghu_ds_payment_ids = []
-        if gonghu_ds_payment:
-            for i in gonghu_ds_payment.split(','):
-                if i and await _is_collection_payment_online_by_id(self, i):
-                    gonghu_ds_payment_ids.append(i)
-                    payment_id_list.append(i)
-            self.logger.warn('code: {code}, 有效公户{gonghu_ds_payment_ids}'.format(code=code, gonghu_ds_payment_ids=' '.join(gonghu_ds_payment_ids)))
-        _payment_ids = ''
         target_payment = target_payment if target_payment else ''
         target_payment = target_payment.replace(' ', '')
         if target_payment.endswith(','):
@@ -2232,94 +1175,31 @@ class Pay(BaseHandler):
             target_payment_list = []
         else:
             target_payment_list = target_payment.split(',') if target_payment else []
+        if target_payment and target_payment_list:
+            self.logger.warn('code: {code}, 指定码{target_payment}'.format(code=code, target_payment=target_payment))
 
-        if payment_id_list:
-            # 对商户指定收款银行卡，专卡专户，即从总可用列表再叠加过滤指定ID
-            if target_payment and target_payment_list:
-                self.logger.warn('code: {code}, 指定码{target_payment}'.format(code=code, target_payment=target_payment))
-                payment_id_list = list(set(payment_id_list) & set(target_payment_list))
-            # 如果没有专卡专户要求，为提供专卡专户功能，需要从总可用卡池减去独占卡池
-            else:
-                target_payment_ids = set()
-                target_payment_key: str = await self.redis.get("target_payment_key")
-                if target_payment_key:
-                    target_payment_ids.update(target_payment_key.split(","))
-                payment_id_list = list(set(payment_id_list) - set(target_payment_ids))
-
-            self.logger.info(f"获取的支付ID数量：{len(payment_id_list)}")
-            # 打印所有的支付ID列表
-            # self.logger.info(f"支付ID列表内容：{payment_id_list}")
-            # 获取假码并从支付码列表中剔除
-            try:
-                # 从 Redis 获取 send_orders_ds_false_limit 的值
-                redis_send_orders_ds_false_limit = await self.redis.get('send_orders_ds_false_limit')
-                if redis_send_orders_ds_false_limit:
-                    # 如果 Redis 中有值，则将其解码为字符串，并分割成列表
-                    low_success_payment_ids = redis_send_orders_ds_false_limit.split(',')
-                    self.logger.info(f"从 Redis 获取到假码列表: {low_success_payment_ids}")
-                    
-                    # 从支付码列表中移除假码
-                    payment_id_list = [pid for pid in payment_id_list if pid not in low_success_payment_ids]
-                    self.logger.info(f"假码剔除后剩余支付码: {payment_id_list}")
-                else:
-                    self.logger.warning("Redis 中没有支付码，跳过假码剔除步骤")
-            except Exception as e:
-                self.logger.exception(f"从 Redis 获取假码时发生异常: {e}\n{traceback.format_exc()}")
-
-                
-            _payment_ids = ','.join(str(id) for id in payment_id_list)
-        else:
+        _list = await self.fetch_ds_candidate_rows(
+            amount,
+            data.get("channel_code"),
+            target_payment_ids=target_payment_list,
+            limit=20,
+        )
+        self.logger.warn('code: {code}, 手写候选SQL时间：{t}, 候选数量：{count}'.format(
+            code=code,
+            t=datetime.datetime.now().timestamp() - start_time,
+            count=len(_list or []),
+        ))
+        if not _list:
             return is_push
-        # 获取银行信息
-        bank_type_list = await self.query("select id from bank_type where status=0")
-        self.logger.warn('code: {code}, bank_type_list时间：{t}'.format(code=code, t=datetime.datetime.now().timestamp() - start_time))
-        _bank_type_list = []
-        if not bank_type_list:
-            # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id,
-            pay.wallet_status, pay.account_accno, pay.collection_status,
-            pay.status as payment_status, pay.certified as payment_certified,
-            p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-            from payment pay left join partner p on pay.partner_id=p.id
-            where pay.id in ({_payment_ids})
-            and {collection_dispatch_condition}
-            and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p. ds_max=0) and p.certified=1 and p.status=1""".format(
-                _payment_ids=_payment_ids,
-                amount=amount,
-                collection_dispatch_condition=collection_dispatch_condition,
-            )
-        else:
-            for i in bank_type_list:
-                _bank_type_list.append(i['id'])
-            _bank_type_list = ','.join(str(id) for id in _bank_type_list)
-            # 联表查询
-            sql = """ select pay.id,pay.partner_id, pay.amount_top, pay.upi, pay.bank_type, pay.manual_status, pay.weight, pay.bank_type_id,
-            pay.wallet_status, pay.account_accno, pay.collection_status,
-            pay.status as payment_status, pay.certified as payment_certified,
-            p.pid, p.balance, p.status, p.vip, p.type, p.ds_min, p.ds_max
-            from payment pay left join partner p on pay.partner_id=p.id
-            where pay.id in ({_payment_ids})
-            and {collection_dispatch_condition}
-            and pay.bank_type not in ({_bank_type_list}) and (pay.bank_type_id is null or pay.bank_type_id not in ({_bank_type_list}))
-            and p.balance>={amount} and (p.ds_min<={amount} or p.ds_min=0) and (p.ds_max>={amount} or p.ds_max=0) and p.certified=1 and p.status=1""".format(
-                _payment_ids=_payment_ids,
-                _bank_type_list=_bank_type_list,
-                amount=amount,
-                collection_dispatch_condition=collection_dispatch_condition,
-            )
-        # 获取vip信息
-        vip_list = await self.get_results_no_condition('vip', ['*'])
-        _vip_list = []
-        _new_vip_list = dict()
-        for i in vip_list:
-            if Decimal(i['ds_min']) <= amount <= Decimal(i['ds_max']):
-                _vip_list.append(i['vip'])
-            _new_vip_list[i['vip']] = i
-        _vip_list = ','.join(str(id) for id in _vip_list)
-        if _vip_list:
-            sql = sql + ' and p.vip in ({_vip_list})'.format(_vip_list=_vip_list)
-        _list = await self.query(sql)
-        self.logger.warn('code: {code}, 联表查询sql时间：{t}'.format(code=code, t=datetime.datetime.now().timestamp() - start_time))
+        _new_vip_list = {}
+        for row in _list:
+            _new_vip_list[row['vip']] = {
+                'vip': row['vip'],
+                'ds_min': row['vip_ds_min'],
+                'ds_max': row['vip_ds_max'],
+                'deposit_ratio': row['deposit_ratio'],
+                'conditions': row['conditions'],
+            }
         new_payment_list = dict()
         new_partner_list = dict()
         payment_target_payment_list = list()
@@ -2388,17 +1268,6 @@ class Pay(BaseHandler):
                         # 随机取出的码移除出列表，避免下次重新获取到
                         del weights[payment_id_weights.index(payment_id)]
                         payment_id_weights.remove(payment_id)
-                        # 根据缓存筛选指定码跳过
-                        cache_targets = await self.redis.get('target_payment_key')
-                        target_list = cache_targets.split(',') if cache_targets else []
-                        # 没查询到则从数据库初始化
-                        if not target_list:
-                            target_payment_set = await self.update_target_in_redis()
-                            target_list = list(target_payment_set)
-                        if target_list and str(payment_id) in target_list:
-                            self.logger.warn('code: {code}, 码被指定，跳过此码: {id}'.format(code=code, id=payment_id))
-                            continue
-
             if payment_id is None:
                 break
             order_amount = data['amount']
@@ -2591,11 +1460,9 @@ class Pay(BaseHandler):
                 self.logger.warn('码商{partner_id}的码{payment_id}失败次数过多，人工锁定不允许接单,code: {code}'.format(partner_id=partner_id, payment_id=payment_id, code=code))
                 continue
             if partner['ds_min'] > order_amount:
-                back_key.append(payment_id)
                 self.logger.warn('码商{partner_id},代收最小限额{ds_min}，订单金额{order_amount},code: {code}'.format(partner_id=partner_id,ds_min=partner['ds_min'],order_amount=order_amount, code=code))
                 continue
             if partner['ds_max'] > 0 and partner['ds_max'] < order_amount:
-                back_key.append(payment_id)
                 self.logger.warn('码商{partner_id},代收最大限额{ds_max}，订单金额{order_amount},code: {code}'.format(partner_id=partner_id,ds_max=partner['ds_max'],order_amount=order_amount, code=code))
                 continue
 
@@ -2639,7 +1506,6 @@ class Pay(BaseHandler):
                 sql = """select count(*) as count from orders_ds where payment_id=%s and status in(1,2) and date_add(time_create, interval 10 minute) > now()"""
                 orders_ds_count = await self.query(sql, payment_id)
                 if maximum_simultaneous_orders_count and orders_ds_count[0]['count'] > int(maximum_simultaneous_orders_count):
-                    back_key.append(payment_id)
                     self.logger.warn('码商{partner_id}的码{payment_id}最高同时接单不能超过{maximum_simultaneous_orders_count}单,code: {code}'.format(partner_id=partner_id,payment_id=payment_id,maximum_simultaneous_orders_count=maximum_simultaneous_orders_count, code=code))
                     continue
 
@@ -2667,7 +1533,6 @@ class Pay(BaseHandler):
             partnerBalance = await self.removeDeposit(partner['balance'], partner_amount['conditions'], partner_amount['deposit_ratio'])
             if order_amount < partner_amount['ds_min'] or order_amount > partner_amount['ds_max']:
                 self.logger.warn('码商{partner_id}不满足vip等级代收最大最小范围，订单金额{order_amount}代收最小限额{ds_min}代收最大限额{ds_max}，不允许接单,code: {code}'.format(partner_id=partner_id, order_amount=order_amount, ds_min=partner_amount['ds_min'], ds_max=partner_amount['ds_max'], code=code))
-                back_key.append(payment_id)
                 continue
             if Decimal(order_amount) > partnerBalance:
                 self.logger.warn('码商{partner_id}去除保证金后的余额不足，接单额度{partnerBalance}，不允许接单, code: {code}'.format(partner_id=partner_id, partnerBalance=partnerBalance, code=code))
@@ -2692,7 +1557,6 @@ class Pay(BaseHandler):
             if earn_system < 0:
                 self.logger.warn(
                     '{code}费率设置错误{partner_id}，不允许接单'.format(code=data['code'], partner_id=partner_id))
-                back_key.append(payment_id)
                 continue
 
             if not partner['type'] == 0:  # 外部码商
@@ -2737,7 +1601,6 @@ class Pay(BaseHandler):
                         continue
                     else:
                         await conn.commit()
-                        back_key.append(payment_id)
                         is_push = True
                         # 添加upi返回
                         self.upi = order_data['upi']
@@ -2813,41 +1676,6 @@ class Pay(BaseHandler):
                             pass
 
                         break
-        # 能继续接单的重新加入队列
-        for i in back_key:
-            payment = await self.get_result_by_condition(
-                'payment',
-                ['wallet_status', 'account_accno', 'collection_status', 'status', 'certified', 'manual_status'],
-                {'id': i},
-            )
-            if not payment:
-                continue
-            if await _is_collection_payment_online(
-                self,
-                i,
-                None,
-                payment=payment,
-            ):
-                # 检查支付码是否在通道中
-                # if not await self.redis.lpos(list_name, i):
-                #     self.logger.warn(f"【码监控】: 码 {payment_id} 不在通道中 {list_name}")
-                #     continue
-                position = await self.redis.lpos(list_name, i)
-
-                # 判断元素是否存在
-                if position is None:
-                    # 元素不存在
-                    self.logger.warning(f"【码监控】: 码 {i} 不在通道中 {list_name}")
-                    continue
-                else:
-                    # 元素存在
-                    self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-
-                self.logger.info(f"【码监控】: 码 {i} 在 Redis 队列 '{list_name}' 中 (执行 lpos)。")
-                await self.redis.lrem(list_name, 0, i)
-                await self.redis.rpush(list_name, i)
-                self.logger.info(f"【码监控】: 准备将码 {i} 重新添加到 Redis 队列 '{list_name}' 的队尾。")
-    
         return {"success": is_push, "upi": upi}
 
 # UTR补单

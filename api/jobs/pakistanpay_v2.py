@@ -18,14 +18,12 @@ import random
 import logging
 import requests
 import simplejson
-from Cryptodome.Cipher import AES
-from Cryptodome.Util.Padding import pad,unpad
 import traceback
 
 import base64
 import pymysql
 
-from urllib.parse import quote, urlencode
+from decimal import Decimal, InvalidOperation
 from typing import List, Dict, Any
 from logging.handlers import TimedRotatingFileHandler
 from requests.adapters import HTTPAdapter
@@ -45,7 +43,7 @@ import config
 from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
 from application.lakshmi_api.enums.payment_login_progress import PaymentLoginProgress
 from jobs.easypaisa.wallet_status_service import WorkerWalletStatusService
-from datetime import datetime
+from datetime import datetime, timedelta
 
 #easypaisa爬取账单，需要发送短信
 
@@ -410,6 +408,9 @@ class BankLogin:
         self.try_count_limit = 10 # 爬取最大重试次数，超过则直接下线
         self.try_upi_limit = 10  # 最大尝试爬取upi的次数，(爬取upi失败还可以爬取账单)-----
         self.order_grab_time_out = 4 * 60 * 60  # 检测爬取的账单时间是否在规定范围内，不是则舍弃
+        self.statement_ds_window_seconds = 7 * 60
+        self.statement_df_window_seconds = 10 * 60
+        self.statement_df_probe_interval = 2 * 60
         self.upi_time = 5 * 60  # 隔多久爬取一次upi
         self.domain = API_SERVER_DOMAIN # 接口域名
         self.internal_callback_host = (
@@ -454,7 +455,7 @@ class BankLogin:
     def _new_wallet_status_service(self):
         if not getattr(self, "db_connection", None):
             return None
-        return WorkerWalletStatusService(self.db_connection, self.logger)
+        return WorkerWalletStatusService(self.db_connection, self.logger, redis_client=self.redis)
 
     def get_wallet_status_service(self):
         if not hasattr(self, "db_connection"):
@@ -466,6 +467,19 @@ class BankLogin:
         if not getattr(self, "wallet_status_service", None):
             self.wallet_status_service = self._new_wallet_status_service()
         return self.wallet_status_service
+
+    def mark_wallet_account_invalid(self, login_data, reason):
+        payment_id = login_data.get('id') if isinstance(login_data, dict) else None
+        if not payment_id:
+            return 0
+        try:
+            wallet_status_service = self.get_wallet_status_service()
+            if not wallet_status_service:
+                return 0
+            return wallet_status_service.mark_account_invalid(payment_id, reason)
+        except Exception as e:
+            self.logger.error(f"easypaisa {payment_id} 标记501账号无效失败: {e}", exc_info=True)
+            return 0
 
     def fetch_wallet_status_reconcile_rows(self, limit=50):
         if not hasattr(self, "db_connection"):
@@ -668,7 +682,7 @@ class BankLogin:
             finally:
                 self.db_connection.commit()
 
-    def _read_payment_policy_flags(self, payment_id):
+    def _read_payment_final_state_flags(self, payment_id):
         if not self.db_connection or not self.db_connection.open:
             self.logger.error("数据库连接已关闭，尝试重新连接...")
             self.db_connection = self.check_db_connection()
@@ -688,15 +702,15 @@ class BankLogin:
                 )
                 return cur.fetchone()
             except Exception as e:
-                self.logger.error(f"查询 EasyPaisa 数据库状态失败 payment_id={payment_id}: {e}", exc_info=True)
+                self.logger.error(f"查询 EasyPaisa MySQL 最终态失败 payment_id={payment_id}: {e}", exc_info=True)
                 self.db_connection.rollback()
                 return None
             finally:
                 self.db_connection.commit()
 
-    def payment_dispatch_policy(self, payment_id, login_data=None):
-        """返回采集 worker 采集 worker 必须遵守的数据库策略。"""
-        payment = self._read_payment_policy_flags(payment_id)
+    def payment_final_state_policy(self, payment_id, login_data=None):
+        """返回采集 worker 按 MySQL 最终态必须遵守的策略。"""
+        payment = self._read_payment_final_state_flags(payment_id)
         if not payment:
             return "offline"
 
@@ -911,7 +925,7 @@ class BankLogin:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
-                policy = self.payment_dispatch_policy(login_data['id'], login_data)
+                policy = self.payment_final_state_policy(login_data['id'], login_data)
                 if policy == "offline":
                     self.redis.hdel(self.hash_key, login_data['id'])
                     self.redis.zrem(self.set_key, login_data['id'])
@@ -947,8 +961,146 @@ class BankLogin:
         error_message = str(bill_result.get('error_message', '') or '')
         return error_code == '423' or '云机正忙查单' in error_message
 
-    def _should_force_statement_worker_offline(self, bill_result):
-        return not self._is_transient_bill_error(bill_result)
+    def _ensure_db_connection(self):
+        if not hasattr(self, "db_connection"):
+            return False
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+        return bool(getattr(self, "db_connection", None))
+
+    def _fetch_rows(self, sql, params=None):
+        if not self._ensure_db_connection():
+            return []
+        with self.db_connection.cursor() as cur:
+            try:
+                cur.execute(sql, params)
+                return cur.fetchall()
+            except Exception as e:
+                self.logger.error(f"查询 EasyPaisa 账单调度候选失败: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return []
+            finally:
+                self.db_connection.commit()
+
+    def _is_statement_wallet_enabled(self, payment_id):
+        payment = self._read_payment_final_state_flags(payment_id)
+        try:
+            return int((payment or {}).get("wallet_status") or 0) == 1
+        except Exception:
+            self.logger.error(f"EasyPaisa wallet_status 字段异常 payment_id={payment_id}: {payment}")
+            return False
+
+    def fetch_due_statement_scan_context(self, payment_id):
+        context = {"payment_id": payment_id, "ds_orders": [], "df_orders": [], "has_due": False, "interval": 60}
+        if not self._is_statement_wallet_enabled(payment_id):
+            self.logger.info(f"EasyPaisa {payment_id} wallet_status!=1，跳过订单驱动账单爬取")
+            return context
+
+        ds_sql = """
+            SELECT code, payment_id, partner_id, amount, time_create
+            FROM orders_ds
+            WHERE payment_id = %s
+              AND status IN (1, 2)
+              AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
+            ORDER BY id DESC
+            LIMIT 20
+        """
+        df_sql = """
+            SELECT code, payment_id, partner_id, amount, time_accept, payment_account, utr
+            FROM orders_df
+            WHERE payment_id = %s
+              AND status = 2
+              AND time_accept IS NOT NULL
+              AND time_accept >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            ORDER BY id DESC
+            LIMIT 20
+        """
+        context["ds_orders"] = self._fetch_rows(ds_sql, (payment_id,))
+        context["df_orders"] = self._fetch_rows(df_sql, (payment_id,))
+        context["has_due"] = bool(context["ds_orders"] or context["df_orders"])
+        context["interval"] = self.statement_df_probe_interval if context["df_orders"] and not context["ds_orders"] else 60
+        return context
+
+    def reserve_due_statement_scan_context(self, context):
+        reserved = dict(context)
+        reserved_df_orders = []
+        for order in context.get("df_orders", []):
+            code = order.get("code")
+            if not code:
+                continue
+            lock_key = f"payout_unknown_probe_lock:{self.name}:{code}"
+            if self.redis.setnx(lock_key, 1):
+                self.redis.expire(lock_key, self.statement_df_probe_interval)
+                reserved_df_orders.append(order)
+            else:
+                self.logger.info(f"EasyPaisa 代付未知订单 {code} 两分钟探测锁未释放，跳过本轮账单观测")
+        reserved["df_orders"] = reserved_df_orders
+        reserved["has_due"] = bool(reserved.get("ds_orders") or reserved_df_orders)
+        return reserved
+
+    def acquire_statement_wallet_lock(self, payment_id, ttl):
+        lock_key = f"statement_scan_lock:{self.name}:{payment_id}"
+        if not self.redis.setnx(lock_key, 1):
+            self.logger.info(f"EasyPaisa {payment_id} 账单爬取锁未释放，跳过本轮")
+            return False
+        self.redis.expire(lock_key, ttl)
+        return True
+
+    @staticmethod
+    def _to_money(value):
+        try:
+            return Decimal(str(value)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_statement_time(value):
+        if isinstance(value, datetime):
+            return value
+        if not value:
+            return None
+        value = str(value).strip()
+        for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d-%m-%Y %I:%M:%S %p"):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return None
+
+    def _payout_statement_matches_order(self, mapped_trans, raw_trans, order):
+        order_amount = self._to_money(order.get("amount"))
+        trans_amount = self._to_money(raw_trans.get("amount", mapped_trans.get("txnAmount")))
+        if order_amount is None or trans_amount is None or order_amount != trans_amount:
+            return False
+
+        trade_time = self._parse_statement_time(mapped_trans.get("tradeTime") or raw_trans.get("tradeTime"))
+        accept_time = self._parse_statement_time(order.get("time_accept"))
+        if not trade_time or not accept_time:
+            return False
+        return accept_time <= trade_time <= accept_time + timedelta(seconds=self.statement_df_window_seconds)
+
+    def observe_payout_statement_matches(self, mapped_trans, raw_trans, login_data, df_orders):
+        if not df_orders:
+            self.logger.info(f"EasyPaisa {login_data['id']} 发现代付流水，但本轮没有 MySQL 代付未知订单，按观测模式跳过回调")
+            return False
+        matched = False
+        for order in df_orders:
+            if not self._payout_statement_matches_order(mapped_trans, raw_trans, order):
+                continue
+            matched = True
+            self.logger.info(
+                "EasyPaisa 代付账单观测匹配，不回调: "
+                f"payment_id={login_data['id']}, order_code={order.get('code')}, "
+                f"amount={order.get('amount')}, trade_time={mapped_trans.get('tradeTime')}, "
+                f"utr={mapped_trans.get('custRefNo')}, trans_id={mapped_trans.get('extOrderNo')}"
+            )
+        if not matched:
+            self.logger.info(
+                f"EasyPaisa {login_data['id']} 代付流水未匹配未知订单，不回调: "
+                f"amount={raw_trans.get('amount', mapped_trans.get('txnAmount'))}, trade_time={mapped_trans.get('tradeTime')}"
+            )
+        return matched
 
     def sync_job_projection(self, login_data, schedule_score=None):
         payment_id = login_data.get('real_payment_id') or login_data.get('id')
@@ -976,7 +1128,7 @@ class BankLogin:
 
     def update_key(self, login_data):
         try:
-            policy = self.payment_dispatch_policy(login_data['id'], login_data)
+            policy = self.payment_final_state_policy(login_data['id'], login_data)
             if policy == "offline":
                 self.redis.hdel(self.hash_key, login_data['id'])
                 self.redis.zrem(self.set_key, login_data['id'])
@@ -1154,26 +1306,6 @@ class BankLogin:
             return res
         return res
 
-    # 获取列表中的所有元素
-    def read_redis_list(self, key):
-        # 使用 lrange 获取列表中的所有元素
-        elements = self.redis.lrange(key, 0, -1)  # 0 表示第一个元素，-1 表示最后一个元素
-        # 将字节字符串解码为普通字符串
-        decoded_elements = [element.decode('utf-8') for element in elements]
-        # 转换为集合（自动去重）
-        element_set = set(decoded_elements)
-
-        # # 打印列表中的元素
-        # if elements:
-        #     self.logger.info(f"列表 '{key}' 中的元素如下：")
-        #     for i, element in enumerate(elements):
-        #         # 将字节字符串解码为普通字符串
-        #         self.logger.info(f"{i + 1}: {element.decode('utf-8')}")
-        # else:
-        #     self.logger.info(f"列表 '{key}' 为空或不存在")
-
-        return element_set
-
     # 打印所有的缓存,比较耗性能,生产环境可注释掉
     def read_cache(self, source, login_data):
         self.logger.info(f"{login_data['id']}, source: {source} 开始读取业务缓存")
@@ -1299,79 +1431,6 @@ class BankLogin:
             self.logger.error('sendMsg 脚本运行错误{}\n{}\n{}'.format(e, error_message, simplejson.dumps(login_data)))
             return False
 
-    def encrypt_message(self, data, login_data):
-        """easypaisa消息编码 - 与PHP版本的enc方法一致"""
-        try:
-            # 使用与PHP相同的AES-128-ECB加密
-            hex_key = "f89e2d511390414a91a89fc5e0f8f5e4"
-            key = bytes.fromhex(hex_key)
-
-            # 创建AES-ECB加密器
-            cipher = AES.new(key, AES.MODE_ECB)
-
-            # PKCS7填充并加密
-            padded_data = pad(data.encode('utf-8'), AES.block_size)
-            encrypted_data = cipher.encrypt(padded_data)
-
-            # 转换为大写十六进制
-            return encrypted_data.hex().upper()
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error('encrypt_message() 失败{}输入数据:{}\n{}\n{}'.format(e, data, error_message, simplejson.dumps(login_data)))
-            return ""
-
-    def decrypt_message(self, data, login_data):
-        """easypaisa消息解码 - 与PHP版本的de方法一致"""
-        try:
-            # 使用与PHP相同的AES-128-ECB解密
-            hex_key = "f89e2d511390414a91a89fc5e0f8f5e4"
-            key = bytes.fromhex(hex_key)
-
-            # 验证输入数据格式
-            if not data or len(data) % 2 != 0:
-                self.logger.warning(f"Invalid hex data: {data}，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 从十六进制转换为字节
-            try:
-                encrypted_data = bytes.fromhex(data)
-            except ValueError as e:
-                self.logger.warning(f"Invalid hex format: {data}，error: {e}，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 验证数据长度是否为16的倍数（AES block size）
-            if len(encrypted_data) % 16 != 0:
-                self.logger.warning(f"Data length {len(encrypted_data)} is not multiple of 16，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 创建AES-ECB解密器
-            cipher = AES.new(key, AES.MODE_ECB)
-            decrypted_padded = cipher.decrypt(encrypted_data)
-
-            # 移除PKCS7填充
-            decrypted_data = unpad(decrypted_padded, AES.block_size)
-
-            # 转换为UTF-8字符串
-            result = decrypted_data.decode('utf-8')
-            return result
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error('decrypt_message() 失败{}输入数据:{}\n{}\n{}'.format(e, data, error_message, simplejson.dumps(login_data)))
-            return ""
-
-    def get_standard_headers(self, login_data):
-        """Get standard headers for requests."""
-        return {
-            # 'User-Agent': 'okhttp/4.12.0',
-            'User-Agent': f'Dalvik/2.1.0 (Linux; U; Android 13; {login_data['model']} Build/TQ3A.230901.001)',
-            'Connection': 'Keep-Alive',
-            'Accept-Encoding': 'gzip',
-            'Content-Type': 'application/json; charset=UTF-8',
-            'Authorization': login_data['authorization']
-        }
-
     # 通知前端 原 call_api
     async def notify(self, url, publish_data, login_data):
         try:
@@ -1429,10 +1488,8 @@ class BankLogin:
             # 如果是10025 upi重复，则直接下线
             if 'type' in orders_send and orders_send['type'] == 'UPI' and _res['code'] == 10025:
                 orders_send['id'] = orders_send['payment_id']
-                # 通知监控一键下线
-                _key3 = 'login_off_realtime_{}_{}'.format(self.name, orders_send['id'])
-                self.redis.set(_key3, 1, 60)
                 await self.sendMsg(login_data, 'push_payment_information', False, 'upi already exist')  # upi重复通知
+                await self.login_off(login_data)
                 self.logger.info(f"{login_data['id']}, {self.list_key} 更新upi重复，下线:{login_data['id']}, 结果：{res.text}")
 
             if res and (_res['code'] == 100):
@@ -1486,76 +1543,8 @@ class BankLogin:
 
     # 获取upi 原get_upi
     async def grabUpi(self, login_data):
-        # PHP verifyPin 方法
+        # 当前 EasyPaisa 采集不再走旧 Indus UPI 查询流程，保持成功让账单采集继续。
         return {"is_success": True}
-        if self.local_mock:
-            return {"is_success": True}
-
-        result = {"is_success": False}
-        try:
-            url = "https://indusupiprd.indusind.com/upi/api/verifyAppPinWeb"
-            requestMsg_str = f'{{"appPin":{{"atmCrdLength":0,"credentialDataLength":0,"credentialDataValue":"{login_data['pinCode']}","otpCrdLength":0}},"deviceInfo":{{"androidId":"{login_data['androidId']}","app_gen_id":"{login_data['serv_gen_id']}","appName":"com.mgs.induspsp","appVersionCode":"59","appVersionName":"3.3.32","bluetoothMac":"00:00:00:00:00:00","capability":"5200000200010004000639292929292","deviceId":"{login_data['androidId']}","deviceType":"MOB","fcmToken":"{login_data['fcmToken']}","geoCode":"{login_data['geoCode']}","ip":"192.168.0.115","location":"{login_data['location']}","mobileNo":"{login_data['phone']}","os":"Android13","regId":"NA","relayButton":"Yn5V925x5gVk7MCtgk57hT9ELJRwGW6L1fFLpFHE+rU\u003d","safetyNetId":"{self.safetyNetId()}","selectedSimSlot":0,"simId":"{login_data['androidId']}2","wifiMac":"02:00:00:00:00:00"}},"requestInfo":{{"pspId":"10001","pspRefNo":"{self.safetyNetId()}"}}}}'
-            requestMsg_hex = self.encrypt_message(requestMsg_str, login_data)
-            payload = f'{{"pspId":"10001","requestMsg":"{requestMsg_hex}"}}'
-            payload = simplejson.loads(payload)
-            headers = self.get_standard_headers(login_data)
-            self.logger.info(f"{login_data['id']}, grabUpi(), 发起请求：{url}, headers: {headers}, data: {payload}, proxies: {login_data['socks_ip']}")
-            response = await self.retry_make_request(login_data, "POST", url=url, headers=headers, params=None, data=None, json_data=payload, proxies=login_data['socks_ip'])
-            """记录响应的详细信息"""
-            self.response_logger.log_response(response)
-
-            if response is None:
-                self.logger.error(f"{login_data['id']}, grabUpi() 方法响应失败")
-                return result
-            if not 200 <= response.status_code < 400:
-                self.logger.error(f"{login_data['id']}, grabUpi() 方法失败,响应码： {response.status_code}，原因：{response.text}")
-                result['error_code'] = response.status_code
-                result['error_message'] = response.text
-                return result
-
-            self.logger.info(f"{login_data['id']}, grabUpi() 方法 响应: {response.text}")
-            response_data = response.json()
-            response_data_decrypted = self.decrypt_message(response_data['resp'], login_data)
-            self.logger.info(f"{login_data['id']}, grabUpi() 方法 解密之后响应: {response_data_decrypted}")
-            response_data_decrypted = simplejson.loads(response_data_decrypted)
-
-            result['error_code'] = response_data_decrypted['status']
-            result['error_message'] = response_data_decrypted['statusDesc']
-
-            if response_data_decrypted['status'] != "S":
-                self.logger.error(f"payment_id: {login_data['id']}, grabUpi() ,提交PIN码错误: {response_data_decrypted}")
-                return result
-
-            try:
-                linked_accounts_keys = []
-                for i in response_data_decrypted['vpaAccountDetails']:
-                    if i['virtualAddress']:
-                        linked_accounts_keys.append(i['virtualAddress'])
-            except Exception as e:
-                self.logger.error(f"payment_id: {login_data['id']}, grabUpi() ,获取upi错误: {response_data_decrypted}")
-                result['error_code'] = 'error'
-                result['error_message'] = 'upi error'
-                return result
-
-            upi_list = [] if 'upi_list' not in login_data else login_data['upi_list']
-            for upi in linked_accounts_keys:
-                self.logger.info(f"payment_id: {login_data['id']}, get_upi() ,获取upi成功,upi: {upi}")
-                if upi not in upi_list:
-                    upi_list.append(upi)
-            upi = linked_accounts_keys[0]  # 只获取第一个的upi
-            # upi有更新时
-            if 'upi' in login_data and upi != login_data['upi']:
-                login_data['upi_remarks'] = f"{login_data['upi']} change to another upi:{upi}."
-                self.logger.info(f"{login_data['id']}, get_upi(),upi更改,upi: {upi}")
-            login_data['upi'] = upi
-            login_data['upi_list'] = upi_list
-            result['is_success'] = True
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error(f'grabUpi() 脚本运行错误{e}\n{error_message}\n{simplejson.dumps(login_data)}')
-            result['error_message'] = error_message
-        return result
 
     # 抓取账单 原 transaction_history
     async def getBills(self, login_data):
@@ -1671,7 +1660,7 @@ class BankLogin:
         return False
 
     # 爬取账单和upi
-    async def grabstatement(self, login_data, if_first_time=False):
+    async def grabstatement(self, login_data, if_first_time=False, statement_context=None):
         try:
             login_data['time'] = int(time.time())
             login_data['count'] = 1 if 'count' not in login_data else login_data['count'] + 1
@@ -1729,6 +1718,7 @@ class BankLogin:
             self.logger.info(f"easypaisa {login_data['id']} 当前接口返回数据 {getBills} , code: {getBills.get('error_code', 'N/A')}")
             if isinstance(getBills, dict) and getBills.get('error_code') == 501:
                 self.logger.error(f"easypaisa {login_data['id']} 抓取流水返回501错误，重新登录。")
+                self.mark_wallet_account_invalid(login_data, "501抓取流水账号无效")
                 return 'logout'
             # 如果爬取失败（返回False），则下线
             elif isinstance(getBills['is_success'], bool) and getBills['is_success'] is False:
@@ -1942,6 +1932,16 @@ class BankLogin:
                 }
                 # 回调
                 self.logger.info(f"easypaisa grabstatement 数据编号{counter}封装后的数据: mapped_trans {mapped_trans} 。")
+                if txn_type == 'PAY':
+                    self.observe_payout_statement_matches(
+                        mapped_trans,
+                        transaction,
+                        login_data,
+                        (statement_context or {}).get("df_orders", []),
+                    )
+                    counter += 1
+                    continue
+
                 await self.callback_transaction(utr, mapped_trans, login_data)
                 counter += 1
             # 首次爬取之后设置为非首次爬取
@@ -1975,27 +1975,26 @@ class BankLogin:
                 #     self.login_off()
                 #     return 'logout'
                 self.redis.delete(_key2)
-                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按数据库策略继续采集:" + simplejson.dumps(login_data))
-
-            # 通知监控一键下线
-            _key3 = 'login_off_realtime_{}_{}'.format(self.name, login_data['id'])
-            login_off = self.redis.get(_key3)
-            if login_off:  # 直接下线
-                # 删除标识在线的key
-                self.redis.delete(_key1)
-                self.redis.delete(_key2)
-                self.redis.delete(_key3)
-                # 登出
-                self.logger.error(f"{self.list_key} 通知监控一键下线，登出:" + simplejson.dumps(login_data))
-                await self.login_off(login_data)
-                return 'logout'
+                self.logger.warning(f"{self.list_key} 发现旧 login_off 标记，仅清理标记并按 MySQL 最终态策略继续采集:" + simplejson.dumps(login_data))
 
             grabstatement = False
+            statement_context = self.fetch_due_statement_scan_context(login_data['id'])
+            if not statement_context.get("has_due"):
+                login_data['if_first_time'] = False
+                self.logger.info(f"EasyPaisa {login_data['id']} 无代收待确认/代付未知订单，本轮不查询账单")
+                return True
+
             #  如果有相关的key，按短时间爬取一次，如果没有，则按长时间一次
             crawl_frequently = self.redis.get('crawl_frequently_{}'.format(login_data['id']))
             # 【核心修改】：抓单失败后强制走60秒短间隔
             self.logger.info(f"login_data==检测=={login_data}")
-            if login_data.get(f"last_grab_failed_{login_data['id']}", False):
+            if statement_context.get("df_orders") and not statement_context.get("ds_orders"):
+                _time_grab = self.statement_df_probe_interval
+                self.logger.info(f"检测到代付未知订单，使用{_time_grab}秒账单观测间隔")
+            elif statement_context.get("ds_orders"):
+                _time_grab = 60
+                self.logger.info("检测到代收待确认订单，使用60秒账单确认间隔")
+            elif login_data.get(f"last_grab_failed_{login_data['id']}", False):
                 _time_grab = 60
                 self.logger.info(f"检测到 payment_id {login_data['id']} 上次抓单失败，强制使用60秒短间隔")
             elif crawl_frequently or ('try_count' in login_data and login_data['try_count'] > 0):
@@ -2023,15 +2022,22 @@ class BankLogin:
             self.logger.info(f"当前时间 - 间隔要求: {current_time_str} - {_time_grab}秒 = {required_time_str}")
 
             if 'count' not in login_data or last_request_time < required_time:
+                statement_context = self.reserve_due_statement_scan_context(statement_context)
+                if not statement_context.get("has_due"):
+                    self.logger.info(f"EasyPaisa {login_data['id']} 本轮订单账单探测锁均未释放，跳过查询账单")
+                    return True
+                lock_ttl = self.statement_df_probe_interval - 5 if statement_context.get("df_orders") and not statement_context.get("ds_orders") else 55
+                if not self.acquire_statement_wallet_lock(login_data['id'], lock_ttl):
+                    return True
                 self.logger.info("条件满足，准备执行 grabstatement 方法...")
                 # 判断是否存在if_first_time且为False
                 self.logger.info("--- 检查 if_first_time 标志 ---")
                 if login_data.get('if_first_time') is False:
                     self.logger.info("if_first_time 为 False，调用 grabstatement(login_data)")
-                    grabstatement = await self.grabstatement(login_data)
+                    grabstatement = await self.grabstatement(login_data, statement_context=statement_context)
                 else:
-                    self.logger.info("if_first_time 为 True，调用 grabstatement(login_data, if_first_time=True)")
-                    grabstatement = await self.grabstatement(login_data, if_first_time=True)
+                    self.logger.info("订单驱动账单确认不做无订单首次基线，调用 grabstatement(login_data)")
+                    grabstatement = await self.grabstatement(login_data, statement_context=statement_context)
                 self.logger.info(f"grabstatement 方法返回结果: {grabstatement}")
                 # 在请求返回后立即记录时间戳
                 request_finish_time = int(time.time())
@@ -2095,11 +2101,6 @@ class BankLogin:
             # 更新集合和hash里的值
             self.update_key(login_data)
             return False
-
-    def safetyNetId(self):
-        """生成安全网络ID"""
-        str_uuid = str(uuid.uuid4()).replace('-', '')
-        return "INDB" + str_uuid.upper()[:26]
 
     # 原 sync_transaction 回调账单
     async def transaction_callback(self, transaction: Dict, login_data) -> bool:
@@ -2233,6 +2234,7 @@ class BankLogin:
                 self.logger.info(f"easypaisa verify_and_handle_abnormal_payout {login_data['id']} 当前接口返回数据 {bill_result} , code: {bill_result.get('error_code', 'N/A')}")
                 if isinstance(bill_result, dict) and bill_result.get('error_code') == 501:
                     self.logger.error(f"easypaisa {login_data['id']} 抓取流水返回501错误，重新登录。")
+                    self.mark_wallet_account_invalid(login_data, "501异常补核账号无效")
                     return 'logout'
                 # 如果爬取失败（返回False），则下线
                 elif isinstance(bill_result['is_success'], bool) and bill_result['is_success'] is False:
@@ -2328,7 +2330,7 @@ class BankLogin:
                 if not df_flag:
                     continue
 
-                # === 新增：风控检查 payment_id_failed ===
+                # 代付观测只匹配异常发生后的流水，避免旧流水误判。
                 try:
                     # 获取交易发生时间（从 '2025-11-13T10:50:12' 格式转换）
                     trans_time_str = detail_dto.get('tradeTime', '')
@@ -2350,7 +2352,7 @@ class BankLogin:
                         continue
                         
                 except Exception as e:
-                    self.logger.error(f"easypaisa 处理 payment_id_failed 检查时发生异常: {e}")
+                    self.logger.error(f"easypaisa 处理代付观测时间检查时发生异常: {e}")
                     pass
                 # === 新增风控检查结束 ===
 
@@ -2372,9 +2374,9 @@ class BankLogin:
                 payeeAccountNo = normalized
                 self.logger.info(f"easypaisa payeeAccountNo =============={payeeAccountNo}=======")
 
-                if receive_account in payeeAccountNo and trans.get('amount') == amount and df_flag:
+                if self._to_money(trans.get('amount')) == self._to_money(amount) and df_flag:
                     matched = True
-                    self.logger.info(f"{account_id}, {amount}订单在账单中已找到，触发回调处理")
+                    self.logger.info(f"{account_id}, {amount}代付订单在账单中已找到，当前为观测模式，不触发回调")
                     # 根据 accountNo 判断交易类型
                     txn_type = 'PAY'
                     # 根据 appTransaction 判断交易状态
@@ -2403,9 +2405,18 @@ class BankLogin:
                         'fee': detail_dto.get('fee', 0),
                         'appTransaction': trans.get('appTransaction', False)
                         }
-                    # 调用 transaction_callback
-                    await self.callback_transaction(utr, mapped_trans, login_data)
-                    self.logger.info(f"easypaisa 成功处理了第 {counter} 条记录。") # 添加这一行
+                    self.observe_payout_statement_matches(
+                        mapped_trans,
+                        trans,
+                        login_data,
+                        [{
+                            "code": order_data.get("order_code", "legacy_payout_observation"),
+                            "amount": amount,
+                            "time_accept": time_created,
+                            "payment_account": receive_account,
+                        }],
+                    )
+                    self.logger.info(f"easypaisa 成功观测了第 {counter} 条代付记录，不回调。")
                     counter += 1
                     break
             if not matched:
@@ -2472,31 +2483,6 @@ class BankLogin:
                 if login_data['status'] == 'grabstatement':
                     res = await self.get_grabstatement(login_data)
                     self.logger.info(f"{login_data['id']}, get_grabstatement() res {type(res)}： {res}")
-                # 检查并处理与当前 member 相关的异常代付
-                ABNORMAL_PAYOUTS_KEY = f"payment_id_failed:{_id}"  # 修改为 payment_id_failed:* 格式
-                order_data_str = self.redis.get(ABNORMAL_PAYOUTS_KEY)
-                self.logger.info(f'======order_data_str========{order_data_str}')
-                if order_data_str:
-                    order_data = simplejson.loads(order_data_str.decode())
-                    self.logger.info(f'======order_data========{order_data}')
-                    self.logger.info(f"process_single_member_async===={order_data.get('payment_id')}==={login_data['id']}=={login_data}==============================")
-                    # if str(order_data.get('payment_id')) == str(login_data['id']):
-                    self.logger.info(f"{_id}, 发现与当前 member 相关的失败订单: {ABNORMAL_PAYOUTS_KEY}")
-                    try:
-                        # 转换 order_data 格式以兼容 verify_and_handle_abnormal_payout
-                        converted_order_data = {
-                            'account_id': order_data.get('payment_account', login_data.get('payment_account', '')),  # 从 login_data 获取 备注这个是收款手机号
-                            'amount': order_data.get('amount', 0.0),
-                            'time_created': order_data.get('time_created', '')
-                        }
-
-                        abnormal_result = await self.verify_and_handle_abnormal_payout(login_data, converted_order_data)
-                        if abnormal_result == 'logout':
-                            res = 'logout'
-                        self.redis.delete(ABNORMAL_PAYOUTS_KEY)
-                        self.logger.info(f"{_id}, 失败订单 {ABNORMAL_PAYOUTS_KEY} 处理完成并移除")
-                    except Exception as e:
-                        self.logger.error(f"{_id}, 处理失败订单 {ABNORMAL_PAYOUTS_KEY} 失败: {e}")
                             
                 # 状态检查
                 # if login_data['status'] not in ['sendOTP', 'grabOTP', 'device_check', 'send_sms', 'wait_client_send_sms', 'verify_sms', 'grabstatement']:
@@ -2619,7 +2605,7 @@ class BankLogin:
                         self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
                         data['status'] = "grabstatement"
                         data['id'] = data['real_payment_id']
-                        policy = self.payment_dispatch_policy(data['id'], data)
+                        policy = self.payment_final_state_policy(data['id'], data)
                         if policy == "offline":
                             self.redis.delete(_id)
                             self.del_lock(_id, _lock)

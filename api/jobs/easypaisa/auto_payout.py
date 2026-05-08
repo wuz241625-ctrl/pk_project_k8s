@@ -38,7 +38,6 @@ from jobs.easypaisa.scheduling_state import (
     NO_AVAILABLE_ACCOUNTS,
     NO_ORDERS,
     classify_round_state,
-    should_return_account_to_pool,
 )
 from application.payment_eligibility import payout_sql_condition
 
@@ -436,7 +435,6 @@ class EasyPaisaAutoPayout:
         
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
-            'retired_payment_active_df': 'payment_active_df',     # 旧活跃队列，仅用于清理残留，不再回写
             'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',  # EasyPaisa余额有序集合
             'easypaisa_balance_prefix': 'easypaisa_balance:',       # EasyPaisa余额缓存前缀（兼容性保留）
             'easypaisa_account_used_prefix': 'easypaisa_account_used:',  # 账号使用记录前缀（支持动态冷却期）
@@ -814,16 +812,12 @@ class EasyPaisaAutoPayout:
             cur.execute(sql_update, (earn_merchant, order_code))
             self.logger.info(f'更新订单商户佣金{self._format_sql(cur, sql_update, (earn_merchant, order_code))}')
             
-            # 9. EasyPaisa 代付已改为 DB 轮询 + 预分配，不再回写旧 payment_active_df。
-            if self.qr_id:
-                self.clear_retired_df_queue_residue(self.qr_id)
-            
-            # 10. Redis通知
+            # 9. Redis通知
             self.redis.publish('order_df_notify', order_code)
             
             self.logger.info(f'订单{order_code}代付成功处理完成')
             
-            # 11.新增：标记冷却期成功
+            # 10.新增：标记冷却期成功
             self.mark_order_cooldown_success(order_code)
             
             return True
@@ -1756,7 +1750,7 @@ class EasyPaisaAutoPayout:
             )
             return (success_count, total_count)
 
-        # 旧 Redis members 模式已退役，避免 order_push/payment_active_df 兼容链回流。
+        # 旧 Redis members 模式已退役，避免兼容链回流。
         if not members:
             return (0, 0)
         self.logger.warning("EasyPaisa legacy members 模式已退役，跳过 %s 个旧消息", len(members))
@@ -1917,14 +1911,8 @@ class EasyPaisaAutoPayout:
 
 
     
-    # ========== Redis防护机制 ==========
+    # ========== 账号状态防护 ==========
 
-    def clear_retired_df_queue_residue(self, payment_id) -> bool:
-        """退役回队：只清理旧 payment_active_df 残留，不再回写。"""
-        key = self.REDIS_KEYS.get('retired_payment_active_df', 'payment_active_df')
-        self.redis.lrem(key, 0, payment_id)
-        return False
-    
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
         防护机制1: 检查账号在线状态 - API优先，Redis同步
@@ -2090,24 +2078,6 @@ class EasyPaisaAutoPayout:
             total_time = time.time() - start_time
             self.logger.error(f"[AutoPayout] 查询payment_id={payment_id} 失败: {e}, 耗时: {total_time:.3f}s")
             return None
-    
-    def clear_retired_account_queue_residue(self, account_info):
-        """
-        清理旧 payment_active_df 残留，不再回写旧活跃队列。
-        """
-        try:
-            # 支持传入字典或payment_id字符串
-            if isinstance(account_info, dict):
-                payment_id = account_info['payment_id']
-                phone = account_info.get('phone', 'UNKNOWN')
-            else:
-                payment_id = str(account_info)
-                phone = 'UNKNOWN'
-            
-            self.clear_retired_df_queue_residue(payment_id)
-            self.logger.debug(f"账号payment_id:{payment_id} phone:{phone} 已清理旧活跃队列残留")
-        except Exception as e:
-            self.logger.error(f"清理旧活跃队列残留失败: {e}, account_info: {account_info}")
     
     # async def check_account_concurrent_orders(self, payment_id: str) -> bool:
     #     """
@@ -2664,7 +2634,7 @@ class EasyPaisaAutoPayout:
         账号获取：MySQL payout_status 资格 + 余额排序方案，加入20分钟使用间隔筛选
 
         优先从有序集合获取高余额账号；有序集合为空时 get_top_balance_accounts 内部回退 MySQL。
-        不再消费 payment_active_df。
+        不再消费旧 Redis 队列。
         
         Args:
             amount: 转账金额
@@ -3826,7 +3796,6 @@ class EasyPaisaAutoPayout:
             # 🔥 3. 获取订单锁（有可用账号后才获取）
             order_lock_value = self.get_lock(order_code)
             if not order_lock_value:
-                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 未抢到订单锁'
@@ -3839,7 +3808,6 @@ class EasyPaisaAutoPayout:
             if not account_lock:
                 # 账号锁失败，释放订单锁
                 self.del_lock(order_code, order_lock_value)
-                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 账号{account_id}被锁定'
@@ -3853,7 +3821,6 @@ class EasyPaisaAutoPayout:
                 # payment_id 锁定失败，释放订单锁和账号锁
                 self.release_account_lock(account_id, account_lock)
                 self.del_lock(order_code, order_lock_value)
-                self.clear_retired_account_queue_residue(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} Payment ID {payment_id} 锁定失败'
@@ -3898,14 +3865,6 @@ class EasyPaisaAutoPayout:
                     self.logger.info(f"订单{order_code} 异常时释放订单锁")
                 except Exception as lock_e:
                     self.logger.error(f"释放订单锁失败: {lock_e}")
-            
-            # 旧活跃队列不再回写，只清理残留，避免历史队列重新参与派单。
-            if selected_account:
-                try:
-                    self.clear_retired_account_queue_residue(selected_account)
-                    self.logger.info(f"订单{order_code} 异常时已清理旧活跃队列残留")
-                except Exception as list_e:
-                    self.logger.error(f"清理旧活跃队列残留失败: {list_e}")
             
             return {
                 'success': False,
@@ -3952,8 +3911,7 @@ class EasyPaisaAutoPayout:
             # # 4. 获取账号锁
             # account_lock = await self.acquire_account_lock(account_id, order_code)
             # if not account_lock:
-            #     # 账号被锁定，只清理旧队列残留，不重新入队
-            #     self.clear_retired_account_queue_residue(selected_account)
+            #     # 账号被锁定，等待下轮 DB 预分配
             #     return {
             #         'success': False,
             #         'message': f'账号{account_id}被锁定，等待下轮 DB 预分配',
@@ -3965,9 +3923,8 @@ class EasyPaisaAutoPayout:
             # payment_id = selected_account['payment_id']
             # payment_id_lock_value = self.get_payment_id_lock(payment_id)
             # if not payment_id_lock_value:
-            #     # payment_id锁定失败，释放账号锁并清理旧队列残留
+            #     # payment_id锁定失败，释放账号锁
             #     self.release_account_lock(account_id, account_lock)
-            #     self.clear_retired_account_queue_residue(selected_account)
             #     return {
             #         'success': False,
             #         'message': f'Payment ID {payment_id} 锁定失败，等待下轮 DB 预分配',
@@ -3991,8 +3948,6 @@ class EasyPaisaAutoPayout:
                     
                     # 转账成功，设置账号释放时间（从配置读取）
                     self.set_account_release_time(selected_account['payment_id'])
-                    if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.clear_retired_account_queue_residue(selected_account)
                     
                     return {
                         'success': True,
@@ -4007,8 +3962,6 @@ class EasyPaisaAutoPayout:
                 elif transfer_result is None:
                     # Python异常（如连接异常、JSON解析错误等）按成功处理
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
-                    if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.clear_retired_account_queue_residue(selected_account)
                     
                     return {
                         'success': False,  # 🔥 修复: 不是真正成功
@@ -4025,8 +3978,6 @@ class EasyPaisaAutoPayout:
                     is_reject = transfer_result.get('reject', False)
                     
                     self.set_account_release_time(selected_account['payment_id'])  # 从配置读取释放时间
-                    if should_return_account_to_pool(preallocated_mode=selected_account.get('preallocated_mode', False)):
-                        self.clear_retired_account_queue_residue(selected_account)
                     
                     # 🔥 驳回情况：直接返回，由外层处理
                     if is_reject:

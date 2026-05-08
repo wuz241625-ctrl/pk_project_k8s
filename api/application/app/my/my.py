@@ -10,7 +10,6 @@ from aiomysql import DictCursor
 
 from application.message import msg
 from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
-from application.phonepe import phmonitor
 
 
 async def My(self, action, data):
@@ -200,8 +199,8 @@ async def _apply_payment_online_fields(self, payment_row):
         payment_row['online_df'] = 1 if can_dispatch_df(payment_row) else 0
         return
 
-    payment_row['online_ds'] = 1 if await self.redis.sismember('payment_online_ds', payment_row['id']) else 0
-    payment_row['online_df'] = 1 if await self.redis.sismember('payment_online_df', payment_row['id']) else 0
+    payment_row['online_ds'] = 0
+    payment_row['online_df'] = 0
 
 # 获取收款信息
 async def getpayment(self, data):
@@ -267,233 +266,13 @@ async def change_payment(self, data):
     )
     if not payment:
         return msg[10100]
-    # if data['status'] and not payment['certified']:
-    #     return msg[10610]
-    # qr_channel = 1002 if payment['account_type'] == 2 else 1001
-    qr_channel = payment['channel']
-    if _is_easypaisa_payment(payment):
+    if _is_mysql_final_state_payment(payment):
         update_data = payment_update_for_status(payment, data['status'])
         if not await self.update_result('payment', update_data, {'id': payment_id}):
             return msg[10604]
-        if not data['status']:
-            await self.redis.srem('payment_online_df', payment_id)
-            await self.redis.lrem('payment_active_df', 0, payment_id)
         return msg[10603]
-    # if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-    #     return msg[10604]
-    if payment['bank_type'] not in ['14', '16', '17', '18']: # phonepe, freecharge, mobi 走监控, airtel 走监控
-        if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-            return msg[10604]
-    elif payment['bank_type'] == '14': # phonepe
-        try:
-            if data['status']:
-                # 客户端发起登录
-                _key = 'login_phonepe_{id}'.format(id=payment_id)
-                if await self.redis.exists(_key):
-                    # 已经登录(5分钟内)
-                    return msg[10609]
-                _push_key = 'login_phonepe'
-                _push_data = dict()
-                _push_data['id'] = payment_id
-                _push_data['partner_id'] = payment['partner_id']
-                _push_data['phone'] = payment['phone']
-                _push_data['status'] = 'sendOTP'
-                _push_data['time'] = int(datetime.datetime.now().timestamp())
-                _push_data['try_count'] = 0
-                _push_data['socks_ip'] = ''
-                _push_data['to'] = 'phonepe'
-                _push_data['qr_channel'] = qr_channel
-                _push_data = json.dumps(_push_data)
-                _key_off = 'login_off_phonepe_{id}'.format(id=payment_id)
-                login_off_phonepe = await self.redis.get(_key_off)
-                if not login_off_phonepe or (login_off_phonepe and int(login_off_phonepe) + 180*60 < int(datetime.datetime.now().timestamp())) or not await self.redis.get('login_on_phonepe_{id}'.format(id=payment_id)):  # 已经在爬取了，就不push了
-                    if not await self.redis.rpush(_push_key, _push_data):
-                        self.logger.warning("phonepe push key 错误，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                        return msg[10604]
-                    self.logger.warning("phonepe push key 成功，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                    await self.redis.delete(_key_off)
-                    await self.redis.set(_key, '1', 5*60)
-                    return msg[10608]
-                if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-                    return msg[10604]
-                await self.redis.delete(_key_off)
-                return msg[10603]
-            else:
-                # 休眠监控
-                await self.redis.srem('payment_online_ds', payment_id)
-                pattern_t = 'payment_active_*'
-                _active_channel = await self.redis.keys(pattern=pattern_t)
-                for i in _active_channel:
-                    await self.redis.lrem(i, 0, payment_id)
-                await self.redis.srem('payment_online_df', payment_id)
-                await self.redis.lrem('payment_active_df', 0, payment_id)
-                # 通知监控下线 即使下线也需要等待120分钟，在180分钟内保持采集
-                _key_off = 'login_off_phonepe_{id}'.format(id=payment_id)
-                await self.redis.set(_key_off, int(datetime.datetime.now().timestamp()), 190 * 60)
-                if not await self.update_result('payment', {'status': 0}, {'id': payment_id}):
-                    return msg[10604]
-        except Exception as e:
-            self.logger.warning("phonepe kyc登录错误，payment{payment},e:{e}".format(payment=payment, e=str(e)))
-            return msg[10604]
-    elif payment['bank_type'] == '16': # freecharge
-        try:
-            if data['status']:
-                # 客户端发起登录
-                _key = 'login_freecharge_{id}'.format(id=payment_id)
-                if await self.redis.exists(_key):
-                    # 已经登录(5分钟内)
-                    return msg[10609]
-                _push_key = 'login_freecharge'
-                _push_data = dict()
-                _push_data['id'] = payment_id
-                _push_data['partner_id'] = payment['partner_id']
-                _push_data['phone'] = payment['phone']
-                _push_data['status'] = 'sendOTP'
-                _push_data['time'] = int(datetime.datetime.now().timestamp())
-                _push_data['try_count'] = 0
-                _push_data['socks_ip'] = ''
-                _push_data['to'] = 'freecharge'
-                _push_data['qr_channel'] = qr_channel
-                _push_data = json.dumps(_push_data)
-                _key_off = 'login_off_freecharge_{id}'.format(id=payment_id)
-                login_off_freecharge = await self.redis.get(_key_off)
-                if not login_off_freecharge or (login_off_freecharge and int(login_off_freecharge) + 180*60 < int(datetime.datetime.now().timestamp())) or not await self.redis.get('login_on_freecharge_{id}'.format(id=payment_id)):  # 已经在爬取了，就不push了
-                    if not await self.redis.rpush(_push_key, _push_data):
-                        self.logger.warning("freecharge push key 错误，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                        return msg[10604]
-                    self.logger.warning("freecharge push key 成功，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                    await self.redis.delete(_key_off)
-                    await self.redis.set(_key, '1', 5*60)
-                    return msg[10608]
-                if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-                    return msg[10604]
-                await self.redis.delete(_key_off)
-                return msg[10603]
-            else:
-                # 休眠监控
-                await self.redis.srem('payment_online_ds', payment_id)
-                pattern_t = 'payment_active_*'
-                _active_channel = await self.redis.keys(pattern=pattern_t)
-                for i in _active_channel:
-                    await self.redis.lrem(i, 0, payment_id)
-                await self.redis.srem('payment_online_df', payment_id)
-                await self.redis.lrem('payment_active_df', 0, payment_id)
-                # 通知监控下线 即使下线也需要等待120分钟，在180分钟内保持采集
-                _key_off = 'login_off_freecharge_{id}'.format(id=payment_id)
-                await self.redis.set(_key_off, int(datetime.datetime.now().timestamp()), 190 * 60)
-                if not await self.update_result('payment', {'status': 0}, {'id': payment_id}):
-                    return msg[10604]
-        except Exception as e:
-            self.logger.warning("freecharge kyc登录错误，payment{payment},e:{e}".format(payment=payment, e=str(e)))
-            return msg[10604]
-        else:
-            pass
-    elif payment['bank_type'] == '17':  # mobi
-        try:
-            if data['status']:
-                # 客户端发起登录
-                _key = 'login_mobi_{id}'.format(id=payment_id)
-                if await self.redis.exists(_key):
-                    # 已经登录(5分钟内)
-                    return msg[10609]
-                _push_key = 'login_mobi'
-                _push_data = dict()
-                _push_data['id'] = payment_id
-                _push_data['partner_id'] = payment['partner_id']
-                _push_data['phone'] = payment['phone']
-                _push_data['status'] = 'sendOTP'
-                _push_data['time'] = int(datetime.datetime.now().timestamp())
-                _push_data['try_count'] = 0
-                _push_data['socks_ip'] = ''
-                _push_data['to'] = 'mobi'
-                _push_data['qr_channel'] = qr_channel
-                _push_data = json.dumps(_push_data)
-                _key_off = 'login_off_mobi_{id}'.format(id=payment_id)
-                login_off_mobi = await self.redis.get(_key_off)
-                if not login_off_mobi or (login_off_mobi and int(login_off_mobi) + 180*60 < int(datetime.datetime.now().timestamp())) or not await self.redis.get('login_on_mobi_{id}'.format(id=payment_id)):  # 已经在爬取了，就不push了
-                    if not await self.redis.rpush(_push_key, _push_data):
-                        self.logger.warning("mobi push key 错误，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                        return msg[10604]
-                    self.logger.warning("mobi push key 成功，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                    await self.redis.delete(_key_off)
-                    # await self.redis.set(_key, '1', 5*60)
-                    return msg[10608]
-                if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-                    return msg[10604]
-                await self.redis.delete(_key_off)
-                return msg[10603]
-            else:
-                # 休眠监控
-                await self.redis.srem('payment_online_ds', payment_id)
-                pattern_t = 'payment_active_*'
-                _active_channel = await self.redis.keys(pattern=pattern_t)
-                for i in _active_channel:
-                    await self.redis.lrem(i, 0, payment_id)
-                await self.redis.srem('payment_online_df', payment_id)
-                await self.redis.lrem('payment_active_df', 0, payment_id)
-                # 通知监控下线 即使下线也需要等待120分钟，在180分钟内保持采集
-                _key_off = 'login_off_mobi_{id}'.format(id=payment_id)
-                await self.redis.set(_key_off, int(datetime.datetime.now().timestamp()), 190 * 60)
-                if not await self.update_result('payment', {'status': 0}, {'id': payment_id}):
-                    return msg[10604]
-        except Exception as e:
-            self.logger.warning("mobi kyc登录错误，payment{payment},e:{e}".format(payment=payment, e=str(e)))
-            return msg[10604]
-        else:
-            pass
-    elif payment['bank_type'] == '21':  # airtel
-        try:
-            if data['status']:
-                # 客户端发起登录
-                _key = 'login_airtel_{id}'.format(id=payment_id)
-                if await self.redis.exists(_key):
-                    # 已经登录(5分钟内)
-                    return msg[10609]
-                _push_key = 'login_airtel'
-                _push_data = dict()
-                _push_data['id'] = payment_id
-                _push_data['partner_id'] = payment['partner_id']
-                _push_data['phone'] = payment['phone']
-                _push_data['status'] = 'sendOTP'
-                _push_data['time'] = int(datetime.datetime.now().timestamp())
-                _push_data['try_count'] = 0
-                _push_data['socks_ip'] = ''
-                _push_data['to'] = 'airtel'
-                _push_data['qr_channel'] = qr_channel
-                _push_data = json.dumps(_push_data)
-                _key_off = 'login_off_airtel_{id}'.format(id=payment_id)
-                login_off_airtel = await self.redis.get(_key_off)
-                if not login_off_airtel or (login_off_airtel and int(login_off_airtel) + 180*60 < int(datetime.datetime.now().timestamp())) or not await self.redis.get('login_on_airtel_{id}'.format(id=payment_id)):  # 已经在爬取了，就不push了
-                    if not await self.redis.rpush(_push_key, _push_data):
-                        self.logger.warning("airtel push key 错误，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                        return msg[10604]
-                    self.logger.warning("airtel push key 成功，_push_data{_push_data},_push_key{_push_key}".format(_push_data=_push_data, _push_key=_push_key))
-                    await self.redis.delete(_key_off)
-                    # await self.redis.set(_key, '1', 5*60)
-                    return msg[10608]
-                if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
-                    return msg[10604]
-                await self.redis.delete(_key_off)
-                return msg[10603]
-            else:
-                # 休眠监控
-                await self.redis.srem('payment_online_ds', payment_id)
-                pattern_t = 'payment_active_*'
-                _active_channel = await self.redis.keys(pattern=pattern_t)
-                for i in _active_channel:
-                    await self.redis.lrem(i, 0, payment_id)
-                await self.redis.srem('payment_online_df', payment_id)
-                await self.redis.lrem('payment_active_df', 0, payment_id)
-                # 通知监控下线 即使下线也需要等待120分钟，在180分钟内保持采集
-                _key_off = 'login_off_airtel_{id}'.format(id=payment_id)
-                await self.redis.set(_key_off, int(datetime.datetime.now().timestamp()), 190 * 60)
-                if not await self.update_result('payment', {'status': 0}, {'id': payment_id}):
-                    return msg[10604]
-        except Exception as e:
-            self.logger.warning("airtel kyc登录错误，payment{payment},e:{e}".format(payment=payment, e=str(e)))
-            return msg[10604]
-        else:
-            pass
+    if not await self.update_result('payment', {'status': data['status']}, {'id': payment_id}):
+        return msg[10604]
     return msg[10603]
 
 
@@ -594,40 +373,10 @@ async def certified(self, data):
 async def sendOTP(self, data):
     try:
         self.logger.info("{id} sendOTP 收到验证码 {otp}".format(id=str(data['payment_id']), otp=str(data['otp'])))
-        bank_type_name_sql = """
-            select bank_type.name
-            from bank_type
-            inner join payment on payment.bank_type = bank_type.id
-            where payment.id = %s
-        """
-        query_result = (await self.query(bank_type_name_sql, int(data['payment_id'])))
+        query_result = await self.get_result_by_condition('payment', ['id'], {'id': data['payment_id']})
         if not query_result:
-            # 处理查询结果为空的情况，比如记录日志或抛出一个异常
             self.logger.error(f"未找到 payment_id {data['payment_id']} 对应的 bank type")
             return msg[10622]
-        bank_type_name = (await self.query(bank_type_name_sql, data['payment_id']))[0]['name']
-        if bank_type_name == 'PHONEPE':
-            # phone_id = await self.get_result_by_condition('phonepe', ['id'], {'payment_id': data['payment_id']})
-            # await self.redis.publish('phonepe_msg', json.dumps(dict(to='phonepe', type='OTP', id=phone_id['id'], otp=data['otp'])))
-            # phonepe
-            key = 'login_phonepe_OTP_' + str(data['payment_id'])
-            await self.redis.set(key, data['otp'], 60*5)
-        if bank_type_name == 'FREECHARGE':
-            # freecharge
-            key = 'login_freecharge_OTP_' + str(data['payment_id'])
-            await self.redis.set(key, data['otp'], 60*5)
-        if bank_type_name == 'MOBIKWIK':
-            # mobi
-            key = 'login_mobi_OTP_' + str(data['payment_id'])
-            await self.redis.set(key, data['otp'], 60*5)
-        if bank_type_name == 'INDUS':
-            # indus
-            key = 'login_indus_OTP_' + str(data['payment_id'])
-            await self.redis.set(key, data['otp'], 60*5)
-        if bank_type_name == 'JIO':
-            # indus
-            key = 'login_jio_OTP_' + str(data['payment_id'])
-            await self.redis.set(key, data['otp'], 60*5)
     except Exception as e:
         self.logger.warning("sendOTP 错误 e:{e} 不存在".format(e=str(e)))
         return msg[10618]

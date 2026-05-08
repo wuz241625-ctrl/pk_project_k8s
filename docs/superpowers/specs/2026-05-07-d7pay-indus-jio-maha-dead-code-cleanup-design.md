@@ -21,7 +21,7 @@ GitNexus 已为当前 `d7pay` 分支建立最新索引，当前提交为 `641ff6
 
 - 保留 `api/application/lakshmi_api/`，因为它仍承载 Flutter App `/v1` 接口。
 - 保留 `api/jobs/pakistanpay_v2.py`、`api/jobs/easypaisa/*`、`api/jobs/jazzcash/*`、`api/jobs/Jazzcashpay_v2.py`，这些仍属于当前或测试覆盖的 EasyPaisa/JazzCash 运行链路。
-- 保留 `api/application/pay/order.py`、`api/application/phonepe/*`、`api/application/third/*` 中旧分支。它们仍被路由或业务回调引用，后续要清理必须先同步数据库配置、菜单权限和线上流量。
+- 后续 2026-05-08 清理已经参考 `/Users/tear/pk_project` 当前文件，同步移除 `api/application/phonepe/*` 和相关路由。本文件保留为当时阶段记录，不再代表当前 D7pay 清理边界。
 
 ## 验收标准
 

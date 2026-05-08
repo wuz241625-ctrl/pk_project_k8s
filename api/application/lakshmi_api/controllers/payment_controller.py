@@ -11,18 +11,6 @@ from application.lakshmi_api.models.payment import Payment
 from application.lakshmi_api.schema.payment_schema import *
 from application.lakshmi_api.services.payment_services import BANK_SERVICES
 
-# 各银行输入OTP的位数
-OTP_DIGITS = {
-    'PHONEPE': 5,
-    'FREECHARGE': 4,
-    'MOBIKWIK': 6,
-    'AIRTEL': 4,
-    'AMAZON': 0,
-    'INDUS': 6,
-    'ULCASH': 6,
-    'JIO': 6,
-    'MAHA': 0
-}
 PAYMENT_STATUS = {0: 'inactive', 1: 'active'}
 CERTIFIED_STATUS = {'inactive': 0, 'active': 1}
 
@@ -53,68 +41,6 @@ class PaymentHandler(BaseHandler):
             return payment
 
         raise ApiError('payment not found')
-
-"""
-使用pin获取payment预登录的信息，已存在的payment登录时，需要调用此方法
-"""
-class PaymentPINPreSignIn(PaymentHandler):
-
-    @handle_errors
-    async def post(self):
-        await self.authenticate_current_user()
-        params = self._get_params(['payment_id', 'pin', 'mock'])
-        self.logger.info("Request [POST] (/payment/pin_pre_sign_in), user.id: %s, user.name: %s, params: %s", self.current_user.id, self.current_user.name, params)
-        pinPreSignIn = PinPreSignInSchema().load(params)
-
-        # 根据payment_id查询payment
-        db_payment = await self._assign_payment(pinPreSignIn["payment_id"])
-
-        bank = db_payment.bank
-        if bank is None:
-            raise ApiError('Bank not found')
-        if bank.name != "INDUS":
-            raise ApiError(f'The current bank[{bank.name}] does not require pin pre login')
-        self.logger.info(f"db_payment: {db_payment}")
-
-        # 修改payment的pin为用户输入的pin
-        db_payment.pin = pinPreSignIn["pin"]
-
-        with self.db_orm.sessionmaker() as session:
-            session.execute(
-                update(Payment)
-                .where(Payment.id == pinPreSignIn["payment_id"])
-                .values(pin=pinPreSignIn["pin"])
-            )
-            session.commit()
-
-        payment_schema = UpiPaymentSchema().dump(db_payment)
-
-        service_class = BANK_SERVICES[db_payment.bank.name]
-        service = service_class(self.db_orm, self.redis, self.redis_pub, self.logger)
-        self.logger.info("Response [POST] (/payment/pin_pre_sign_in), user: %s, name: %s, new_upi: %s",
-                         self.current_user.id,
-                         self.current_user.name, db_payment)
-        db_payment.status = None
-        await service.send_otp(db_payment)
-
-        """标记payment本地模拟测试 10分钟"""
-        if "mock" in params and "1" == pinPreSignIn.get("mock"):
-            await self.redis.set(name=f"payment_mock:{pinPreSignIn.get("payment_id")}", value="1", ex=600)
-
-        # 清空pin
-        payment_schema['pin'] = None
-        responseData = {
-            "data": {
-                "payment": payment_schema,
-                "active_path": f"/api/v1/user/upi/{db_payment.id}/active",
-                "cookie_path": f"/api/v1/user/upi/{db_payment.id}/cookie",
-                "status": payment_schema['status']
-            }
-        }
-
-        self.logger.info("Response [POST] (/payment/pin_pre_sign_in), user: %s, name: %s, responseData: %s", self.current_user.id,
-                         self.current_user.name, responseData)
-        self.write(responseData)
 
 class PaymentTpin(PaymentHandler):
     """

@@ -28,15 +28,15 @@ class JazzCashMonitorFinalStateSourceTests(unittest.TestCase):
             source,
         )
 
-    def test_501_offline_clears_mysql_final_status_and_redis_projection(self):
+    def test_501_offline_clears_mysql_final_status_without_redis_projection(self):
         source = self.read_source()
 
         self.assertIn("wallet_status = 0", source)
         self.assertIn("collection_status = 0", source)
         self.assertIn("payout_status = 0", source)
-        self.assertIn("srem('payment_online_ds'", source)
-        self.assertIn("srem('payment_online_df'", source)
-        self.assertIn("lrem('payment_active_df'", source)
+        self.assertNotIn("srem('payment_online_ds'", source)
+        self.assertNotIn("srem('payment_online_df'", source)
+        self.assertNotIn("lrem('payment_active_df'", source)
 
     def test_monitor_does_not_write_legacy_redis_online_gate(self):
         source = self.read_source()

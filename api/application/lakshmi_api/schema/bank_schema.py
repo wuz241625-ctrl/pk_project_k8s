@@ -19,29 +19,19 @@ class UpiBankSchema(Schema):
 
     @staticmethod
     def set_in_app_browser(obj):
-        return True if obj.name == 'AMAZON' else False
+        return False
 
     @staticmethod
     def set_in_app_browser_url(obj):
-        if obj.name == 'AMAZON':
-            return 'https://www.amazon.in/ap/signin?openid.pape.max_auth_age=0&openid.return_to=https%3A%2F%2Fwww.amazon.in%2F%3Fref_%3Dnav_signin&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.assoc_handle=inflex&openid.mode=checkid_setup&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0%2Fidentifier_select&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0'
-        else:
-            return None
+        return None
 
     @staticmethod
     def set_final_page_url(obj):
-        if obj.name == 'AMAZON':
-            return 'https://www.amazon.in/amazonpay/home'
-        else:
-            return None
+        return None
 
     @staticmethod
     def set_hint_image_url(obj):
-        if obj.name == 'AMAZON':
-            return 'https://lakshmivip.com/lakshmi_apk/amazon_hint.jpg'
-            # return 'https://storage.googleapis.com/lakshmi_apk/amazon_hint.jpg'
-        else:
-            return None
+        return None
 
     @staticmethod
     def set_is_webview(obj):

@@ -545,8 +545,6 @@ class JazzCashAutoPayout:
 
         # 新增：Redis键名配置
         self.REDIS_KEYS = {
-            'retired_jazzcash_online_df': 'payment_online_df',   # 旧在线集合，仅用于清理残留
-            'retired_jazzcash_active_df': 'payment_active_df',   # 旧活跃列表，仅用于清理残留
             'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',  # JazzCash余额有序集合
             'jazzcash_balance_prefix': 'jazzcash_balance:',       # JazzCash余额缓存前缀（兼容性保留）
             'jazzcash_account_used_prefix': 'jazzcash_account_used:',  # 账号使用记录前缀（支持动态冷却期）
@@ -2060,9 +2058,8 @@ class JazzCashAutoPayout:
         """
         防护机制1: 检查账号代付接单资格。
 
-        JazzCash 代付接单资格只读 MySQL payout_status，不再读取或降级到旧
-        payment_online_df Redis 集合。上游 isLogined 只能作为健康观测，不能覆盖
-        MySQL final state。
+        JazzCash 代付接单资格只读 MySQL payout_status。上游 isLogined 只能作为健康观测，
+        不能覆盖 MySQL final state。
         """
         try:
             payment_info = self.get_phone_by_payment_id(payment_id)

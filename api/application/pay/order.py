@@ -74,8 +74,8 @@ class Order(BaseHandler):
             order_info = await self.get_result_by_condition('orders_ds',
                                                             ['code', 'channel_code', 'amount', 'auth_code', 'payment_id', 'auth_code', 'callback', 'third_party_name', 'merchant_id', 'time_create', 'original_amount', 'utr'],
                                                             {'code': code})
-
-
+            
+            
             self.logger.info(f"[Token二次校验] 开始处理 token 前 12 位: {token[:12] if token else 'None'}")
 
             # 1. 先拿到 channel_code
@@ -243,13 +243,13 @@ class Order(BaseHandler):
                 order_info['sec_remains'] = 59
                 self.logger.info('1002=================',  bank.get('name'))
                 await self.render(f'order_india.{template_code}.html', **order_info)
-
+            
             if channel_code == 1005:
                 order_info['upi_params_general_url_encode'] = await self._upi_params_general_handler(order_info['upi'],
                                                                                                      order_info)
                 order_info['upi_params_paytm_url_encode'] = await self._upi_params_paytm_handler(order_info['upi'],
                                                                                                  order_info)
-
+                
                 await self.render(f'order_india.{template_code}.html', **order_info)
 
             elif channel_code == 1001:
@@ -358,28 +358,28 @@ class Order(BaseHandler):
         parsed_url = urllib.parse.urlparse(upi)  # 解析 UPI URL
         # 将查询参数提取到字典中
         query_params = urllib.parse.parse_qs(parsed_url.query)
-
+        
         # 确保 mc、url、mid、msid、mtid 参数存在，且如果没有设置则赋空值
         empty_params = ['mc', 'url', 'mid', 'msid', 'mtid']  # 定义需要检查的参数
         for param in empty_params:
             if param not in query_params or not query_params[param][0]:
                 query_params[param] = ['']  # 如果不存在或值为空，则将其设置为空字符串
-
+        
         # 修改需要更改的参数
         query_params['am'] = [str(order_info['amount'])]   # 添加订单中的金额
         query_params['tn'] = [str(order_info['auth_code'])]  # 修改交易备注为订单中的认证码
 
         # 使用更新后的参数重新构建查询字符串
         new_query_string = urllib.parse.urlencode(query_params, doseq=True)
-
+        
         # 手动将 '@' 替换回原始字符，防止它被编码为 '%40'
         new_query_string = new_query_string.replace('%40', '@')
         # 手动将 '/' 和 '=' 替换回原始字符，防止它们被编码为 '%2F' 和 '%3D'
         new_query_string = new_query_string.replace('%2F', '/').replace('%3D', '=')
-
+        
         # 在末尾添加额外的功能类型参数
         new_query_string += "&featuretype=money_transfer"
-
+        
         return new_query_string  # 返回更新后的查询字符串
 
     @staticmethod
@@ -434,7 +434,7 @@ class download_count_submit(BaseHandler):
             return self.json_response(msg_en[10001], message='Order not found')
 
         count_statics_json = r['count_statics']
-
+        
         # 2. 解析 JSON 并更新下载次数
         # 如果 count_statics 为空，则初始化一个新 JSON
         if count_statics_json:
@@ -445,13 +445,13 @@ class download_count_submit(BaseHandler):
                 data = {}
         else:
             data = {}
-
+            
         # 3. 递增 download_count
         data['download_count'] = data.get('download_count', 0) + 1
-
+        
         # 4. 将更新后的 JSON 转换为字符串
         updated_json_string = json.dumps(data)
-
+        
         # 5. 更新 orders_ds 表中的 count_statics 字段
         update_sql = "UPDATE orders_ds SET count_statics=%s WHERE code=%s"
         try:
@@ -459,8 +459,8 @@ class download_count_submit(BaseHandler):
             res = {"code": 0, "data": None, "message": "success"}
             return await self.json_response(res)
         except Exception as e:
-            return await self.json_response(msg_en[10000])
-
+            return await self.json_response(msg_en[10000]) 
+        
 class card_num(BaseHandler):
     async def post(self, token=None):
         try:
@@ -479,12 +479,12 @@ class card_num(BaseHandler):
                 return await self.json_response(msg_en[10000])
             if 'script' in utr or len(utr) < 10:
                 return await self.json_response(msg_en[10000])
-
+            
             order_info_temp = await self.get_result_by_condition('orders_ds', ['channel_code'], {'code': code})
             if not order_info_temp:
                 return await self.json_response(msg_en[10000])
 
-
+            
             # 1. 先拿到 channel_code
             channel_code = order_info_temp['channel_code']
             self.logger.info(f"[Token二次校验] 订单 channel_code = {channel_code}")
@@ -526,7 +526,7 @@ class card_num(BaseHandler):
                 SECRET_KEY = conf['jazzcash_secret_key']
             except KeyError as e:
                 self.logger.error(f"JazzCash 配置缺失: {e}")
-
+                
                 return await self.json_response({'code': 10003, 'msg': 'Gateway configuration missing'})
 
             # ==================== 变更开始：新增 UTR 并发/频率锁====================
@@ -537,7 +537,7 @@ class card_num(BaseHandler):
             utr_lock_key = f'{UTR_LOCK_PREFIX}{utr}:{code}'
             # 先使用 setnx 尝试获取锁，如果成功，再使用 expire 设置过期时间
             got_utr_lock = await self.redis.setnx(utr_lock_key, 1)
-
+            
             if got_utr_lock: # 只有当成功获取锁时，才设置过期时间
                 await self.redis.expire(utr_lock_key, UTR_LOCK_EXPIRY_SECONDS)
                 self.logger.info(f'订单：{code}，上传的卡密信息：{utr} 提交频率锁获取成功并设置过期时间。')
@@ -553,7 +553,7 @@ class card_num(BaseHandler):
             if not got_lock:
                 self.logger.warning(f'抢锁失败，订单{code}正在被处理，放弃操作')
                 return await self.json_response(msg_en[10011])  # 比如锁失败消息
-
+            
             # # 抢订单锁，key使用订单号
             # lock_key = f'lock_order_{trans_id}'
             # got_lock = await self.redis.setnx(lock_key, 1)
@@ -580,20 +580,20 @@ class card_num(BaseHandler):
             if type in ['jazz', 'easypaisa']:
                 try:
                     # 1. 频率限制检查
-                    # REDIS_TTL_SECONDS = 60
+                    # REDIS_TTL_SECONDS = 60 
                     # msisdn_key = "0" + merchant_msisdn
                     # limit_key = f"{type}_r2p_limit:{msisdn_key}"
-
+                    
                     # if await self.redis.exists(limit_key):
                     #     ttl = await self.redis.ttl(limit_key)
                     #     self.logger.warning(f"[{code}] 频率限制: {msisdn_key} 剩余 {ttl} 秒。")
-                    #     return await self.json_response({'code': 10003, 'msg': f'Request too frequent. Wait {ttl}s.'})
+                    #     return await self.json_response({'code': 10003, 'msg': f'Request too frequent. Wait {ttl}s.'}) 
 
                     # 2. 构造通用的 Payload 和数据包
                     request_id = str(uuid.uuid4())
                     # 根据类型决定 action 名字
                     action_name = "merchantRequestToPay" if type == 'jazz' else "merchantRequestToPayEp"
-
+                    
                     # 金额处理（Easypaisa两位小数）
                     display_amount = str(amount)
                     if type == 'easypaisa':
@@ -606,7 +606,7 @@ class card_num(BaseHandler):
                         "merchant_msisdn": "0" + merchant_msisdn,
                         "amount": display_amount,
                     }
-
+                    
                     # 仅 EasyPaisa 使用特殊的 raast_id 字段
                     if type == 'easypaisa':
                         inner_payload["raast_id"] = "0" + merchant_msisdn
@@ -616,7 +616,7 @@ class card_num(BaseHandler):
                         "action": action_name,
                         "payload": inner_payload
                     }
-
+                    
                     # 签名与 FormBody 封装
                     post_data = build_form_body(
                         action_name,
@@ -628,21 +628,21 @@ class card_num(BaseHandler):
 
                     # # 设置频率限制锁
                     # await self.redis.set(limit_key, 1, ex=REDIS_TTL_SECONDS)
-
+                    
                     # ------------------------------------------------------------------
                     # 3. 核心执行逻辑
                     # ------------------------------------------------------------------
                     # Jazz 执行“追击确认”逻辑（最多3次），EP 执行“单次请求”逻辑（1次）
                     max_attempts = 3 if type == 'jazz' else 1
                     is_truly_success = False
-
+                    
                     # 初始化统计数据结构
                     statics_data = {
                         "req1": {"code": None, "inner_code": None, "msg": "未发起"},
                         "req2": {"code": None, "inner_code": None, "msg": "未发起"},
                         "req3": {"code": None, "inner_code": None, "msg": "未发起"}
                     }
-
+                    
                     # Jazz 专属的冷静期锁定（成功）代码集合
                     JAZZ_SUCCESS_CODES = {'PT-RTP-CPS-2002'}
 
@@ -651,11 +651,11 @@ class card_num(BaseHandler):
                             req_key = f"req{attempt}"
                             # self.logger.info(f"[{code}] >>> [{type.upper()}] {req_key} 开始请求...")
                             self.logger.info(f"[{code}] >>> [{type.upper()}] {req_key} 开始请求 gateway_url {gateway_url} payload_data {payload_data} post_data {post_data} ...")
-
+                            
                             try:
                                 async with session.post(gateway_url, data=post_data, timeout=12) as resp:
                                     resp_text = await resp.text()
-
+                                    
                                     # 解析 JSON 结果
                                     res_json = None
                                     try:
@@ -669,7 +669,7 @@ class card_num(BaseHandler):
                                     # 提取外层状态码和描述
                                     curr_code = str(res_json.get('code')) if res_json else "Error"
                                     curr_msg = res_json.get('msg', 'Invalid Response') if res_json else resp_text[:50]
-
+                                    
                                     # 提取 Jazz 特有的嵌套在 data 中的 responseCode
                                     inner_code = ""
                                     if res_json and isinstance(res_json.get('data'), dict):
@@ -677,20 +677,20 @@ class card_num(BaseHandler):
 
                                     # A. 立即留痕：将该轮交互数据更新至数据库字段 count_statics
                                     statics_data[req_key] = {
-                                        "code": curr_code,
-                                        "inner_code": inner_code,
+                                        "code": curr_code, 
+                                        "inner_code": inner_code, 
                                         "msg": curr_msg
                                     }
-
+                                    
                                     self.logger.info(f"[{code}] >>> [{statics_data}]")
                                     await self.execute(
-                                        "UPDATE orders_ds SET count_statics=%s WHERE code=%s",
-                                        json.dumps(statics_data, ensure_ascii=False),
+                                        "UPDATE orders_ds SET count_statics=%s WHERE code=%s", 
+                                        json.dumps(statics_data, ensure_ascii=False), 
                                         code
                                     )
 
                                     # B. 逻辑判定分支
-
+                                    
                                     # --- 情况 1: JazzCash 判定 (BB 情况 - 追击确认) ---
                                     if type == 'jazz':
                                         # --- 【新增开始】 ---
@@ -705,13 +705,13 @@ class card_num(BaseHandler):
                                                 self.logger.error(f"[{code}] [Jazz-异常] 三次尝试均为 URL Open error，判定失败")
                                                 break
                                         # --- 【新增结束】 ---
-
+                                        
                                         # 判定逻辑：内码命中成功集合，或者状态码不是 200 (代表撞到了已存在的锁定请求)
                                         if inner_code in JAZZ_SUCCESS_CODES or curr_code != "200":
                                             self.logger.info(f"[{code}] [Jazz-BB判定] 成功！内码: {inner_code}, 状态码: {curr_code}")
                                             is_truly_success = True
                                             break
-
+                                        
                                         # 如果状态码是 200，说明请求已提交但尚未锁定，需要继续下一轮请求进行撞击确认
                                         if curr_code == "200":
                                             if attempt == max_attempts:
@@ -729,7 +729,7 @@ class card_num(BaseHandler):
                                             is_truly_success = True
                                         else:
                                             self.logger.error(f"[{code}] [EP判定] 失败！状态码: {curr_code}")
-
+                                        
                                         # EP 不论成功失败，均不重试，直接 break
                                         break
 
@@ -738,24 +738,24 @@ class card_num(BaseHandler):
                                 statics_data[req_key] = {"code": "Ex", "msg": str(e)[:30]}
                                 # 异常发生也需要记录到数据库
                                 await self.execute("UPDATE orders_ds SET count_statics=%s WHERE code=%s", json.dumps(statics_data), code)
-                                break
+                                break 
 
                     # 4. 最终结果处理
                     self.logger.info(f"[{code}] ======= 最终判定结果: {'SUCCESS' if is_truly_success else 'FAILED'} ===={statics_data}===")
-
+                    
                     if is_truly_success:
                         # 如果成功，继续后续逻辑（这里可以根据您的业务决定是返回 JSON 还是继续下单流程）
                         pass
                         # return await self.json_response({
-                        #     'code': 0,
-                        #     'msg': 'Success',
+                        #     'code': 0, 
+                        #     'msg': 'Success', 
                         #     'data': statics_data
                         # })
                     else:
                         # 如果失败，返回错误信息，通常以第一单的错误消息为准
                         return await self.json_response({
-                            'code': 10003,
-                            'msg': statics_data['req1']['msg'],
+                            'code': 10003, 
+                            'msg': statics_data['req1']['msg'], 
                             'data': statics_data
                         })
 
@@ -803,8 +803,8 @@ class card_num(BaseHandler):
         # 修改银行记录
         sql_update_bank_record = """update bank_record set callback=1,order_code=%s where id=%s and callback=0"""
         # 商户代理费率
-        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant
-                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join
+        sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant 
+                                    where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join 
                                     merchant_channel m on m.merchant_id=mid and m.code=%s where m.merchant_id is not null  order by m.merchant_id desc"""
         # 码商代理费率
         sql_select_rates_partner = """select rates from channel where code=%s"""
@@ -842,7 +842,7 @@ class card_num(BaseHandler):
                     thread_id = threading.get_ident()
 
                     # 标记 order 正在处理
-                    if await self.redis.setnx(order_processing_key, 1):
+                    if await self.redis.setnx(order_processing_key, 1): 
                         # 锁创建成功
                         self.logger.info(
                             f"[{timestamp}] 锁成功创建，订单 {order_processing_key} 开始处理 | 线程ID: {thread_id}"
@@ -904,26 +904,26 @@ class card_num(BaseHandler):
                     if bank_record['ew_code']:
                         if not await self.change_balance(conn, cur, 'partner', partner_id, amount, bank_record['ew_code'], 0):
                             self.logger.warning(f"退掉额外扣款失败，ew_code: {bank_record['ew_code']} | code: {code}, amount: {amount}, partner_id: {partner_id}")
-
+                    
                             return False
                     # 补扣码商(非自身订单、过期订单)
                     if not order['partner_id'] == partner_id or order['status'] == -1:
                         if not await self.change_balance(conn, cur, 'partner', partner_id, -amount, code, 0):
                             self.logger.warning(f"补扣码商失败，partner_id: {partner_id} | code: {code}, amount: {amount}, partner_id: {partner_id}")
-
+                    
                             return False
                     # 非自身订单并且未过期退款给旧码商
                     if not order['partner_id'] == partner_id and not order['status'] == -1:
                         if not await self.change_balance(conn, cur, 'partner', order['partner_id'], amount,
                                                          code, 0):
                             self.logger.warning(f"退款失败，旧码商partner_id: {order['partner_id']} | code: {code}, amount: {amount}, partner_id: {partner_id}")
-
+                    
                             return False
                     # 增加商户余额
                     if not await self.change_balance(conn, cur, 'merchant', order['merchant_id'], order['realpay'],
                                                      code, 0):
                         self.logger.warning(f"增加商户余额失败，商户ID: {order['merchant_id']} | realpay: {order['realpay']}, code: {code}, amount: {amount}, partner_id: {partner_id}")
-
+                
                         return False
                     # 商户代理费用
                     earn_merchant = Decimal(0)
@@ -947,7 +947,7 @@ class card_num(BaseHandler):
                                     return False
                                 if not await self.change_balance(conn, cur, 'merchant', v['id'], _amount, code, 3):
                                     self.logger.warning(f"增加商户代理费用失败，商户ID: {v['id']} | code: {code}, _amount: {_amount}, amount: {amount}, partner_id: {partner_id}")
-
+                            
                                     return False
                                 earn_merchant += _amount
                     # 增加码商佣金
@@ -955,7 +955,7 @@ class card_num(BaseHandler):
                                                      3):
                         self.logger.warning(f"增加码商佣金失败 | partner_id: {partner_id} | code: {code}, amount: {amount}, "
                         f"amount: {order['earn_partner_self']}, partner_id: {partner_id}")
-
+                        
                         return False
                     # 增加码商代理佣金
                     earn_partner = order['earn_partner_self']
@@ -983,21 +983,21 @@ class card_num(BaseHandler):
                     earn_system = order['poundage'] - earn_merchant - earn_partner
                     if earn_system < 0:
                         self.logger.warning(f"系统盈利计算出负数，earn_system: {earn_system} | code: {code}, amount: {amount}, partner_id: {partner_id}")
-
+                
                         await conn.rollback()
                         return False
                     # 修改卡系统余额
                     if not await cur.execute(sql_update_payment, (amount, payment_id)):
                         self.logger.warning(f"修改卡系统余额失败，支付ID: {payment_id} | code: {code}, amount: {amount}, partner_id: {partner_id}")
                         self.logger.warning(f"修改卡系统余额失败 | SQL: {sql_update_payment} | 参数: amount={amount}, payment_id={payment_id}")
-
+    
                         await conn.rollback()
                         return False
                     # 修改订单状态
                     time_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     if not await cur.execute(sql_update_order, (earn_merchant, earn_partner, earn_system, partner_id,
                                                                 payment_id, utr, time_now, _payment['upi'], code)):
-
+                        
                         self.logger.warning(f"执行 SQL 更新订单失败 | SQL: {sql_update_order} | 参数: "
                         f"earn_merchant={earn_merchant}, earn_partner={earn_partner}, earn_system={earn_system}, "
                         f"partner_id={partner_id}, payment_id={payment_id}, utr={utr}, time_now={time_now}, "
@@ -1063,10 +1063,10 @@ class card_num(BaseHandler):
             else:
                 self.logger.info(f'{code} 向三方 {order['third_party_name']} 转发UTR失败')
         elif order['third_party_name'] == 'hkpay':
-
+            
             third_order_num = order['third_party_order_number']
             self.logger.info(f'订单 {code}，utr: {utr}，获取到第三方订单号: {third_order_num}')
-
+            
             url = "https://api.hhpayapi.com/mcapi/cash/backfillutr"
 
             payload = 'orderno=' + third_order_num + '&utr=' + utr
@@ -1086,7 +1086,7 @@ class card_num(BaseHandler):
             'sec-fetch-site': 'cross-site',
             'user-agent': 'Mozilla/5.0 (Linux; Android 8.0.0; SM-G955U Build/R16NW) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Mobile Safari/537.36'
             }
-
+            
             self.logger.info(f'订单 {code}，utr: {utr}，请求头 headers: {headers}')
             response = requests.request("POST", url, headers=headers, data=payload)
 
@@ -1115,7 +1115,7 @@ class card_num(BaseHandler):
         #     otherpays = await self.query(sql_otherpay, order['third_party_name'])
         #     if not otherpays:
         #         self.logger.error(f'{code} ，utr: {utr} 查询第三方支付{order['third_party_name']}配置失败')
-        #         return
+        #         return 
         #     otherpay = otherpays[0]
         #     data = {
         #         'merchant_order_num': code,
@@ -1196,7 +1196,7 @@ class Status(BaseHandler):
             if not order_info_temp:
                 return await self.json_response(msg_en[10000])
 
-
+            
             self.logger.info(f"[Token二次校验] 开始处理 token 前 12 位: {token[:12] if token else 'None'}")
 
             # 1. 先拿到 channel_code
@@ -1225,8 +1225,8 @@ class Status(BaseHandler):
                 return await self.json_response(msg[code])
             else:
                 self.logger.info(f"[Token二次校验] 成功！最终解码得到的 order_code = {code}")
-
-
+            
+            
             if code in [10016, 10017]:
                 return await self.json_response(msg[code])
             info = await self.get_result_by_condition('orders_ds', ['status', 'callback'], {'code': code})
@@ -1399,692 +1399,7 @@ class Success(BaseHandler):
                     time.sleep(0.2)
                     count_circle = count_circle + 1
 
-            if data['bank_name'] == 'freecharge':
-                self.logger.info('监控调用:(freecharge协议)' + json.dumps(data))
-                # data['upi'] = data['sourceVpa'] if data['trade_type'] == 'SEND_MONEY' else data['destVpa']
-                if data['type'] == 'UPI': # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        await self.save_upi_to_history(data['upi'], self.qr_id)
-                        if not await self.update_result('payment', {'upi': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(freecharge协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(freecharge协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New': # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'amount', 'status', 'utr', 'trade_type', 'sourceVpa', 'destVpa']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['SEND_MONEY', 'RECEIVE_MONEY']:
-                        self.logger.info('监控调用:(freecharge协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    if data['trade_type'] == 'RECEIVE_MONEY':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    elif data['trade_type'] == 'SEND_MONEY':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        try:
-                            data['ifsc'] = re.search('@(.+?)\.ifsc', data['destVpa']).group(1).strip().replace(',', '')
-                            data['code'] = re.search('X(\d+?)@', data['destVpa']).group(1).strip().replace(',', '')
-                        except Exception as e:
-                            self.logger.info('监控调用:(freecharge协议),id:{id}, 获取ifsc和账户尾号错误:{e}'.format(id=self.qr_id, e=e))
-                            ret = dict(code=99, msg='ifsc code error.')
-                            return await self.json_response(ret)
-                        self.logger.info('监控调用:(freecharge协议),id:{id}, 获取ifsc：{ifsc}， 账户尾号:{code}'.format(id=self.qr_id, ifsc=data['ifsc'], code=data['code']))
-                        r = await callback.success_df(self, data)
-
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'phonepe':
-                self.logger.info('监控调用:(phonepe协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi_list', 'upi', 'status'], {'id': self.qr_id})
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    if upi:
-                        updateData = dict({'upi_list': data['upi'], 'status': 1})
-                        if upi['upi_list'] and upi['upi_list'] == data['upi'] and upi['status'] == 1:
-                            return await self.json_response(res)
-                        if not upi['upi']:
-                            updateData['upi'] = data['upi'].split(',')[0]
-                            updateData['certified'] = 0
-                            res = dict(type='UPI', code=100, msg='update upi success(not upi).')
-                        if upi['upi'] and upi['upi'] not in data['upi'].split(','):
-                            updateData['certified'] = 0
-                            res = dict(type='UPI', code=100, msg='update upi success(upi but not in).')
-                        await self.save_upi_to_history(data['upi'], self.qr_id)
-                        if not await self.update_result('payment', updateData, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(phonepe协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    else:
-                        return await self.json_response(msg[10001])
-                    # if not upi['upi'] or upi['upi'] != data['upi']:
-                    #     if not await self.update_result('payment', {'upi': data['upi']}, {'id': self.qr_id}):
-                    #         self.logger.info('监控调用:(phonepe协议),更新upi错误' + json.dumps(data))
-                    #         return await self.json_response(msg[10018])
-
-                    # if upi['status'] != 1:
-                    #     if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                    #         self.logger.info('监控调用:(phonepe协议),更新upi状态错误' + json.dumps(data))
-                    #         return await self.json_response(msg[10020])
-                    return await self.json_response(res)
-                if data['type'] == 'New': # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'status', 'utr']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['RECEIVED_PAYMENT', 'SENT_PAYMENT']:
-                        self.logger.info('监控调用:(phonepe协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    if data['trade_type'] == 'RECEIVED_PAYMENT':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    elif data['trade_type'] == 'SENT_PAYMENT':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单 暂时不用回调代付订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'mobi':
-                self.logger.info('监控调用:(mobi协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        await self.save_upi_to_history(data['upi'], self.qr_id)
-                        if not await self.update_result('payment', {'upi': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(mobi协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(mobi协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'utr', 'trade_type', 'status', 'repeatTransaction']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['debit', 'credit']:  # credit 收款 debit 付款
-                        self.logger.info('监控调用:(mobi协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    if data['trade_type'] == 'credit':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['*'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    elif data['trade_type'] == 'debit':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        # data['repeatTransaction'] = "mobikwik://moneytransfer/upi/bank?account=201022618787&ifsc=INDB0000592&name=kanhaiya bairwa &amount=2.0&displayAccountNumber=xxxxxxxx8787"
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        try:
-                            data['ifsc'] = re.search('ifsc=(.+?)&', data['repeatTransaction']).group(1).strip().replace(',', '')
-                            data['code'] = re.search('account=(\d+?)&', data['repeatTransaction']).group(1).strip().replace(',', '')
-                        except Exception as e:
-                            self.logger.info('监控调用:(mobi协议),id:{id}, 获取ifsc和账户尾号错误:{e}'.format(id=self.qr_id, e=e))
-                            ret = dict(code=99, msg='ifsc code error.')
-                            return await self.json_response(ret)
-                        self.logger.info('监控调用:(mobi协议),id:{id}, 获取ifsc：{ifsc}， 账户尾号:{code}'.format(id=self.qr_id, ifsc=data['ifsc'],code=data['code']))
-                        r = await callback.success_df(self, data)
-
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('(mobi协议)utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = 1
-                                    await conn.commit()
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'airtel':
-                    self.logger.info('监控调用:(airtel协议)' + json.dumps(data))
-                    if data['type'] == 'UPI':  # 写入upi,同时启用
-                        if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                            return await self.json_response(msg[10001])
-                        # 检测是否有重复的，有重复直接不写入，直接下线
-                        upi_check = await self.check_upi(data['upi'], self.qr_id)
-                        if upi_check:
-                            self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'], id=upi_check[0]['id'], id2=self.qr_id))
-                            msg[10025]['message'] = 'upi already exist'
-                            return await self.json_response(msg[10025])
-
-                        upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                        # (只供紧急修复) 每次更新upi过来，如果没有key，就写入payment，同时设定一个11分钟的key；如果有key，就跟这个key比较，如果是一样，就刷新时间，如果不一样，就直接返回不一致，直接拒绝登录，不写入payment
-                        upi_original = await self.redis.get(f'upi_original_{self.qr_id}')
-                        if upi_original and upi_original != data['upi']:
-                            self.logger.error(f'监控调用:(airtel协议),upi改变,upi_original:{upi_original},发送的upi：{data['upi']}' + json.dumps(data))
-                            msg[10025]['message'] = 'upi changed!'
-                            return await self.json_response(msg[10025])
-                        await self.redis.set(f'upi_original_{self.qr_id}', data['upi'], 60 * 11)
-
-                        if not upi or upi['upi'] != data['upi']:
-                            await self.save_upi_to_history(data['upi'], self.qr_id)
-                            if not await self.update_result('payment', {'upi': data['upi']}, {'id': self.qr_id}):
-                                self.logger.info('监控调用:(airtel协议),更新upi错误' + json.dumps(data))
-                                return await self.json_response(msg[10018])
-                        if upi['status'] != 1:
-                            if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                                self.logger.info('监控调用:(airtel协议),更新upi状态错误' + json.dumps(data))
-                                return await self.json_response(msg[10020])
-                        res = dict(type='UPI', code=100, msg='update upi success.')
-                        return await self.json_response(res)
-                    if data['type'] == 'New':  # 回调相关
-                        if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr']):
-                            return await self.json_response(msg[10001])
-                        if data['trade_type'] not in ['CREDIT']:
-                            self.logger.info('监控调用:(airtel协议),不是入款和出款' + json.dumps(data))
-                            return await self.json_response(msg[10001])
-                        r = dict()
-                        if data['trade_type'] == 'CREDIT':
-                            data['trade_type'] = 1
-                            # 代收通过utr和金额查找重复订单
-                            if await self.get_result_by_condition('bank_record', ['id'],{'utr': data['utr'], 'amount': data['amount'],'trade_type': 1, 'payment_id': data['payment_id']}):
-                                return await self.json_response(msg[10019])
-                            r = await callback.success_ds(self, data)
-                        elif data['trade_type'] == 'DEBIT':
-                            data['trade_type'] = 2
-                            # 代付通过utr和金额查找重复订单 暂时不用回调代付订单
-                            if await self.get_result_by_condition('bank_record', ['id'],{'utr': data['utr'], 'amount': data['amount'],'trade_type': 2, 'payment_id': data['payment_id']}):
-                                return await self.json_response(msg[10019])
-
-                        # 代收回调失败额外扣除
-                        if r['code'] == 99 and data['trade_type'] == 1:
-                            ew_code = await self.create_order_code('EW')  # 额外流水号
-                            async with self.application.db.acquire() as conn:
-                                async with conn.cursor(DictCursor) as cur:
-                                    if not await self.change_balance(conn, cur, 'partner', data['partner_id'],-Decimal(data['amount']), ew_code, 0):
-                                        self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                        await conn.rollback()
-                                    else:
-                                        data['ew_code'] = ew_code
-                                        data['if_ew'] = '1'
-                                        await conn.commit()
-                        bankRecord = dict()
-                        for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code','if_ew']:
-                            if i in data.keys():
-                                bankRecord[i] = data[i]
-                        if r['code'] == 100:
-                            bankRecord['callback'] = 1
-                            bankRecord['order_code'] = r['order']
-                        bankRecord['content'] = json.dumps(data)
-                        bankRecord['partner_id'] = self.partner_id
-                        await self.create_result('bank_record', bankRecord)
-                        return await self.json_response(r)
-            elif data['bank_name'] == 'amazon':
-                self.logger.info('监控调用:(amazon协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        await self.save_upi_to_history(data['upi'], self.qr_id)
-                        if not await self.update_result('payment', {'upi': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(amazon协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(amazon协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['Received from']:  # 暂时先回调代收，不回调代付
-                        self.logger.info('监控调用:(amazon协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    if data['trade_type'] == 'Received from':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    elif data['trade_type'] == 'Paid to':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单 暂时不用回调代付订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'indus':
-                self.logger.info('监控调用:(indus协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        if not await self.update_result('payment', {'remarks', 'upi already exist'}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(indus协议),更新upi remarks错误'+ json.dumps(upi_check) + json.dumps(data))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        await self.save_upi_to_history(data['upi'], self.qr_id)
-                        update_arr = {'upi': data['upi'],'upi_list': data['upi_list']}
-                        if 'remarks' in data:
-                            update_arr['remarks'] = data['remarks']
-                        if not await self.update_result('payment', update_arr, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(indus协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(indus协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['CREDIT', 'DEBIT']:  # 暂时先回调代收，不回调代付
-                        self.logger.info('监控调用:(indus协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    # 入账（收入）
-                    if data['trade_type'] == 'CREDIT':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    # 出账（支出）
-                    elif data['trade_type'] == 'DEBIT':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_df(self, data)
-                    r_code = r.get("code", "")
-                    r['code'] = r_code
-                    self.logger.info(f'order/Success indus data1: {json.dumps(data)}, r.code: {r['code']}')
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    self.logger.info(f'order/Success indus data2: {json.dumps(data)}, r.code: {r['code']}')
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-
-                    self.logger.info(f'order/Success indus data3: {json.dumps(data)}, r.code: {r['code']}')
-
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'ulcash':
-                self.logger.info('监控调用:(ulcash协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        if not await self.update_result('payment', {'upi': data['upi'],'upi_list': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(ulcash协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(ulcash协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'utr', 'trade_type', 'status', 'repeatTransaction']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['debit', 'credit']:  # credit 收款 debit 付款
-                        self.logger.info('监控调用:(ulcash协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    if data['trade_type'] == 'credit':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['*'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    elif data['trade_type'] == 'debit':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        try:
-                            data['ifsc'] = re.search('ifsc=(.+?)&', data['repeatTransaction']).group(1).strip().replace(',', '')
-                            data['code'] = re.search('account=(\d+?)&', data['repeatTransaction']).group(1).strip().replace(',', '')
-                        except Exception as e:
-                            self.logger.info('监控调用:(ulcash协议),id:{id}, 获取ifsc和账户尾号错误:{e}'.format(id=self.qr_id, e=e))
-                            ret = dict(code=99, msg='ifsc code error.')
-                            return await self.json_response(ret)
-                        self.logger.info('监控调用:(ulcash协议),id:{id}, 获取ifsc：{ifsc}， 账户尾号:{code}'.format(id=self.qr_id, ifsc=data['ifsc'],code=data['code']))
-                        r = await callback.success_df(self, data)
-
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning('(mobi协议)utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = 1
-                                    await conn.commit()
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'jio':
-                self.logger.info('监控调用:(jio协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        if not await self.update_result('payment', {'upi': data['upi'],'upi_list': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(jio协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(jio协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'utr', 'trade_type', 'status']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['debit', 'credit']:  # credit 收款 debit 付款
-                        self.logger.info('监控调用:(jio协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    # 收入
-                    if data['trade_type'] == 'credit':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['*'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    # 支出
-                    elif data['trade_type'] == 'debit':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        data['code'] = data['account']
-                        r = await callback.success_df(self, data)
-                    self.logger.info(f'order/Success jio data1: {json.dumps(data)}, r: {r}')
-                    r_code = r.get("code", "")
-                    r['code'] = r_code
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'],
-                                                                 -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning(
-                                        'utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    self.logger.info(f'order/Success indus data2: {json.dumps(data)}, r.code: {r['code']}')
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc',
-                              'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-
-                    self.logger.info(f'order/Success indus data3: {json.dumps(data)}, r.code: {r['code']}')
-
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'maha':
-                self.logger.info('监控调用:(maha协议)' + json.dumps(data))
-                if data['type'] == 'UPI':  # 写入upi,同时启用
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                        return await self.json_response(msg[10001])
-                    # 检测是否有重复的，有重复直接不写入，直接下线
-                    upi_check = await self.check_upi(data['upi'], self.qr_id)
-                    if upi_check:
-                        self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                        msg[10025]['message'] = 'upi already exist'
-                        return await self.json_response(msg[10025])
-
-                    upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                    if not upi or upi['upi'] != data['upi']:
-                        if not await self.update_result('payment', {'upi': data['upi'],'upi_list': data['upi']}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(maha协议),更新upi错误' + json.dumps(data))
-                            return await self.json_response(msg[10018])
-                    if upi['status'] != 1:
-                        if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                            self.logger.info('监控调用:(maha协议),更新upi状态错误' + json.dumps(data))
-                            return await self.json_response(msg[10020])
-                    res = dict(type='UPI', code=100, msg='update upi success.')
-                    return await self.json_response(res)
-                if data['type'] == 'New':  # 回调相关
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'utr', 'trade_type', 'code']):
-                        return await self.json_response(msg[10001])
-                    if data['trade_type'] not in ['debit', 'credit']:  # credit 收款 debit 付款
-                        self.logger.info('监控调用:(maha协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    # 收入
-                    if data['trade_type'] == 'credit':
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['*'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        r = await callback.success_ds(self, data)
-                    # 支出
-                    elif data['trade_type'] == 'debit':
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            return await self.json_response(msg[10019])
-                        data['code'] = data['code']
-                        r = await callback.success_df(self, data)
-                    self.logger.info(f'order/Success maha data1: {json.dumps(data)}, r: {r}')
-                    # 代收回调失败额外扣除
-                    if r['code'] == 99 and data['trade_type'] == 1:
-                        ew_code = await self.create_order_code('EW')  # 额外流水号
-                        async with self.application.db.acquire() as conn:
-                            async with conn.cursor(DictCursor) as cur:
-                                if not await self.change_balance(conn, cur, 'partner', data['partner_id'],
-                                                                 -Decimal(data['amount']), ew_code, 0):
-                                    self.logger.warning(
-                                        'utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                    await conn.rollback()
-                                else:
-                                    data['ew_code'] = ew_code
-                                    data['if_ew'] = '1'
-                                    await conn.commit()
-                    self.logger.info(f'order/Success indus data2: {json.dumps(data)}, r.code: {r['code']}')
-                    bankRecord = dict()
-                    for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew']:
-                        if i in data.keys():
-                            bankRecord[i] = data[i]
-                    if r['code'] == 100:
-                        bankRecord['callback'] = 1
-                        bankRecord['order_code'] = r['order']
-                        # 确保订单支付、回调成功后，从缓存中删除已经支付成功的订单号
-                        redis_order_manager = RedisOrderManager(self.logger, self.redis)
-                        redis_order_manager.remove_order(data['code'])
-                    bankRecord['content'] = json.dumps(data)
-                    bankRecord['partner_id'] = self.partner_id
-
-                    self.logger.info(f'order/Success indus data3: {json.dumps(data)}, r.code: {r['code']}')
-
-                    await self.create_result('bank_record', bankRecord)
-                    return await self.json_response(r)
-            elif data['bank_name'] == 'easypaisa':
+            if data['bank_name'] == 'easypaisa':
                 self.logger.info('监控调用:(easypaisa协议)' + json.dumps(data))
                 # if data['type'] == 'UPI':  # 写入upi,同时启用
                 #     if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
@@ -2189,7 +1504,7 @@ class Success(BaseHandler):
                         self.logger.info(f"最终释放分布式锁 {lock_key}")
 
                     return await self.json_response(r)
-
+                
             elif data['bank_name'] == 'jazzcash':
                 self.logger.info('监控调用:(jazzcash协议)' + json.dumps(data))
                 # if data['type'] == 'UPI':  # 写入upi,同时启用
@@ -2498,10 +1813,7 @@ class SuccessBot(BaseHandler):
     # 代付订单查询
     async def ordersDfQuery(self, data):
         amount = abs(Decimal(data['amount']))
-        if data['bank_name'] == 'freecharge':
-            condition = '  and ifsc=%s and right(payment_account,4)=%s'
-            value = (amount, data['ifsc'], data['code'])
-        elif data['bank_name'] == 'AU C':
+        if data['bank_name'] == 'AU C':
             condition = ' and ifsc=%s and right(payment_account,4)=%s and partner_id=%s'
             value = (amount, data['ifsc'], data['code'][-4:], data['partner_id'])
         elif data['bank_name'] == 'NAGERCOIL ENBL':

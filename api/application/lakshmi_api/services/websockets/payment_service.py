@@ -15,18 +15,8 @@ from application.lakshmi_api.services.payment_services import BANK_SERVICES
 from application.lakshmi_api.services.error_manager import ErrorManager
 from application.lakshmi_api.exceptions.api_error import NewApiError
 
-# 各银行输入OTP的位数
-OTP_DIGITS = {
-    'PHONEPE': 5,
-    'FREECHARGE': 4,
-    'MOBIKWIK': 6,
-    'AIRTEL': 4,
-    'AMAZON': 0,
-    'INDUS': 6,
-    'ULCASH': 6,
-    'JIO': 6,
-    'MAHA': 0
-}
+# 各银行输入OTP的位数；当前 EasyPaisa/JazzCash 使用默认 4 位兼容流程。
+OTP_DIGITS = {}
 
 
 class PaymentPushService:
@@ -290,10 +280,7 @@ class PaymentPushService:
                     f"socket数据：{socket_data}"
                 )
 
-            if current_payment and current_payment.bank and current_payment.bank.name and str(current_payment.bank.name).lower() in ['maha']:
-                await self.redis.set(redis_key_send_sms, json.dumps(socket_data), 30)
-            else:
-                await self.redis.set(redis_key_send_sms, json.dumps(socket_data), 60)
+            await self.redis.set(redis_key_send_sms, json.dumps(socket_data), 60)
 
             personal_channel_name = "user_channel_{}".format(user.id)
             num_clients = await self.publish_message(channel = personal_channel_name, message = json.dumps(socket_data), retry=True)

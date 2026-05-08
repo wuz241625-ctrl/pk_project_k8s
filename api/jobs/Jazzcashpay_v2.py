@@ -18,8 +18,6 @@ import random
 import logging
 import requests
 import simplejson
-from Cryptodome.Cipher import AES
-from Cryptodome.Util.Padding import pad,unpad
 import traceback
 
 import base64
@@ -27,7 +25,6 @@ import pymysql
 
 from datetime import datetime
 
-from urllib.parse import quote, urlencode
 from typing import List, Dict, Any
 from logging.handlers import TimedRotatingFileHandler
 from requests.adapters import HTTPAdapter
@@ -44,6 +41,7 @@ sys.path.insert(0, parent_dir)
 
 from response_logger import ResponseLogger
 import config
+from application.payment_eligibility import can_collect_statement, can_dispatch_df, can_dispatch_ds
 from application.lakshmi_api.enums.payment_login_progress import PaymentLoginProgress
 
 #jazzcash爬取账单，需要发送短信
@@ -424,7 +422,7 @@ class BankLogin:
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
         # 新增: 初始化数据库连接
         self.db_connection = self.check_db_connection()
-
+    
     def check_db_connection(self):
             """
             检查并返回pymysql数据库连接。
@@ -444,11 +442,79 @@ class BankLogin:
                 self.logger.error(f"数据库连接失败: {e}", exc_info=True)
                 return None
 
-    def get_payment_info(self, payment_id):
-        """
-        示例: 从数据库查询 payment 信息。
-        """
-        # 确保数据库连接存在
+    def fetch_wallet_collection_rows(self, limit=500):
+        if not hasattr(self, "db_connection"):
+            return []
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+            if not self.db_connection:
+                return []
+
+        with self.db_connection.cursor() as cur:
+            try:
+                sql = """
+                    SELECT id, phone, partner_id, upi, channel, net_trade_pw
+                    FROM payment
+                    WHERE wallet_status = 1
+                      AND (bank_type = 98 OR bank_type = '98' OR bank_type_id = 98)
+                    LIMIT {limit}
+                """.format(limit=int(limit))
+                cur.execute(sql)
+                return cur.fetchall() or []
+            except Exception as e:
+                self.logger.error(f"查询 JazzCash wallet_status 采集账号失败: {e}", exc_info=True)
+                self.db_connection.rollback()
+                return []
+            finally:
+                self.db_connection.commit()
+
+    @staticmethod
+    def _first_channel(channel):
+        channel = str(channel or "").replace(" ", "")
+        if not channel:
+            return ""
+        return channel.split(",")[0]
+
+    def _wallet_collection_login_data(self, row, existing=None):
+        data = existing if isinstance(existing, dict) else {}
+        payment_id = row.get("id")
+        data.update({
+            "id": payment_id,
+            "real_payment_id": payment_id,
+            "status": "grabstatement",
+            "phone": row.get("phone"),
+            "partner_id": row.get("partner_id"),
+            "upi": row.get("upi"),
+            "net_trade_pw": row.get("net_trade_pw"),
+            "channel": row.get("channel"),
+            "channels": row.get("channel"),
+            "qr_channel": self._first_channel(row.get("channel")),
+        })
+        return data
+
+    def sync_mysql_wallet_collection_accounts(self):
+        rows = self.fetch_wallet_collection_rows()
+        synced = 0
+        for row in rows:
+            payment_id = str(row.get("id"))
+            existing = None
+            raw_existing = self.redis.hget(self.hash_key, payment_id)
+            if raw_existing:
+                try:
+                    if isinstance(raw_existing, bytes):
+                        raw_existing = raw_existing.decode()
+                    existing = simplejson.loads(raw_existing)
+                except Exception:
+                    existing = None
+            login_data = self._wallet_collection_login_data(row, existing)
+            self.redis.hset(self.hash_key, payment_id, simplejson.dumps(login_data, ensure_ascii=False))
+            if self.redis.zscore(self.set_key, payment_id) is None:
+                self.redis.zadd(self.set_key, {payment_id: 0})
+            synced += 1
+        return synced
+
+    def _read_payment_final_state_flags(self, payment_id):
         if not self.db_connection or not self.db_connection.open:
             self.logger.error("数据库连接已关闭，尝试重新连接...")
             self.db_connection = self.check_db_connection()
@@ -457,30 +523,68 @@ class BankLogin:
 
         with self.db_connection.cursor() as cur:
             try:
-                sql_query = """
-                    SELECT phone
+                cur.execute(
+                    """
+                    SELECT id, phone, wallet_status, collection_status, payout_status,
+                           status, certified, manual_status, channel
                     FROM payment
                     WHERE id = %s
-                      AND wallet_status = 1
-                      AND (bank_type = 98 OR bank_type_id = 98)
-                """
-                cur.execute(sql_query, (payment_id,))
-                payment_info = cur.fetchone()
-
-                if not payment_info:
-                    self.logger.info(f"未找到ID为 {payment_id} 的信息。")
-                    return None
-
-                self.logger.info(f"成功查询到 payment 信息: {payment_info}")
-
-                return payment_info.get('phone')
-
+                    """,
+                    (payment_id,),
+                )
+                return cur.fetchone()
             except Exception as e:
-                self.logger.error(f"数据库查询失败: {e}", exc_info=True)
+                self.logger.error(f"查询 JazzCash MySQL 最终态失败 payment_id={payment_id}: {e}", exc_info=True)
                 self.db_connection.rollback()
                 return None
             finally:
                 self.db_connection.commit()
+
+    def payment_final_state_policy(self, payment_id, login_data=None):
+        payment = self._read_payment_final_state_flags(payment_id)
+        if not payment:
+            return "offline"
+        if not can_collect_statement(payment):
+            return "offline"
+
+        try:
+            ds_enabled = can_dispatch_ds(payment)
+            df_enabled = can_dispatch_df(payment)
+        except Exception:
+            self.logger.error(f"JazzCash payment 状态字段异常 payment_id={payment_id}: {payment}")
+            return "offline"
+
+        if ds_enabled and df_enabled:
+            return "dispatch_on"
+        if ds_enabled and not df_enabled:
+            return "df_dispatch_off"
+        if not ds_enabled and df_enabled:
+            return "ds_dispatch_off"
+        return "order_paused"
+
+    def sync_job_projection(self, login_data, schedule_score=None):
+        payment_id = login_data.get('real_payment_id') or login_data.get('id')
+        if payment_id in [None, ""]:
+            raise ValueError("sync_job_projection requires payment id")
+        merged = {}
+        existing = self.redis.hget(self.hash_key, payment_id)
+        if existing:
+            try:
+                if isinstance(existing, bytes):
+                    existing = existing.decode('utf-8')
+                parsed = simplejson.loads(existing)
+                if isinstance(parsed, dict):
+                    merged.update(parsed)
+            except Exception:
+                merged = {}
+        merged.update(login_data)
+        merged['id'] = payment_id
+        merged['real_payment_id'] = payment_id
+        merged['status'] = 'grabstatement'
+        self.redis.hset(self.hash_key, payment_id, simplejson.dumps(merged, ensure_ascii=False))
+        score = int(time.time()) if schedule_score is None else int(schedule_score)
+        self.redis.zadd(self.set_key, {payment_id: score})
+        return merged
 
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
@@ -629,27 +733,10 @@ class BankLogin:
         self.logger.info(f"{login_data['id']} on_off(_on={_on}) 处理上下线")
         try:
             if _on == 1:
-                self.redis.delete('kick_off_{}'.format(login_data['id']))
-                # 放入接单集合
-                self.redis.sadd('payment_online_ds', login_data['id'])
-                self.redis.sadd('payment_online_df', login_data['id'])   # 如果app不能双登，要注释
-                self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])
-                self.redis.lpush('payment_active_{}'.format(login_data['qr_channel']), login_data['id'])
-                # self.sendMsg('push_payment_information', True, 'Login success')  # 登录成功通知
-                # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), True, 'Login success')  # 登录成功通知
-                self.logger.info(f"{login_data['id']}, {self.list_key} 上线接单： {login_data['id']}")
-                # self.read_cache('on_off(1)')
+                self.logger.info(f"{login_data['id']}, {self.list_key} 上线采集：MySQL最终态控制代收/代付资格")
                 return True
-            # 防止代收派单的时候，协议爬取同时操作，导致payment id无法下线
-            self.redis.setex('kick_off_{}'.format(login_data['id']), 60 * 20, 1)
-            # 解除接单集合
-            self.redis.srem('payment_online_ds', login_data['id'])
-            self.redis.srem('payment_online_df', login_data['id'])
-            self.redis.lrem('payment_active_{}'.format(login_data['qr_channel']), 0, login_data['id'])
-            # self.sendMsg('push_payment_information', False, 'Login failed and quit')  # 退出登录进行通知
-            # self.sendMsg(PaymentLoginProgress.STATUS_OF_LOGIN.name.lower(), False, 'Login failed and quit')  # 退出登录进行通知
-            self.logger.error(f"{login_data['id']}, {self.list_key} 下线接单： {login_data['id']}")
-            # self.read_cache('on_off()')
+            self.logger.error(f"{login_data['id']}, {self.list_key} 下线采集：MySQL最终态控制代收/代付资格")
+            return True
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -658,9 +745,13 @@ class BankLogin:
 
     def update_key(self, login_data):
         try:
-            # 更新集合和hash里的值
-            self.redis.hset(self.hash_key, login_data['id'], simplejson.dumps(login_data))
-            self.redis.zadd(self.set_key, {login_data['id']: int(time.time())})
+            policy = self.payment_final_state_policy(login_data['id'], login_data)
+            if policy == "offline":
+                self.redis.hdel(self.hash_key, login_data['id'])
+                self.redis.zrem(self.set_key, login_data['id'])
+                self.logger.warning(f"{login_data['id']} DB wallet_status 已关闭，已移除 JazzCash 采集投影")
+                return
+            self.sync_job_projection(login_data, schedule_score=int(time.time()))
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -686,7 +777,7 @@ class BankLogin:
                 self.logger.info("关闭临时异步会话")
 
     '''
-    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期
+    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期 
     2. **临时会话模式**：每次请求都创建一个新的临时会话，请求完成后自动关闭
     3. **自动资源管理**：使用async with 确保会话在使用完毕后被正确关闭
     4. **消除状态依赖**：不再依赖实例变量 self._async_session，完全无状态化
@@ -832,26 +923,6 @@ class BankLogin:
             return res
         return res
 
-    # 获取列表中的所有元素
-    def read_redis_list(self, key):
-        # 使用 lrange 获取列表中的所有元素
-        elements = self.redis.lrange(key, 0, -1)  # 0 表示第一个元素，-1 表示最后一个元素
-        # 将字节字符串解码为普通字符串
-        decoded_elements = [element.decode('utf-8') for element in elements]
-        # 转换为集合（自动去重）
-        element_set = set(decoded_elements)
-
-        # # 打印列表中的元素
-        # if elements:
-        #     self.logger.info(f"列表 '{key}' 中的元素如下：")
-        #     for i, element in enumerate(elements):
-        #         # 将字节字符串解码为普通字符串
-        #         self.logger.info(f"{i + 1}: {element.decode('utf-8')}")
-        # else:
-        #     self.logger.info(f"列表 '{key}' 为空或不存在")
-
-        return element_set
-
     # 打印所有的缓存,比较耗性能,生产环境可注释掉
     def read_cache(self, source, login_data):
         self.logger.info(f"{login_data['id']}, source: {source} 开始读取业务缓存")
@@ -859,10 +930,6 @@ class BankLogin:
             cache_key_lock = f'{self.name}_operate_{login_data['id']}'
             cache_key_login_on = f'login_on_{self.name}_{login_data['id']}'
             cache_key_upi_active_payment = f'upi_active_payment:{login_data['id']}'
-            cache_key_payment_online_ds = f'payment_online_ds'
-            cache_key_payment_online_df = f'payment_online_df'
-            cache_key_payment_active_qr_channel = f'payment_active_{login_data['qr_channel']}'
-            cache_key_kick_off = f'kick_off_{login_data['id']}'
             cache_key_device = f'{self.name}_device'
 
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.set_key}, 成员 {login_data['id']}, score: {self.redis.zscore(self.set_key, login_data['id'])}, ttl: {self.redis.ttl(self.set_key)}")
@@ -870,10 +937,6 @@ class BankLogin:
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_lock}, value: {self.redis.get(cache_key_lock)}, ttl: {self.redis.ttl(cache_key_lock)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_login_on}, value: {self.redis.get(cache_key_login_on)}, ttl: {self.redis.ttl(cache_key_login_on)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_upi_active_payment}, value: {self.redis.get(cache_key_upi_active_payment)}, ttl: {self.redis.ttl(cache_key_upi_active_payment)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_ds}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_ds, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_ds)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_online_df}, 成员: {login_data['id']}, 是否在set集合中 {self.redis.sismember(cache_key_payment_online_df, login_data['id'])}, ttl: {self.redis.ttl(cache_key_payment_online_df)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_payment_active_qr_channel}, 成员: {login_data['id']}, 是否在list列表中 {login_data['id'] in self.read_redis_list(cache_key_payment_active_qr_channel)}, ttl: {self.redis.ttl(cache_key_payment_active_qr_channel)}")
-            self.logger.info(f"{login_data['id']}, read_cache() key: {cache_key_kick_off}, value: {self.redis.get(cache_key_kick_off)}, ttl: {self.redis.ttl(cache_key_kick_off)}")
             self.logger.info(f"{login_data['id']}, read_cache() key: {self.hash_key}, 成员 {login_data['id']}, hash value: {self.redis.hget(cache_key_device, login_data['id'])}, ttl: {self.redis.ttl(cache_key_device)}")
         except Exception as e:
             tb_str = traceback.format_exc()
@@ -985,79 +1048,6 @@ class BankLogin:
             self.logger.error('sendMsg 脚本运行错误{}\n{}\n{}'.format(e, error_message, simplejson.dumps(login_data)))
             return False
 
-    def encrypt_message(self, data, login_data):
-        """jazzcash消息编码 - 与PHP版本的enc方法一致"""
-        try:
-            # 使用与PHP相同的AES-128-ECB加密
-            hex_key = "f89e2d511390414a91a89fc5e0f8f5e4"
-            key = bytes.fromhex(hex_key)
-
-            # 创建AES-ECB加密器
-            cipher = AES.new(key, AES.MODE_ECB)
-
-            # PKCS7填充并加密
-            padded_data = pad(data.encode('utf-8'), AES.block_size)
-            encrypted_data = cipher.encrypt(padded_data)
-
-            # 转换为大写十六进制
-            return encrypted_data.hex().upper()
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error('encrypt_message() 失败{}输入数据:{}\n{}\n{}'.format(e, data, error_message, simplejson.dumps(login_data)))
-            return ""
-
-    def decrypt_message(self, data, login_data):
-        """jazzcash消息解码 - 与PHP版本的de方法一致"""
-        try:
-            # 使用与PHP相同的AES-128-ECB解密
-            hex_key = "f89e2d511390414a91a89fc5e0f8f5e4"
-            key = bytes.fromhex(hex_key)
-
-            # 验证输入数据格式
-            if not data or len(data) % 2 != 0:
-                self.logger.warning(f"Invalid hex data: {data}，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 从十六进制转换为字节
-            try:
-                encrypted_data = bytes.fromhex(data)
-            except ValueError as e:
-                self.logger.warning(f"Invalid hex format: {data}，error: {e}，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 验证数据长度是否为16的倍数（AES block size）
-            if len(encrypted_data) % 16 != 0:
-                self.logger.warning(f"Data length {len(encrypted_data)} is not multiple of 16，{simplejson.dumps(login_data)}")
-                return ""
-
-            # 创建AES-ECB解密器
-            cipher = AES.new(key, AES.MODE_ECB)
-            decrypted_padded = cipher.decrypt(encrypted_data)
-
-            # 移除PKCS7填充
-            decrypted_data = unpad(decrypted_padded, AES.block_size)
-
-            # 转换为UTF-8字符串
-            result = decrypted_data.decode('utf-8')
-            return result
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error('decrypt_message() 失败{}输入数据:{}\n{}\n{}'.format(e, data, error_message, simplejson.dumps(login_data)))
-            return ""
-
-    def get_standard_headers(self, login_data):
-        """Get standard headers for requests."""
-        return {
-            # 'User-Agent': 'okhttp/4.12.0',
-            'User-Agent': f'Dalvik/2.1.0 (Linux; U; Android 13; {login_data['model']} Build/TQ3A.230901.001)',
-            'Connection': 'Keep-Alive',
-            'Accept-Encoding': 'gzip',
-            'Content-Type': 'application/json; charset=UTF-8',
-            'Authorization': login_data['authorization']
-        }
-
     # 通知前端 原 call_api
     async def notify(self, url, publish_data, login_data):
         try:
@@ -1102,10 +1092,8 @@ class BankLogin:
             # 如果是10025 upi重复，则直接下线
             if 'type' in orders_send and orders_send['type'] == 'UPI' and _res['code'] == 10025:
                 orders_send['id'] = orders_send['payment_id']
-                # 通知监控一键下线
-                _key3 = 'login_off_realtime_{}_{}'.format(self.name, orders_send['id'])
-                self.redis.set(_key3, 1, 60)
                 await self.sendMsg(login_data, 'push_payment_information', False, 'upi already exist')  # upi重复通知
+                await self.login_off(login_data)
                 self.logger.info(f"{login_data['id']}, {self.list_key} 更新upi重复，下线:{login_data['id']}, 结果：{res.text}")
 
             if res and (_res['code'] == 100):
@@ -1138,11 +1126,11 @@ class BankLogin:
             }
             # 记录发送前的日志
             self.logger.info(f"payment_id: {login_data['id']} 正在尝试发送状态更新请求: {simplejson.dumps(orders_send)}")
-
+        
             if_send = await self.send(orders_send, login_data)
             # 记录第一次发送后的日志
             self.logger.info(f"payment_id: {login_data['id']} 第一次状态更新请求返回: {simplejson.dumps(if_send)}")
-
+        
             if if_send['is_success'] is False:
                 # time.sleep(0.5)
                 await asyncio.sleep(0.5)
@@ -1159,76 +1147,8 @@ class BankLogin:
 
     # 获取upi 原get_upi
     async def grabUpi(self, login_data):
-        # PHP verifyPin 方法
+        # 当前 JazzCash 采集不再走旧 Indus UPI 查询流程，保持成功让账单采集继续。
         return {"is_success": True}
-        if self.local_mock:
-            return {"is_success": True}
-
-        result = {"is_success": False}
-        try:
-            url = "https://indusupiprd.indusind.com/upi/api/verifyAppPinWeb"
-            requestMsg_str = f'{{"appPin":{{"atmCrdLength":0,"credentialDataLength":0,"credentialDataValue":"{login_data['pinCode']}","otpCrdLength":0}},"deviceInfo":{{"androidId":"{login_data['androidId']}","app_gen_id":"{login_data['serv_gen_id']}","appName":"com.mgs.induspsp","appVersionCode":"59","appVersionName":"3.3.32","bluetoothMac":"00:00:00:00:00:00","capability":"5200000200010004000639292929292","deviceId":"{login_data['androidId']}","deviceType":"MOB","fcmToken":"{login_data['fcmToken']}","geoCode":"{login_data['geoCode']}","ip":"192.168.0.115","location":"{login_data['location']}","mobileNo":"{login_data['phone']}","os":"Android13","regId":"NA","relayButton":"Yn5V925x5gVk7MCtgk57hT9ELJRwGW6L1fFLpFHE+rU\u003d","safetyNetId":"{self.safetyNetId()}","selectedSimSlot":0,"simId":"{login_data['androidId']}2","wifiMac":"02:00:00:00:00:00"}},"requestInfo":{{"pspId":"10001","pspRefNo":"{self.safetyNetId()}"}}}}'
-            requestMsg_hex = self.encrypt_message(requestMsg_str, login_data)
-            payload = f'{{"pspId":"10001","requestMsg":"{requestMsg_hex}"}}'
-            payload = simplejson.loads(payload)
-            headers = self.get_standard_headers(login_data)
-            self.logger.info(f"{login_data['id']}, grabUpi(), 发起请求：{url}, headers: {headers}, data: {payload}, proxies: {login_data['socks_ip']}")
-            response = await self.retry_make_request(login_data, "POST", url=url, headers=headers, params=None, data=None, json_data=payload, proxies=login_data['socks_ip'])
-            """记录响应的详细信息"""
-            self.response_logger.log_response(response)
-
-            if response is None:
-                self.logger.error(f"{login_data['id']}, grabUpi() 方法响应失败")
-                return result
-            if not 200 <= response.status_code < 400:
-                self.logger.error(f"{login_data['id']}, grabUpi() 方法失败,响应码： {response.status_code}，原因：{response.text}")
-                result['error_code'] = response.status_code
-                result['error_message'] = response.text
-                return result
-
-            self.logger.info(f"{login_data['id']}, grabUpi() 方法 响应: {response.text}")
-            response_data = response.json()
-            response_data_decrypted = self.decrypt_message(response_data['resp'], login_data)
-            self.logger.info(f"{login_data['id']}, grabUpi() 方法 解密之后响应: {response_data_decrypted}")
-            response_data_decrypted = simplejson.loads(response_data_decrypted)
-
-            result['error_code'] = response_data_decrypted['status']
-            result['error_message'] = response_data_decrypted['statusDesc']
-
-            if response_data_decrypted['status'] != "S":
-                self.logger.error(f"payment_id: {login_data['id']}, grabUpi() ,提交PIN码错误: {response_data_decrypted}")
-                return result
-
-            try:
-                linked_accounts_keys = []
-                for i in response_data_decrypted['vpaAccountDetails']:
-                    if i['virtualAddress']:
-                        linked_accounts_keys.append(i['virtualAddress'])
-            except Exception as e:
-                self.logger.error(f"payment_id: {login_data['id']}, grabUpi() ,获取upi错误: {response_data_decrypted}")
-                result['error_code'] = 'error'
-                result['error_message'] = 'upi error'
-                return result
-
-            upi_list = [] if 'upi_list' not in login_data else login_data['upi_list']
-            for upi in linked_accounts_keys:
-                self.logger.info(f"payment_id: {login_data['id']}, get_upi() ,获取upi成功,upi: {upi}")
-                if upi not in upi_list:
-                    upi_list.append(upi)
-            upi = linked_accounts_keys[0]  # 只获取第一个的upi
-            # upi有更新时
-            if 'upi' in login_data and upi != login_data['upi']:
-                login_data['upi_remarks'] = f"{login_data['upi']} change to another upi:{upi}."
-                self.logger.info(f"{login_data['id']}, get_upi(),upi更改,upi: {upi}")
-            login_data['upi'] = upi
-            login_data['upi_list'] = upi_list
-            result['is_success'] = True
-        except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error(f'grabUpi() 脚本运行错误{e}\n{error_message}\n{simplejson.dumps(login_data)}')
-            result['error_message'] = error_message
-        return result
 
     # 抓取账单 原 transaction_history
     async def getBills(self, login_data):
@@ -1456,7 +1376,7 @@ class BankLogin:
                     normalized_account_id = normalized_account_id[1:]
                 elif normalized_account_id.startswith('92'):
                     normalized_account_id = normalized_account_id[2:]
-
+                    
                 # 检查是否包含 92 前缀（例如: '923710910652'）
                 full_account_id_92 = '92' + normalized_account_id
 
@@ -1476,7 +1396,7 @@ class BankLogin:
                 df_flag = False
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:]
+                match_suffix = full_account_id_92[-9:] 
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -1505,7 +1425,7 @@ class BankLogin:
                         txn_amount = float(amount_debited)
                     except ValueError:
                         txn_amount = 0.0
-
+                    
                     # # 出款时，对方是收款方 (BENEFICIARY_MSISDN 或 ACCOUNT_NUMBER)
                     # cust_ref_no = transaction.get('BENEFICIARY_MSISDN') or transaction.get('ACCOUNT_NUMBER')
                     # 出款时，对方是收款方 (取自 CONTEXT_DATA 中的 ACCOUNT_NUMBER)
@@ -1514,7 +1434,7 @@ class BankLogin:
                     # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                     if isinstance(receive_account, str):
                         receive_account = receive_account.strip()
-
+                        
                         # 检查是否以 '92' 开头
                         if receive_account.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1529,11 +1449,11 @@ class BankLogin:
                     if not payee_account_no:
                         # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                         receive_account = transaction.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-
+                        
                         # 对新获取的 receive_account 同样进行格式处理
                         if isinstance(receive_account, str):
                             receive_account = receive_account.strip()
-
+                            
                             # 检查是否以 '92' 开头
                             if receive_account.startswith('92'):
                                 # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1542,10 +1462,10 @@ class BankLogin:
                                 receive_account = '0' + receive_account
 
                         # 再次赋值给 payee_account_no
-                        payee_account_no = receive_account
+                        payee_account_no = receive_account 
 
                     # 最终 payee_account_no 包含了所需的值
-
+                    
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)--对应是付款的账号
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     # ---------- 格式处理 ----------
@@ -1571,7 +1491,7 @@ class BankLogin:
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     payee_account_no = full_account_id_92 # 自己的账户
-
+                    
                     # ---------- 格式处理 ----------
                     if isinstance(cust_ref_no, str):
                         cust_ref_no = cust_ref_no.strip()
@@ -1579,7 +1499,7 @@ class BankLogin:
                             cust_ref_no = cust_ref_no[2:]
                         elif cust_ref_no.startswith('0') and len(cust_ref_no) > 10:
                             cust_ref_no = cust_ref_no[1:]
-
+                        
                 # --- 状态和日志 ---
                 txn_status = 'SUCCESS' # queryBill 成功返回的记录通常是成功交易
 
@@ -1589,7 +1509,7 @@ class BankLogin:
                 mapped_trans = {
                     'txnType': txn_type,
                     # 统一使用计算后的金额
-                    'txnAmount': txn_amount,
+                    'txnAmount': txn_amount, 
                     # custRefNo: 出款是对方账号/手机，入款是对方手机
                     'custRefNo': cust_ref_no,
                     'txnStatus': txn_status,
@@ -1640,19 +1560,6 @@ class BankLogin:
                 # 下线接单
                 self.on_off(login_data, 0)
 
-            # 通知监控一键下线
-            _key3 = 'login_off_realtime_{}_{}'.format(self.name, login_data['id'])
-            login_off = self.redis.get(_key3)
-            if login_off:  # 直接下线
-                # 删除标识在线的key
-                self.redis.delete(_key1)
-                self.redis.delete(_key2)
-                self.redis.delete(_key3)
-                # 登出
-                self.logger.error(f"{self.list_key} 通知监控一键下线，登出:" + simplejson.dumps(login_data))
-                await self.login_off(login_data)
-                return 'logout'
-
             grabstatement = False
             #  如果有相关的key，按短时间爬取一次，如果没有，则按长时间一次
             crawl_frequently = self.redis.get('crawl_frequently_{}'.format(login_data['id']))
@@ -1676,12 +1583,12 @@ class BankLogin:
             current_time = int(time.time())
             last_request_time = login_data.get('time', 0)
             required_time = current_time - _time_grab
-
+            
             # 将 Unix 时间戳转换为可读的日期格式
             last_request_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_request_time))
             current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))
             required_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(required_time))
-
+            
             # self.logger.info(f"上次请求时间: {last_request_time_str}")
             self.logger.info(f"当前时间 - 间隔要求: {current_time_str} - {_time_grab}秒 = {required_time_str}")
 
@@ -1747,11 +1654,6 @@ class BankLogin:
             # 更新集合和hash里的值
             self.update_key(login_data)
             return False
-
-    def safetyNetId(self):
-        """生成安全网络ID"""
-        str_uuid = str(uuid.uuid4()).replace('-', '')
-        return "INDB" + str_uuid.upper()[:26]
 
     # 原 sync_transaction 回调账单
     async def transaction_callback(self, transaction: Dict, login_data) -> bool:
@@ -1861,7 +1763,7 @@ class BankLogin:
                          f"从 {len(members)} 个成员中分配到 {len(allocated_members)} 个")
 
         return allocated_members
-
+    
     async def verify_and_handle_abnormal_payout(self, login_data, order_data):
         self.logger.info(f"verify_and_handle_abnormal_payout 异常订单数据: {order_data}")
         receive_account = order_data.get('account_id', '')
@@ -1929,7 +1831,7 @@ class BankLogin:
 
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:]
+                match_suffix = full_account_id_92[-9:] 
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -1949,7 +1851,7 @@ class BankLogin:
                     # 理论上 JazzCash 流水总有一个方向是自己，如果都不是，视为异常或无法识别的内部交易，默认按入款处理 (保守策略)
                     self.logger.warning(f"grabstatement 交易流水获取: Transaction {counter}: 无法识别交易方向，AC_FROM/AC_TO 后缀均不匹配。默认标记为入款。")
                     df_flag = False
-
+                    
                 if not df_flag:
                     # 如果不是代付（出款），且您只关心代付流水，则跳过
                     continue
@@ -1967,7 +1869,7 @@ class BankLogin:
                 # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                 if isinstance(receive_account_1, str):
                     receive_account_1 = receive_account_1.strip()
-
+                    
                     # 检查是否以 '92' 开头
                     if receive_account_1.startswith('92'):
                         # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1982,11 +1884,11 @@ class BankLogin:
                 if not payee_account_no:
                     # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                     receive_account_1 = trans.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-
+                    
                     # 对新获取的 receive_account 同样进行格式处理
                     if isinstance(receive_account_1, str):
                         receive_account_1 = receive_account_1.strip()
-
+                        
                         # 检查是否以 '92' 开头
                         if receive_account_1.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1995,7 +1897,7 @@ class BankLogin:
                             receive_account_1 = '0' + receive_account_1
 
                     # 再次赋值给 payee_account_no
-                    payee_account_no = receive_account_1
+                    payee_account_no = receive_account_1 
 
                 # 最终 payee_account_no 包含了所需的值
 
@@ -2010,8 +1912,8 @@ class BankLogin:
                         # 2. 在处理后的 cust_ref_no 前面加上一个 '0'
                         cust_ref_no = '0' + cust_ref_no
                     # else: 如果不以 '92' 开头，则不进行任何处理，保持原样（但仍执行了 strip()）
-
-
+                
+            
                 # ---------- 新增逻辑：提取最终结果的后九位 ----------
                 if isinstance(cust_ref_no, str) and cust_ref_no:
                     cust_ref_no = cust_ref_no[-9:]
@@ -2046,19 +1948,19 @@ class BankLogin:
                             # 记录因风控逻辑跳过
                             self.logger.info(f"{login_data['id']}, 交易 {utr}: 【风控跳过：交易时间早于失败标记时间】 失败标记时间: {failed_time}，交易时间: {trans_time}。")
                             continue
-
+                            
                     except Exception as e:
                         self.logger.error(f"处理 payment_id_failed_jazzcash 检查时发生异常: {e}")
                         pass
                     # === 新增风控检查结束 ===
-
+                    
                     txn_type = 'PAY'
                     txn_status = 'SUCCESS' # QueryBill 成功返回的记录通常是成功交易
 
                     # 构造 mapped_trans
                     mapped_trans = {
                         'txnType': txn_type,
-                        'txnAmount': transaction_amount,
+                        'txnAmount': transaction_amount, 
                         # custRefNo 和 accountNo 字段指向收款方
                         'custRefNo': cust_ref_no,
                         'txnStatus': txn_status,
@@ -2067,12 +1969,12 @@ class BankLogin:
                         # payeeAccountNo 指向自己的账户（代付方）
                         'payeeAccountNo': extracted_number,
                         # payeeIfsc 使用 bankCode
-                        'payeeIfsc': trans.get('bankCode', ''),
+                        'payeeIfsc': trans.get('bankCode', ''), 
                         'tradeTime': trans.get('TRX_DTTM', ''),
                         # extOrderNo 使用 TRANS_ID (流水号)
-                        'extOrderNo': trans.get('TRANS_ID', ''),
+                        'extOrderNo': trans.get('TRANS_ID', ''), 
                         'fee': float(trans.get('FEE', 0)),
-                        'appTransaction': True
+                        'appTransaction': True 
                     }
                     # 调用 transaction_callback
                     await self.transaction_callback(mapped_trans, login_data)
@@ -2168,7 +2070,7 @@ class BankLogin:
                         self.logger.info(f"{_id}, 失败订单 {ABNORMAL_PAYOUTS_KEY} 处理完成并移除")
                     except Exception as e:
                         self.logger.error(f"{_id}, 处理失败订单 {ABNORMAL_PAYOUTS_KEY} 失败: {e}")
-
+                    
                 # 状态检查
                 # if login_data['status'] not in ['sendOTP', 'grabOTP', 'device_check', 'send_sms', 'wait_client_send_sms', 'verify_sms', 'grabstatement']:
                 if login_data['status'] not in ['grabstatement']:
@@ -2232,6 +2134,8 @@ class BankLogin:
         try:
             # 生成新的trace_id
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
+            synced_wallet_accounts = self.sync_mysql_wallet_collection_accounts()
+            self.logger.info(f"JazzCash wallet_status MySQL扫描完成: synced={synced_wallet_accounts}")
 
             # 1 先检查pre_login_*中的相关数据，查看是否已经有成功的
             pre_lgoin_keys = f"pre_login_{self.name}_*"
@@ -2267,8 +2171,12 @@ class BankLogin:
                         self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
                         data['status'] = "grabstatement"
                         data['id'] = data['real_payment_id']
-                        self.redis.hset(self.hash_key, data['real_payment_id'], simplejson.dumps(data))
-                        self.redis.zadd(self.set_key, {data['real_payment_id']: 0})
+                        policy = self.payment_final_state_policy(data['id'], data)
+                        if policy == "offline":
+                            self.redis.delete(_id)
+                            self.del_lock(_id, _lock)
+                            continue
+                        self.sync_job_projection(data, schedule_score=0)
                         self.logger.info(f"已将 {data['id']} {data['real_payment_id']}推入 hash_key: {self.hash_key} 和 zset: {self.set_key}")
                         # 添加判断在线的key
                         _key1 = 'login_on_{}_{}'.format(self.name, data['real_payment_id'])

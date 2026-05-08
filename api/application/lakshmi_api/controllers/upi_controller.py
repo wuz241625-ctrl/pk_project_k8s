@@ -3,8 +3,6 @@ from application.lakshmi_api.base import BaseHandler, ApiError, ApiInfo
 import json
 import bcrypt
 
-from datetime import datetime, timedelta
-
 from sqlalchemy import update, and_, case, text, or_, not_
 from sqlalchemy.orm import joinedload
 
@@ -16,25 +14,14 @@ from application.lakshmi_api.models.payment import Payment
 from application.lakshmi_api.schema.payment_schema import *
 from application.lakshmi_api.services.pagination_service import PaginationService
 from application.lakshmi_api.services.payment_services import BANK_SERVICES
-from application.lakshmi_api.services.payments.amazon_pay_service import AmazonService
 from application.utils import StringUtils
 from constants import RedisKeys
 from application.lakshmi_api.exceptions.api_error import NewApiError
 from application.app.login.banks.easypaisa import EasyPaisa
 from application.payment_eligibility import can_dispatch_df, can_dispatch_ds
   
-# 各银行输入OTP的位数
-OTP_DIGITS = {
-    'PHONEPE': 5,
-    'FREECHARGE': 4,
-    'MOBIKWIK': 6,
-    'AIRTEL': 4,
-    'AMAZON': 0,
-    'INDUS': 6,
-    'ULCASH': 6,
-    'JIO': 6,
-    'MAHA': 0
-}
+# 各银行输入OTP的位数；当前 EasyPaisa/JazzCash 使用默认 4 位兼容流程。
+OTP_DIGITS = {}
 PAYMENT_STATUS = {0: 'inactive', 1: 'active'}
 CERTIFIED_STATUS = {'inactive': 0, 'active': 1}
 
@@ -86,63 +73,12 @@ class UpiHandler(BaseHandler):
     统计代收订单、代付订单中，3小时内过期的订单数
     """
     async def _count_orders_ds_within_3hours(self, payment_id, bank_type_id):
-
-        check_bank_names = {"AIRTEL","PHONEPE","AMAZON"}
-        # 检查传入的银行id，是否存在于要检查的银行中
-        bank_type_name = await self._get_bank_type_name(bank_type_id)
-        if bank_type_name is None:
-            raise NewApiError('10201')  # Bank not found
-        if bank_type_name not in check_bank_names:
-            return 0
-
-        now = datetime.now()
-        three_hours_ago = now - timedelta(hours=3)
-        with self.db_orm.sessionmaker() as session:
-            # 查询orders_ds表
-            count_orders_ds_sql = f"""
-                select count(1) 
-                from orders_ds 
-                inner join payment on payment.id = orders_ds.payment_id
-                inner join bank_type on bank_type.id = payment.bank_type
-                where orders_ds.payment_id = :payment_id 
-                and orders_ds.status =-1 
-                and orders_ds.time_create >= :time_create
-            """
-            result_count_orders_ds = session.execute(text(count_orders_ds_sql), {'payment_id': payment_id, 'time_create': three_hours_ago}).fetchone()
-
-        if result_count_orders_ds is not None :
-            return result_count_orders_ds[0]
         return 0
 
     """
     统计代收订单、代付订单中，3小时内过期的订单数
     """
     async def _count_orders_df_within_3hours(self, payment_id, bank_type_id):
-
-        check_bank_names = {"AIRTEL","PHONEPE","AMAZON"}
-        # 检查传入的银行id，是否存在于要检查的银行中
-        bank_type_name = await self._get_bank_type_name(bank_type_id)
-        if bank_type_name is None:
-            raise NewApiError('10201')  # Bank not found
-        if bank_type_name not in check_bank_names:
-            return 0
-
-        now = datetime.now()
-        three_hours_ago = now - timedelta(hours=3)
-        with self.db_orm.sessionmaker() as session:
-            # 查询orders_df表
-            count_orders_df_sql = f"""
-                select count(1) 
-                from orders_df 
-                inner join payment on payment.id = orders_df.payment_id
-                inner join bank_type on bank_type.id = payment.bank_type
-                where orders_df.payment_id = :payment_id 
-                and orders_df.status =-1 
-                and orders_df.time_create >= :time_create
-            """
-            result_count_orders_df = session.execute(text(count_orders_df_sql), {'payment_id': payment_id, 'time_create': three_hours_ago}).fetchone()
-        if result_count_orders_df is not None :
-            return result_count_orders_df[0]
         return 0
 
     async def _check_place_order_status(self, payment_id, bank_type_id=None, bank_type=None):
@@ -167,16 +103,6 @@ class UpiHandler(BaseHandler):
                 Payment.collection_status == 1,
             ).all()
         return sorted(str(row[0]) for row in rows if row[0])
-
-    async def _upi_online_status_via_redis(self, bank_name, payment_id):
-        # TODO: fix the hardcode, base on php side not match db bank name
-        if bank_name in ['PHONEPE', 'FREECHARGE', 'AIRTEL', 'AMAZON', 'JIO']:
-            key = f"login_on_{bank_name.lower()}_{payment_id}"
-        elif bank_name in ['MOBIKWIK']:
-            key = f"login_on_mobi_{payment_id}"
-
-        result = await self.redis.get(key)
-        return result is not None
 
     """
     检查银行下upi是否重复
@@ -249,9 +175,6 @@ class Upi(UpiHandler):
                               payment_id, total, success, fail in today_order_summary}
             for payment in payments:
                 payment.today_withdraw_order_summary = orders_summary.get(payment.id)
-                # maha银行时，重置upi为phone
-                if "maha" == payment.bank.name.lower():
-                    payment.upi = payment.phone
 
         upi_bank_schema = UpiBankSchema(many=True)
         raw_payments = UpiPaymentSummarySchema(many=True).dump(payments)
@@ -411,10 +334,7 @@ class Upi(UpiHandler):
                     raise NewApiError('10403')  # Failed to send OTP
                     
                 otp_digits = OTP_DIGITS.get(new_upi.bank.name, 4)
-                if payment_schema['bank']['name'] != 'MAHA':
-                    otp = True
-                else:
-                    otp = False
+                otp = True
             # 不需要发送OTP
             else:
                 otp = False
@@ -757,38 +677,6 @@ class AssignUpi(UpiHandler):
             })
 
 
-class StoreCookie(UpiHandler):
-    @handle_errors
-    async def post(self, payment_id):
-        await self.authenticate_current_user()
-        await self.validate_user_active()
-        headers = self.get_argument('headers', None)
-        cookie = self.get_argument('cookie', None)
-
-        self.logger.info("----------This is Cookie---------------")
-        self.logger.info(cookie)
-        self.logger.info("----------End of Cookie---------------")
-        payment = await self._assign_payment(payment_id)
-        if payment.bank.name != 'AMAZON':
-            raise NewApiError('10307')  # 银行类型不匹配，只支持AMAZON银行
-
-        service = AmazonService(self.db_orm, self.redis, self.redis_pub, self.logger)
-        service.cookie = cookie
-        service.headers = headers
-        await service.handle_activation(payment)
-
-        self.write({
-            "data": {
-                "payment": UpiPaymentSchema().dump(payment),
-                "otp": False,
-                "otp_digits": 0,
-                "active_path": f"/api/v1/user/upi/{payment.id}/active",
-                "cookie_path": f"/api/v1/user/upi/{payment.id}/cookie",
-                "status": PAYMENT_STATUS[payment.status]
-            }
-        })
-
-
 class AbnormalPayment(UpiHandler):
     @handle_errors
     async def post(self):
@@ -833,12 +721,11 @@ class AbnormalPayment(UpiHandler):
 
         # 查询死码
         died_payments = []
-        # 获取集合'payment_online_ds' 中的所有值
-        payment_online_ds = await self._collection_online_payment_ids()
+        collection_payment_ids = await self._collection_online_payment_ids()
 
         # 查询被死码
         with self.db_orm.sessionmaker() as session:
-            where_clause = and_(Payment.id.in_(payment_online_ds),
+            where_clause = and_(Payment.id.in_(collection_payment_ids),
                                 Payment.manual_status == 1 )
             payments = session.query(Payment).filter(where_clause) \
                 .options(joinedload(Payment.bank)) \
@@ -933,11 +820,6 @@ class SendSmsSuccess(UpiHandler):
             if _payment is None:
                 raise NewApiError('10301')  # Payment not found
 
-            if _payment and _payment.bank and _payment.bank.name and str(_payment.bank.name).lower() in ['maha']:
-                redis_key_send_sms = f"payment_protocol_status_notify:{PaymentLoginProgress.DATA_TO_SEND_SMS.name.lower()}:{payment_id}"
-                if not await self.redis.exists(redis_key_send_sms):
-                    raise NewApiError('10308')  # SMS验证超时，请在30秒内完成短信验证
-
             key = f"send_{_payment.bank.name.lower()}_sms_success"
 
             push_status = await self.redis.lpush(key, payment_id)
@@ -950,42 +832,6 @@ class SendSmsSuccess(UpiHandler):
                     "status": "success",
                 }
             })
-
-
-class GrabOTP(UpiHandler):
-    @handle_errors
-    async def post(self):
-        params = self._get_params(['bank_name', 'phone'])
-        if await self.is_null(params, ['bank_name', 'phone']):
-            raise NewApiError('10201')  # Parameter Error
-        with self.db_orm.sessionmaker() as session:
-            bank = session.query(BankType).filter_by(name=params["bank_name"]).first()
-            if bank is None:
-                raise NewApiError('10201')  # Bank not found by bank_name
-
-            _payment = session.query(Payment).filter(and_(Payment.bank_type_id == bank.id,
-                                                         Payment.phone == params["phone"])).first()
-            if _payment is None:
-                raise NewApiError('10301')  # Payment not found
-
-            key = "login_indus_OTP_{}".format(_payment.id)
-            result = await self.redis.get(key)
-
-            if result:
-                self.write({
-                    "data": {
-                        "message": f"grab OTP success",
-                        "status": "success",
-                        "OTP": result
-                    }
-                })
-            else:
-                self.write({
-                    "data": {
-                        "message": f"grab OTP failed",
-                        "status": "failed"
-                    }
-                })
 
 # 获取upi详情数据
 class UpiDetail(UpiHandler):

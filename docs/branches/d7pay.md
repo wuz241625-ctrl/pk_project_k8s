@@ -20,7 +20,7 @@
 - 分支不再保留 D7pay 不使用的旧 Freecharge PHP、GCash/Indus 独立登录实现、Indus/Jio/Maha worker 目录和 tracked Vim swap 文件。
 - `apkdownload` 默认配置和兜底配置都指向 `d7pay_merchant`，避免下载站在 D7pay 环境混入旧客户包。
 - `api/application/lakshmi_api` 虽然沿用旧命名，但当前承载 Flutter App `/v1` 接口，不能按目录名当作垃圾删除。
-- `api/application/phonepe`、旧印度钱包分支和三方回调仍被路由或订单回调引用；后续要清理时必须先同步前端菜单、权限、路由和数据库配置。
+- `api/application/phonepe`、旧印度钱包 service、旧 Redis 维护脚本和旧银行 SQL 已按 `/Users/tear/pk_project` 当前文件口径移除；D7pay 当前只保留 EasyPaisa / JazzCashBusiness 业务链路。
 
 ## 验收标准
 

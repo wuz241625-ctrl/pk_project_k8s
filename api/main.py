@@ -1,7 +1,6 @@
 import asyncio
 import os
 import sys
-import threading
 
 import aiomysql
 import ipdb
@@ -14,7 +13,6 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 
 from application.base import TraceIdFilter
-from application.phonepe import redissub
 from config import get_config
 from router import urls
 from router_lakshmi import prefixed_urls
@@ -157,9 +155,4 @@ async def main():
 if __name__ == '__main__':
     if sys.platform.startswith('win'):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    # 订阅
-    thread_loop = asyncio.new_event_loop()
-    t = threading.Thread(target=redissub.main, args=(thread_loop,))
-    t.daemon = True
-    t.start()
     tornado.ioloop.IOLoop.current().run_sync(main)
