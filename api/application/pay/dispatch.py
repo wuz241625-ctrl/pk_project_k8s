@@ -11,6 +11,7 @@ from typing import List, Tuple
 from aiomysql import DictCursor
 
 from application.pay.collection import (
+    _to_int,
     _collection_dispatch_extra_sql_condition,
     _is_collection_payment_online,
     _manual_lock_update_fields,
@@ -212,7 +213,9 @@ async def _lock_ds_dispatch_candidate(cur, partner_id, payment_id):
         return None, None
 
     sql_payment = """
-        SELECT id, partner_id, amount_top, manual_status, collection_status, status, certified
+        SELECT id, partner_id, amount_top, manual_status, collection_status,
+               status, certified, wallet_status, bank_type, bank_type_id,
+               account_iban, account_accno, account_type, phone
         FROM payment
         WHERE id = %s
         FOR UPDATE NOWAIT
@@ -223,6 +226,37 @@ async def _lock_ds_dispatch_candidate(cur, partner_id, payment_id):
     if not payment:
         return None, None
     return partner, payment
+
+
+def _locked_payment_can_collect(payment) -> bool:
+    return (
+        _to_int(payment.get('collection_status')) == 1
+        and _to_int(payment.get('manual_status')) != 1
+        and _to_int(payment.get('status')) == 1
+        and _to_int(payment.get('certified')) == 1
+        and _to_int(payment.get('wallet_status')) == 1
+    )
+
+
+def _locked_payment_has_required_account(payment, channel_code) -> bool:
+    bank_type = _normalize_bank_type(payment.get('bank_type'))
+    bank_type_id = _normalize_bank_type(payment.get('bank_type_id'))
+    account_type = str(payment.get('account_type') or '')
+    account_iban = str(payment.get('account_iban') or '').strip()
+    account_accno = str(payment.get('account_accno') or '').strip()
+    phone = str(payment.get('phone') or '').strip()
+
+    if bank_type == 98 or bank_type_id == 98:
+        return True
+    if bank_type == 97 or bank_type_id == 97:
+        if str(channel_code) == '1010':
+            return bool(account_iban)
+        if str(channel_code) == '1001':
+            if account_type == '10':
+                return bool(phone)
+            return bool(account_accno)
+        return bool(account_iban)
+    return bool(account_iban or account_accno)
 
 
 async def _fetch_payment_amount_today_in_tx(cur, payment_id):
@@ -584,7 +618,7 @@ async def push_order(handler, data, target_payment):
         if maximum_simultaneous_orders_count and not partner['type'] == 0:  # 外部码商
             sql = """select count(*) as count from orders_ds where payment_id=%s and status in(1,2) and date_add(time_create, interval 10 minute) > now()"""
             orders_ds_count = await handler.query(sql, payment_id)
-            if maximum_simultaneous_orders_count and orders_ds_count[0]['count'] > int(maximum_simultaneous_orders_count):
+            if maximum_simultaneous_orders_count and orders_ds_count[0]['count'] >= int(maximum_simultaneous_orders_count):
                 handler.logger.warn('码商{partner_id}的码{payment_id}最高同时接单不能超过{maximum_simultaneous_orders_count}单,code: {code}'.format(partner_id=partner_id,payment_id=payment_id,maximum_simultaneous_orders_count=maximum_simultaneous_orders_count, code=code))
                 continue
         # 接近上限
@@ -660,13 +694,13 @@ async def push_order(handler, data, target_payment):
                         await conn.rollback()
                         handler.logger.warning('码商{partner_id}锁后状态异常，不允许接单,code: {code}'.format(partner_id=partner_id, code=code))
                         continue
-                    if locked_payment['collection_status'] != 1:
+                    if not _locked_payment_can_collect(locked_payment):
                         await conn.rollback()
-                        handler.logger.warning('码{payment_id}锁后代收状态关闭，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
+                        handler.logger.warning('码{payment_id}锁后代收/钱包/认证状态异常，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
                         continue
-                    if locked_payment['manual_status'] == 1:
+                    if not _locked_payment_has_required_account(locked_payment, data.get('channel_code')):
                         await conn.rollback()
-                        handler.logger.warning('码{payment_id}锁后人工锁定，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
+                        handler.logger.warning('码{payment_id}锁后收款账号字段不满足通道要求，不允许接单,code: {code}'.format(payment_id=payment_id, code=code))
                         continue
 
                     locked_partner_balance = await handler.removeDeposit(
@@ -745,8 +779,8 @@ async def push_order(handler, data, target_payment):
                         interval_seconds = 180
                         handler.logger.info(f"通道 {data.get('channel_code')} 命中固定 3 分钟限制，设置过期时间为 180 秒")
 
-                    if send_orders_interval_global and not partner['type'] == 0:
-                        handler.logger.info(f"partner['type'] 值为: {partner['type']}, 符合条件，准备设置 send_orders_interval_{payment_id}")
+                    if not locked_partner['type'] == 0:
+                        handler.logger.info(f"partner['type'] 值为: {locked_partner['type']}, 符合条件，准备设置 send_orders_interval_{payment_id}")
 
                         handler.logger.info(f"准备设置 Redis 键 send_orders_interval_{payment_id}，当前时间戳: {ts_now}")
 

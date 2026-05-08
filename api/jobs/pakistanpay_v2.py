@@ -72,6 +72,7 @@ class BankLogin:
         self.statement_df_probe_interval = _conf_int("easypaisa_statement_df_probe_interval", 2 * 60)
         self.enable_payout_observation = _conf_bool("easypaisa_enable_payout_observation", True)
         self.statement_scan_lock_ttl = _conf_int("easypaisa_statement_scan_lock_ttl", 55)
+        self.statement_concurrent_limit = max(1, _conf_int("easypaisa_statement_concurrent_limit", 3))
         self.query_bill_fail_threshold = _conf_int("easypaisa_query_bill_fail_threshold", 3)
         self.query_bill_fail_ttl = _conf_int("easypaisa_query_bill_fail_ttl", 300)
         self.query_bill_timeout = _conf_int("easypaisa_query_bill_timeout", 30)
@@ -393,10 +394,10 @@ class BankLogin:
             return context
 
         ds_sql = """
-            SELECT code, payment_id, partner_id, amount, time_create
+            SELECT code, payment_id, partner_id, amount, utr, time_create
             FROM orders_ds
             WHERE payment_id = %s
-              AND status IN (1, 2)
+              AND status = 2
               AND utr IS NOT NULL
               AND utr <> ''
               AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
@@ -429,7 +430,7 @@ class BankLogin:
                 JOIN orders_ds od ON od.payment_id = p.id
                 WHERE p.wallet_status = 1
                   AND (p.bank_type = 97 OR p.bank_type = '97' OR p.bank_type_id = 97)
-                  AND od.status IN (1, 2)
+                  AND od.status = 2
                   AND od.utr IS NOT NULL
                   AND od.utr <> ''
                   AND od.time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
@@ -566,14 +567,17 @@ class BankLogin:
         return f"{value[:keep_left]}***{value[-keep_right:]}"
 
     def _extract_statement_ref(self, transaction: Dict[str, Any], detail_dto: Dict[str, Any]) -> str:
-        for key in ("orderNo", "transactionId", "transId", "rrn", "utr"):
-            value = transaction.get(key)
-            if value:
-                return str(value).strip()
-        for key in ("extOrderNo", "orderNo", "transactionId", "transId"):
+        for key in ("extOrderNo", "transactionId", "transId"):
             value = detail_dto.get(key)
             if value:
                 return str(value).strip()
+        for key in ("transactionId", "transId", "rrn", "utr", "orderNo"):
+            value = transaction.get(key)
+            if value:
+                return str(value).strip()
+        value = detail_dto.get("orderNo")
+        if value:
+            return str(value).strip()
         return ""
 
     def _extract_payer_callback_utr(self, transaction: Dict[str, Any], detail_dto: Dict[str, Any]) -> str:
@@ -642,6 +646,20 @@ class BankLogin:
                 f"amount={raw_trans.get('amount', mapped_trans.get('txnAmount'))}, trade_time={mapped_trans.get('tradeTime')}"
             )
         return matched
+
+    def _credit_statement_matches_due_order(self, mapped_trans, ds_orders):
+        if not ds_orders:
+            return False
+        statement_amount = self._to_money(mapped_trans.get("txnAmount"))
+        statement_utr = self._normalize_msisdn(mapped_trans.get("custRefNo"))
+        if statement_amount is None or not statement_utr:
+            return False
+        for order in ds_orders:
+            order_amount = self._to_money(order.get("amount"))
+            order_utr = self._normalize_msisdn(order.get("utr"))
+            if order_amount == statement_amount and order_utr == statement_utr:
+                return True
+        return False
 
     def _build_payout_mapped_transaction(self, transaction: Dict[str, Any], account_context: Dict[str, Any]):
         mapped = self._build_credit_mapped_transaction(transaction, account_context)
@@ -932,9 +950,11 @@ class BankLogin:
         try:
             payment_id = account_context["id"]
             df_orders = (statement_context or {}).get("df_orders", [])
+            ds_orders = (statement_context or {}).get("ds_orders", [])
             self.logger.info(
                 f"easypaisa {payment_id} 开始爬取账单，"
-                f"代付观测候选={len(df_orders)}, 代付观测开关={self.enable_payout_observation}"
+                f"代收待确认候选={len(ds_orders)}, 代付观测候选={len(df_orders)}, "
+                f"代付观测开关={self.enable_payout_observation}"
             )
 
             getBills = await self.getBills(account_context)
@@ -987,6 +1007,16 @@ class BankLogin:
 
                 mapped_trans = self._build_credit_mapped_transaction(transaction, account_context)
                 if not mapped_trans:
+                    skipped_count += 1
+                    continue
+
+                if not self._credit_statement_matches_due_order(mapped_trans, ds_orders):
+                    self.logger.info(
+                        f"easypaisa {payment_id}, CREDIT流水未匹配 status=2 待确认订单，跳过回调: "
+                        f"amount={mapped_trans.get('txnAmount')}, "
+                        f"payer_phone={self._mask(mapped_trans.get('custRefNo'))}, "
+                        f"trans_id={self._mask(mapped_trans.get('extOrderNo'))}"
+                    )
                     skipped_count += 1
                     continue
 
@@ -1187,7 +1217,7 @@ class BankLogin:
             self.logger.error(f"process_statement_payment_id_async 处理 payment_id={payment_id} 失败: {e} 错误详情：{error_message}")
             return False
 
-    async def process_statement_payment_ids_concurrent(self, payment_ids: List[str], concurrent_limit: int = 20):
+    async def process_statement_payment_ids_concurrent(self, payment_ids: List[str], concurrent_limit: int = 3):
         """并发处理 MySQL 候选 payment_id。"""
         if not payment_ids:
             return
@@ -1239,7 +1269,12 @@ class BankLogin:
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.process_statement_payment_ids_concurrent(allocated_payment_ids, concurrent_limit=20))
+                loop.run_until_complete(
+                    self.process_statement_payment_ids_concurrent(
+                        allocated_payment_ids,
+                        concurrent_limit=self.statement_concurrent_limit,
+                    )
+                )
 
             except Exception as e:
                 self.logger.error(f"并发处理失败: {e}")

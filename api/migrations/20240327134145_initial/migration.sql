@@ -295,7 +295,7 @@ CREATE TABLE `orders_ds` (
     INDEX `auth_code`(`auth_code`),
     INDEX `merchant_code`(`merchant_code`),
     INDEX `order_withdraw_partner_id`(`partner_id`),
-    INDEX `merchant_id_merchant_code`(`merchant_id`, `merchant_code`),
+    UNIQUE INDEX `uk_orders_ds_merchant_code`(`merchant_id`, `merchant_code`),
     INDEX `merchant_id_time_create`(`merchant_id`, `time_create`),
     INDEX `payment_id_status_time_create`(`payment_id`, `status`, `time_create`),
     PRIMARY KEY (`id`)

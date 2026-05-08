@@ -48,7 +48,7 @@ class StatementCallbackMysqlIdempotencySourceTests(unittest.TestCase):
 
         self.assertIn("async def _handle_pakistan_statement_callback", order_callback)
         helper = order_callback.split("async def _handle_pakistan_statement_callback", 1)[1]
-        lock_index = helper.index("await self.redis.setnx(lock_key, '1')")
+        lock_index = helper.index("await self.redis.set(lock_key, '1', nx=True, ex=60)")
         duplicate_index = helper.index("get_result_by_condition('bank_record'")
         success_ds_index = helper.index("callback.success_ds")
         success_df_index = helper.index("callback.success_df")

@@ -38,13 +38,12 @@ class RedisClient:
     def get_lock(self, name: str, resource_id: str, ttl: int = 30):
         busy_key = f'{name}_operate_{resource_id}'
         value = secrets.token_hex(8)
-        acquired = self._redis.setnx(busy_key, value)
+        acquired = self._redis.set(busy_key, value, nx=True, ex=ttl)
         if not acquired:
             existing_ttl = self._redis.ttl(busy_key)
-            if existing_ttl and int(existing_ttl) > ttl:
+            if existing_ttl and (int(existing_ttl) == -1 or int(existing_ttl) > ttl):
                 self._redis.delete(busy_key)
             return None
-        self._redis.expire(busy_key, ttl)
         return value
 
     def del_lock(self, name: str, resource_id: str, lock_value: str):

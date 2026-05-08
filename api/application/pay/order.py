@@ -601,10 +601,9 @@ class card_num(BaseHandler):
 
             utr_lock_key = f'{UTR_LOCK_PREFIX}{utr}:{code}'
             # 先使用 setnx 尝试获取锁，如果成功，再使用 expire 设置过期时间
-            got_utr_lock = await self.redis.setnx(utr_lock_key, 1)
-            
-            if got_utr_lock: # 只有当成功获取锁时，才设置过期时间
-                await self.redis.expire(utr_lock_key, UTR_LOCK_EXPIRY_SECONDS)
+            got_utr_lock = await self.redis.set(utr_lock_key, 1, nx=True, ex=UTR_LOCK_EXPIRY_SECONDS)
+
+            if got_utr_lock:
                 self.logger.info(f'订单：{code}，付款标识(utr字段)：{utr} 提交频率锁获取成功并设置过期时间。')
             else: # 未能获取锁 (键已存在且未过期)
                 self.logger.warning(f'UTR {utr} 提交过于频繁或正在被其他请求处理，放弃操作。')
@@ -614,7 +613,7 @@ class card_num(BaseHandler):
 
             # 抢订单锁，key使用订单号
             lock_key = f'lock_order_{code}'
-            got_lock = await self.redis.setnx(lock_key, 1)
+            got_lock = await self.redis.set(lock_key, 1, nx=True, ex=10)
             if not got_lock:
                 self.logger.warning(f'抢锁失败，订单{code}正在被处理，放弃操作')
                 return await self.json_response(msg_en[10011])  # 比如锁失败消息
@@ -885,8 +884,7 @@ class card_num(BaseHandler):
         count_circle = 0
         while True:
             busy_key = 'order_success_busy_{code}'.format(code=code)
-            if await self.redis.setnx(busy_key, 1):
-                await self.redis.expire(busy_key, 10)
+            if await self.redis.set(busy_key, 1, nx=True, ex=10):
                 break
             if count_circle >= 25:
                 self.logger.warning('utr:{utr}Do not operate frequently {code}'.format(utr=utr, code=code))
@@ -910,12 +908,11 @@ class card_num(BaseHandler):
                     thread_id = threading.get_ident()
 
                     # 标记 order 正在处理
-                    if await self.redis.setnx(order_processing_key, 1): 
+                    if await self.redis.set(order_processing_key, 1, nx=True, ex=10):
                         # 锁创建成功
                         self.logger.info(
                             f"[{timestamp}] 锁成功创建，订单 {order_processing_key} 开始处理 | 线程ID: {thread_id}"
                         )
-                        await self.redis.expire(order_processing_key, 10)
                         self.logger.info(
                             f"[{timestamp}] 锁过期时间设置为 10 秒 | 订单 {order_processing_key}"
                         )
@@ -1323,13 +1320,12 @@ class Success(BaseHandler):
             return msg[10001]
 
         lock_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
-        if not await self.redis.setnx(lock_key, '1'):
+        if not await self.redis.set(lock_key, '1', nx=True, ex=60):
             self.logger.info(f"监控调用:({bank_name}协议), {lock_key} 正在被其他进程处理，拒绝当前请求。")
             return msg[10019]
 
         try:
             self.logger.info(f"成功获取分布式锁 {lock_key}, 设置过期时间为60秒")
-            await self.redis.expire(lock_key, 60)
 
             if data['trade_type'] == 'CREDIT':
                 self.logger.info("处理入账 (CREDIT)")
@@ -1528,8 +1524,7 @@ class Success(BaseHandler):
                     count_circle = 0
                     while True:
                         busy_key = 'success_busy_{utr}'.format(utr=data['utr'])
-                        if await self.redis.setnx(busy_key, 1):
-                            await self.redis.expire(busy_key, 10)
+                        if await self.redis.set(busy_key, 1, nx=True, ex=10):
                             break
                         if count_circle >= 10:
                             self.logger.warning(
@@ -1543,8 +1538,7 @@ class Success(BaseHandler):
                     count_circle = 0
                     while True:
                         busy_key = 'success_busy_{trx_id}'.format(trx_id=data['code'])
-                        if await self.redis.setnx(busy_key, 1):
-                            await self.redis.expire(busy_key, 10)
+                        if await self.redis.set(busy_key, 1, nx=True, ex=10):
                             break
                         if count_circle >= 10:
                             self.logger.warning(
@@ -1560,8 +1554,7 @@ class Success(BaseHandler):
                 count_circle = 0
                 while True:
                     busy_key = 'update_busy_{upi}'.format(upi=data['upi'])
-                    if await self.redis.setnx(busy_key, 1):
-                        await self.redis.expire(busy_key, 10)
+                    if await self.redis.set(busy_key, 1, nx=True, ex=10):
                         break
                     if count_circle >= 25:
                         self.logger.warning('upi:{upi}Do not operate frequently'.format(upi=data['upi']))

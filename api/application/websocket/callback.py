@@ -57,7 +57,7 @@ async def success_ds(self, data):
     # 更新系统余额
     sql_update_payment = """update payment set sys_balance=sys_balance+%s where id=%s"""
     sql_update_order = """update orders_ds set earn_merchant=%s,earn_partner=%s,earn_system=%s,partner_id=%s,payment_id=%s,
-                            utr=%s,time_success=%s,status=3,upi=%s,tax=%s,trans_id=%s where code=%s and status in (-1,1,2) limit 1"""
+                            utr=%s,time_success=%s,status=3,upi=%s,tax=%s,trans_id=%s where code=%s and status=2 limit 1"""
 
     # 根据收款资料id查询
     sql_select_payment = """select * from payment where id=%s order by id limit 1"""
@@ -73,7 +73,7 @@ async def success_ds(self, data):
         sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
         params.append(input_trans_id)
     sql_select_order += """
-        AND status IN (-1,1,2)
+        AND status = 2
         AND date_add(time_create, interval 8 minute) > now()
         ORDER BY id DESC LIMIT 1
     """
@@ -89,8 +89,7 @@ async def success_ds(self, data):
     count_circle = 0
     while True:
         busy_key = 'order_success_busy_{code}'.format(code=_order[0]['code'])
-        if await self.redis.setnx(busy_key, 1):
-            await self.redis.expire(busy_key, 10)
+        if await self.redis.set(busy_key, 1, nx=True, ex=10):
             break
         if count_circle >= 25:
             self.logger.warning('utr:{utr}Do not operate frequently {code}'.format(utr=data['utr'], code=_order[0]['code']))
@@ -114,9 +113,10 @@ async def success_ds(self, data):
                     sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
                     params.append(input_trans_id)
                 sql_select_order += """
-                    AND status IN (-1,1,2)
+                    AND status = 2
                     AND date_add(time_create, interval 8 minute) > now()
                     ORDER BY id DESC LIMIT 1
+                    FOR UPDATE
                 """
                 self.logger.info(f"[订单匹配22] 执行 SQL: {sql_select_order.strip()} 参数: {params}")
                 if not await cur.execute(sql_select_order, tuple(params)):

@@ -179,6 +179,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         bank.statement_df_probe_interval = 2 * 60
         bank.enable_payout_observation = True
         bank.statement_scan_lock_ttl = 55
+        bank.statement_concurrent_limit = 3
         bank.query_bill_fail_threshold = 3
         bank.query_bill_fail_ttl = 300
         bank.query_bill_timeout = 30
@@ -201,8 +202,8 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         executed_sql = "\n".join(sql for sql, _ in bank.db_connection.executed)
         self.assertIn("FROM orders_ds", executed_sql)
         self.assertIn("FROM orders_df", executed_sql)
-        self.assertIn("status IN (1, 2)", executed_sql)
         self.assertIn("status = 2", executed_sql)
+        self.assertNotIn("status IN (1, 2)", executed_sql)
 
     def test_main_runs_health_balance_when_no_due_statement_orders(self):
         bank = self._bank()
@@ -228,7 +229,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         bank.main()
 
         bank.run_health_balance_check_once.assert_called_once()
-        bank.process_statement_payment_ids_concurrent.assert_awaited_once_with(["533295"], concurrent_limit=20)
+        bank.process_statement_payment_ids_concurrent.assert_awaited_once_with(["533295"], concurrent_limit=3)
 
     def test_health_balance_check_once_uses_30_second_redis_throttle(self):
         bank = self._bank()
@@ -327,7 +328,8 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
             "code": "DS001",
             "payment_id": 533295,
             "partner_id": 33056,
-            "amount": "999.00",
+            "amount": "100.00",
+            "utr": "3001234567",
             "time_create": "2026-05-08 12:00:00",
         }
         bank = self._bank(ds_rows=[ds_order])
@@ -362,7 +364,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         sent_payload = bank.send.await_args.args[0]
         self.assertEqual(sent_payload["utr"], "3001234567")
         self.assertEqual(sent_payload["amount"], "100.00")
-        self.assertEqual(sent_payload["trans_id"], "REALUTR001")
+        self.assertEqual(sent_payload["trans_id"], "EXT001")
 
     def test_collection_credit_callback_uses_payer_phone_and_amount_without_fee(self):
         ds_order = {
@@ -370,6 +372,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
             "payment_id": 533295,
             "partner_id": 33056,
             "amount": "100.00",
+            "utr": "3001234567",
             "time_create": "2026-05-08 12:00:00",
         }
         bank = self._bank(ds_rows=[ds_order])
@@ -404,7 +407,29 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         self.assertEqual(sent_payload["utr"], "3001234567")
         self.assertEqual(sent_payload["amount"], "100.00")
         self.assertEqual(sent_payload["fee"], "5.00")
-        self.assertEqual(sent_payload["trans_id"], "REALUTR001")
+        self.assertEqual(sent_payload["trans_id"], "EXT001")
+
+    def test_collection_credit_trans_id_uses_ext_order_no_not_order_no(self):
+        bank = self._bank()
+
+        mapped = bank._build_credit_mapped_transaction(
+            {
+                "orderNo": "PWM20260419153343931564",
+                "amount": 1500.0,
+                "tradeTime": "2026-04-19T15:33:44",
+                "appTransaction": True,
+                "busTypeName": "Digital Account",
+                "historyDetailRspDTO": {
+                    "accountNo": "03413557183",
+                    "gatherNo": "AC03325009516",
+                    "fee": 0,
+                    "extOrderNo": "48700398278",
+                },
+            },
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516"},
+        )
+
+        self.assertEqual(mapped["extOrderNo"], "48700398278")
 
     def test_collection_callback_lock_includes_amount_and_statement_ref(self):
         bank = self._bank()
