@@ -91,3 +91,26 @@ test -z "$(git ls-files api/jobs/easypaisa/auto_payout.py.bak api/docker-compose
 rg "application\\.phonepe|PhonepeService|FreechargeService|IndusPayService|MahaService|MobikwikService|AirtelService|AmazonService|UlCashPayService|JioService|/phonepe|PaymentPINPreSignIn|StoreCookie|GrabOTP" api --glob '!*.md'
 test -z "$(git ls-files api/application/phonepe api/jobs/check_proxy.py api/jobs/clear_redis_dsdf.py api/jobs/clear_redis_inactive_payment.py api/jobs/collect_partner_status.py api/jobs/order_push.py api/jobs/weight.py api/static/images/india_transaction/PhonePe.svg)"
 ```
+
+## 0.5 同步 pk_project 模块化代码后旧单体测试失败
+
+现象：
+
+- 同步 `pk_project` 后，`api/jobs/jazzcash/jazzcash_auto_payout.py` 变成编排器，旧测试仍直接断言 `JazzCashAutoPayout.process_payout_order`、`process_single_order_async` 或 `_execute_jazzcash_transfer`。
+- 同步 `EasyPaisaAutoPayout` 后，旧测试仍断言在线检查在编排器类上，实际已移动到 `jobs/easypaisa/payout/account_selector.py`。
+
+原因：
+
+- 这是模块拆分后的职责迁移，不是业务方法丢失。JazzCash 代付执行在 `TransferExecutor`，订单生命周期在 `OrderLifecycle`，账号选择在 `AccountSelector`；EasyPaisa 同理。
+
+处理：
+
+- 删除 D7pay 已过时的 `api/tests/test_jazzcash_auto_payout.py`，改用 `api/tests/test_jazzcash_auto_payout_v16.py` 覆盖编排器和拆分模块。
+- EasyPaisa 测试改为断言 `AccountSelector.check_account_online_status` 和 `OrderLifecycle.process_payout_order`。
+- 保留 `pay.py` re-export，这是 import 路径兼容层，不影响唯一真相源。
+
+验证：
+
+```bash
+python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_easypaisa_redis_compat_retirement.py -q
+```

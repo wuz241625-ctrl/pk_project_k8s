@@ -18,6 +18,16 @@
 PYTHONPATH=api python3 -m py_compile main.py router.py router_lakshmi.py application/jazzcash_gateway.py application/pay/pay.py application/pay/order.py application/pay/thirdPart.py application/app/login/banks/easypaisa.py application/app/login/banks/jazzcash.py jobs/pakistanpay_v2.py jobs/easypaisa/auto_payout.py jobs/easypaisa/easypaisa_monitor.py jobs/jazzcash/jazzcash_auto_payout.py jobs/jazzcash/jazzcash_monitor.py jobs/Jazzcashpay_v2.py
 ```
 
+## PK 模块化业务同步检查
+
+D7pay 已同步 `/Users/tear/pk_project` 的 API pay 模块拆分、EasyPaisa/JazzCash 代付 worker 拆分和旧 HTTP 兼容层清理。同步后必须保留 D7pay 租户配置，不允许覆盖 `ops/tenants/d7pay`、K8s、Jenkins、APK 下载站和 `config.example.py`。
+
+```bash
+python3 -m py_compile api/application/pay/pay.py api/application/pay/collection.py api/application/pay/dispatch.py api/application/pay/payout.py api/application/pay/utr_callback.py api/application/pay/decimal_amount.py api/application/pay/raast_qr.py api/jobs/common/logging_setup.py api/jobs/easypaisa/common/*.py api/jobs/easypaisa/payout/*.py api/jobs/easypaisa/auto_payout.py api/jobs/easypaisa/easypaisa_monitor.py api/jobs/jazzcash/payout/*.py api/jobs/jazzcash/jazzcash_auto_payout.py api/jobs/jazzcash/jazzcash_monitor.py api/jobs/pakistanpay_v2.py api/jobs/Jazzcashpay_v2.py api/jobs/update_payment_balance.py
+python3 -m pytest api/tests/test_decimal_amount.py api/tests/test_raast_qr.py api/tests/easypaisa_runtime/test_easypaisa_monitor_idempotency.py api/tests/easypaisa_runtime/test_statement_order_scheduler.py api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_jazzcash_monitor_final_state.py api/tests/test_jazzcash_bill_worker_final_state.py api/tests/test_easypaisa_redis_compat_retirement.py -q
+git diff --name-status | egrep 'ops/tenants/d7pay|config.example.py|apkdownload|admin-h5|merchant-h5|k8s|jenkins' || true
+```
+
 ## 垃圾残留检查
 
 ```bash

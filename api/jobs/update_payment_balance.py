@@ -9,8 +9,6 @@ import uuid
 import json
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Empty
-from contextlib import asynccontextmanager
-
 import aiohttp
 import redis.asyncio as redis
 import asyncio
@@ -210,160 +208,6 @@ class BalanceUpdateMonitor:
             self.logger.error(f"从数据库获取payment账号失败: {e}")
             return []
 
-    @asynccontextmanager
-    async def async_session_context(self):
-        """异步会话上下文管理器"""
-        session = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(ssl=False, limit=100)
-            )
-            self.logger.info("创建临时异步会话")
-            yield session
-        finally:
-            if session and not session.closed:
-                await session.close()
-                self.logger.info("关闭临时异步会话")
-
-    '''
-    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期 
-    2. **临时会话模式**：每次请求都创建一个新的临时会话，请求完成后自动关闭
-    3. **自动资源管理**：使用async with 确保会话在使用完毕后被正确关闭
-    4. **消除状态依赖**：不再依赖实例变量 self._async_session，完全无状态化
-    5. **事件循环兼容**：每个新的事件循环都会创建对应的新会话，彻底解决循环绑定问题
-    如果使用会话实例变量，会可能绑定到旧的会话中，而旧的会话可能已经关闭，导致"Event loop is closed" 错误
-    '''
-    async def make_request(self, account_id,  method, url, headers=None, params=None, data=None, json_data=None, proxies=None):
-        self.logger.info(
-            '请求 {method} {url}, params:{params} data:{data} json_data:{json_data}  代理： {proxies}'.format(
-                method=method, url=url, params=params, data=data, json_data=json_data, proxies=proxies))
-
-        try:
-            response = None
-
-            # 使用临时会话
-            async with self.async_session_context() as session:
-                # 准备请求参数
-                kwargs = {
-                    'headers': headers or {},
-                    'params': params,
-                    'allow_redirects': True,
-                    'ssl': False
-                }
-
-                # 设置代理
-                if proxies:
-                    proxy_url = proxies.get('http') or proxies.get('https')
-                    if proxy_url:
-                        kwargs['proxy'] = proxy_url
-
-                if method.upper() == 'GET':
-                    async with session.get(url, **kwargs) as resp:
-                        response_text = await resp.text()
-                        response = self._create_response_wrapper(resp, response_text)
-
-                elif method.upper() == 'POST':
-                    if data is not None:
-                        kwargs['data'] = data
-                    elif json_data is not None:
-                        kwargs['json'] = json_data
-                    # 如果data和json_data都为None，发送空POST请求
-
-                    async with session.post(url, **kwargs) as resp:
-                        response_text = await resp.text()
-                        response = self._create_response_wrapper(resp, response_text)
-                else:
-                    response = None
-
-            if response is not None:
-                self.logger.info(f'请求 {method} {url}, params:{params}, data:{data} json_data:{json_data}, response: {response}, response.text: {response.text}')
-            return response
-
-        except asyncio.TimeoutError as e:
-            self.logger.error(f"网络请求错误1： account_id: {account_id}; 错误详情:{e}")
-            return None
-        except aiohttp.ClientError as e:
-            self.logger.error(f"网络请求错误2： account_id: {account_id}; 错误详情:{e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"网络请求错误3： account_id: {account_id}; 错误详情:{e}")
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error(f'{account_id}, make_request 脚本运行错误{e}\n{error_message}')
-            return None
-
-    def _create_response_wrapper(self, aiohttp_response, response_text):
-        """创建响应包装器，模拟requests.Response的接口"""
-
-        class AsyncResponseWrapper:
-            def __init__(self, aiohttp_resp, text):
-                self.status_code = aiohttp_resp.status
-                self.headers = dict(aiohttp_resp.headers)
-                self.text = text
-                self.url = str(aiohttp_resp.url)
-                self.reason = aiohttp_resp.reason
-
-                # 创建一个模拟的request对象
-                self.request = self._create_mock_request(aiohttp_resp)
-
-                # 尝试解析JSON
-                try:
-                    self._json = simplejson.loads(text) if text else None
-                except:
-                    self._json = None
-
-            def _create_mock_request(self, aiohttp_resp):
-                """创建模拟的request对象"""
-
-                class MockRequest:
-                    def __init__(self, aiohttp_resp):
-                        self.method = aiohttp_resp.method
-                        self.url = str(aiohttp_resp.url)
-                        self.headers = dict(aiohttp_resp.request_info.headers) if hasattr(aiohttp_resp, 'request_info') else {}
-
-                return MockRequest(aiohttp_resp)
-
-            def json(self):
-                """返回JSON数据"""
-                if self._json is not None:
-                    return self._json
-                return simplejson.loads(self.text)
-
-            @property
-            def content(self):
-                """返回字节内容"""
-                return self.text.encode('utf-8')
-
-            @property
-            def encoding(self):
-                """返回编码信息"""
-                return 'utf-8'
-
-            @property
-            def elapsed(self):
-                """返回耗时信息（模拟）"""
-
-                class MockElapsed:
-                    def total_seconds(self):
-                        return 0.0
-
-                return MockElapsed()
-
-            @property
-            def history(self):
-                """返回重定向历史（空列表）"""
-                return []
-
-            def __str__(self):
-                return f"<AsyncResponse [{self.status_code}]>"
-
-            def __repr__(self):
-                return self.__str__()
-
-        return AsyncResponseWrapper(aiohttp_response, response_text)
-
     async def main(self):
         try:
             online_ep_payments = await self.get_online_ep_payments_from_db()
@@ -380,20 +224,17 @@ class BalanceUpdateMonitor:
                                 "accno": accno,
                             }
                         }
-                        response = await self.make_request(
-                            phone,
-                            "POST",
-                            url=easypaisa_api_url,
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                            data=makeEpRequestData(payload),
-                        )
-                        logger.info(response.text)
-                        res = response.json()
-                        await self.redis.zadd("easypaisa_balance_sorted", {payment_id: float(res["data"]["body"]["totalbalance"])})
+                        async with aiohttp.ClientSession(
+                            timeout=aiohttp.ClientTimeout(total=30),
+                            connector=aiohttp.TCPConnector(ssl=False)
+                        ) as session:
+                            async with session.post(easypaisa_api_url, data=makeEpRequestData(payload)) as resp:
+                                text = await resp.text()
+                                logger.info(text)
+                                res = simplejson.loads(text)
+                                await self.redis.zadd("easypaisa_balance_sorted", {payment_id: float(res["data"]["body"]["totalbalance"])})
                     except Exception as e:
                         logger.info(f"ep {phone} 更新失败，下次再试:" + str(e))
-                # async with sem
-            # end update_ep_balance
 
             async def update_jcb_balance(sem: asyncio.Semaphore, payment_id: str, phone: str):
                 async with sem:
@@ -405,20 +246,17 @@ class BalanceUpdateMonitor:
                                 "account_id": phone,
                             }
                         }
-                        response = await self.make_request(
-                            phone,
-                            "POST",
-                            url=jazzcash_api_url,
-                            headers={"Content-Type": "application/x-www-form-urlencoded"},
-                            data=makeJcbRequestData(payload),
-                        )
-                        logger.error(response.text)
-                        res = response.json()
-                        await self.redis.zadd("jazzcash_balance_sorted", {payment_id: float(res["data"]["data"]["avaliableBalance"])})
+                        async with aiohttp.ClientSession(
+                            timeout=aiohttp.ClientTimeout(total=30),
+                            connector=aiohttp.TCPConnector(ssl=False)
+                        ) as session:
+                            async with session.post(jazzcash_api_url, data=makeJcbRequestData(payload)) as resp:
+                                text = await resp.text()
+                                logger.error(text)
+                                res = simplejson.loads(text)
+                                await self.redis.zadd("jazzcash_balance_sorted", {payment_id: float(res["data"]["data"]["avaliableBalance"])})
                     except Exception as e:
                         logger.error(f"jcb {phone} 更新失败，下次再试:" + str(e))
-                # async with sem
-            # end update_ep_balance
 
             sem = asyncio.Semaphore(20)
             tasks = []

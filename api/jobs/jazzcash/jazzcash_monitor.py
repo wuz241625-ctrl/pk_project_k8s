@@ -8,7 +8,6 @@ import uuid
 import json
 from concurrent.futures import ThreadPoolExecutor
 from queue import Queue, Empty
-from contextlib import asynccontextmanager
 
 import aiohttp
 import redis
@@ -28,362 +27,16 @@ parent2_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, parent2_dir)
 
 import config
+from jobs.common.logging_setup import ProgramLogger, TraceIDFilter, setup_high_performance_logging
 
 # JazzCash自动代付监控系统
 
 # 程序名称（用于日志）
 PROGRAM_NAME = 'jazzcash_monitor'
 
-# 自定义日志记录器 - 添加程序名和函数名
-class ProgramLogger(logging.Logger):
-    def _log(self, level, msg, args, exc_info=None, extra=None, stack_info=False, stacklevel=1):
-        # 获取调用者的函数名
-        import inspect
-        frame = inspect.currentframe()
-        # 向上查找3层调用栈来跳过logging相关的函数
-        for _ in range(3):
-            if frame is not None:
-                frame = frame.f_back
-        func_name = frame.f_code.co_name if frame is not None else 'unknown'
-        
-        # 添加程序名和函数名到消息前缀
-        msg = f"[{PROGRAM_NAME}][{func_name}] {msg}"
-        super()._log(level, msg, args, exc_info, extra, stack_info, stacklevel)
-
-# 注册自定义日志记录器
-logging.setLoggerClass(ProgramLogger)
-
-# 改进的 TraceIDFilter 类 - 添加协程安全
-class TraceIDFilter(logging.Filter):
-    def __init__(self):
-        super().__init__()
-        self._local = threading.local()
-
-    @property
-    def trace_id(self):
-        return getattr(self._local, 'trace_id', 'default')
-
-    @trace_id.setter
-    def trace_id(self, value):
-        self._local.trace_id = value
-
-    def filter(self, record):
-        record.trace_id = self.trace_id
-        # 添加协程ID用于区分不同的并发任务
-        try:
-            task = asyncio.current_task()
-            if task:
-                record.task_id = f"task_{id(task) % 10000:04d}"
-            else:
-                record.task_id = "sync"
-        except RuntimeError:
-            record.task_id = "sync"
-        return True
-
-# 配置高性能日志系统
-def setup_high_performance_logging(use_async=False):
-    """
-    设置高性能日志系统
-
-    Args:
-        buffer_size: 缓冲区大小（字节），默认16KB
-        flush_interval: 刷新间隔（秒），默认3秒
-        use_async: 是否使用异步处理器，默认False
-    """
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-
-    # 日志格式
-    date_format = "%Y-%m-%d %H:%M:%S"
-    format_str = "%(asctime)s - [PID:%(process)d] [%(trace_id)s] [%(task_id)s] - %(levelname)s - %(message)s"
-    formatter = logging.Formatter(format_str, date_format)
-
-    # 创建 TraceIDFilter 实例
-    trace_id_filter = TraceIDFilter()
-
-    # 控制台处理器（不缓冲，实时输出）
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    console_handler.addFilter(trace_id_filter)
-
-    # 文件处理器（带缓冲）
-    LOG_FILE = os.path.join(current_dir, f"jazzcash_monitor_{os.getpid()}.log")
-
-    if use_async:
-        # 简单处理器
-        base_file_handler = logging.handlers.TimedRotatingFileHandler(
-            LOG_FILE,
-            when='midnight',
-            interval=1,
-            backupCount=10,
-            encoding='utf-8',
-            delay=False  # 立即创建文件
-        )
-
-        base_file_handler.setFormatter(formatter)
-        base_file_handler.addFilter(trace_id_filter)
-
-        # 包装为异步处理器
-        file_handler = AsyncBatchLogHandler(
-            base_file_handler,
-            batch_size=50000,  # 50条日志一批
-            flush_interval=5.0,  # 2秒强制刷新
-            max_queue_size=10000
-        )
-    else:
-        # 简单处理器
-        file_handler = logging.handlers.TimedRotatingFileHandler(
-            LOG_FILE,
-            when='midnight',
-            interval=1,
-            backupCount=10,
-            encoding='utf-8',
-            delay=False  # 立即创建文件
-        )
-        file_handler.setFormatter(formatter)
-        file_handler.addFilter(trace_id_filter)
-
-    # 配置主logger
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    # 清除现有的处理器（避免重复）
-    logger.handlers.clear()
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
-    # 防止日志向上级传播
-    logger.propagate = False
-
-    return logger, trace_id_filter, file_handler
-
-
-# 高性能缓冲日志处理器
-class BufferedFileHandler(logging.handlers.TimedRotatingFileHandler):
-    """带缓冲控制的文件处理器"""
-
-    def __init__(self, filename, when='midnight', interval=1, backupCount=10,
-                 encoding='utf-8', delay=True, buffer_size=8192, flush_interval=5.0):
-        """
-        初始化缓冲文件处理器
-
-        Args:
-            buffer_size: 缓冲区大小（字节），默认8KB
-            flush_interval: 强制刷新间隔（秒），默认5秒
-        """
-        super().__init__(filename, when, interval, backupCount, encoding, delay)
-
-        self.buffer_size = buffer_size  # 缓冲区大小
-        self.flush_interval = flush_interval  # 强制刷新间隔
-        self.buffer = []  # 日志缓冲区
-        self.buffer_bytes = 0  # 当前缓冲区字节数
-        self.last_flush_time = time.time()  # 上次刷新时间
-        self.lock = threading.Lock()  # 线程锁
-
-        # 启动定时刷新线程
-        self._start_flush_timer()
-
-    def _start_flush_timer(self):
-        """启动定时刷新线程"""
-
-        def flush_timer():
-            while True:
-                time.sleep(self.flush_interval)
-                with self.lock:
-                    if self.buffer and (time.time() - self.last_flush_time) >= self.flush_interval:
-                        self._force_flush()
-
-        timer_thread = threading.Thread(target=flush_timer, daemon=True)
-        timer_thread.start()
-
-    def emit(self, record):
-        """处理日志记录"""
-        try:
-            with self.lock:
-                # 格式化日志消息
-                msg = self.format(record)
-                msg_bytes = len(msg.encode('utf-8'))
-
-                # 添加到缓冲区
-                self.buffer.append(msg + '\n')
-                self.buffer_bytes += msg_bytes
-
-                # 检查是否需要刷新
-                if self._should_flush():
-                    self._force_flush()
-
-        except Exception:
-            self.handleError(record)
-
-    def _should_flush(self):
-        """判断是否应该刷新缓冲区"""
-        # 缓冲区大小达到阈值
-        if self.buffer_bytes >= self.buffer_size:
-            return True
-
-        # 时间间隔达到阈值
-        if time.time() - self.last_flush_time >= self.flush_interval:
-            return True
-
-        # 缓冲区记录数过多（防止内存占用过大）
-        if len(self.buffer) >= 1000:
-            return True
-
-        return False
-
-    def _force_flush(self):
-        """强制刷新缓冲区"""
-        if not self.buffer:
-            return
-
-        try:
-            # 确保文件已打开
-            if self.stream is None:
-                self.stream = self._open()
-
-            # 写入所有缓冲的日志
-            for log_line in self.buffer:
-                self.stream.write(log_line)
-
-            # 刷新到磁盘
-            self.flush()
-
-            # 清空缓冲区
-            self.buffer.clear()
-            self.buffer_bytes = 0
-            self.last_flush_time = time.time()
-
-        except Exception as e:
-            # 如果写入失败，保留缓冲区内容，下次再试
-            print(f"日志刷新失败: {e}")
-
-    def flush(self):
-        """刷新到磁盘"""
-        if self.stream:
-            self.stream.flush()
-            # 强制同步到磁盘（可选）
-            # os.fsync(self.stream.fileno())
-
-    def close(self):
-        """关闭处理器"""
-        with self.lock:
-            self._force_flush()
-        super().close()
-
-# 异步批量日志处理器（适用于超高并发）
-class AsyncBatchLogHandler(logging.Handler):
-    """异步批量日志处理器"""
-
-    def __init__(self, target_handler, batch_size=100, flush_interval=2.0, max_queue_size=10000):
-        """
-        初始化异步批量日志处理器
-
-        Args:
-            target_handler: 目标日志处理器
-            batch_size: 批量大小，默认100条
-            flush_interval: 刷新间隔，默认2秒
-            max_queue_size: 最大队列大小，默认10000
-        """
-        super().__init__()
-        self.target_handler = target_handler
-        self.batch_size = batch_size
-        self.flush_interval = flush_interval
-        self.max_queue_size = max_queue_size
-
-        self.log_queue = Queue(maxsize=max_queue_size)
-        self.running = True
-        self.worker_thread = None
-        self.stats = {
-            'total_logs': 0,
-            'batches_written': 0,
-            'queue_full_drops': 0
-        }
-
-        self._start_worker()
-
-    def _start_worker(self):
-        """启动工作线程"""
-
-        def worker():
-            batch = []
-            last_flush_time = time.time()
-
-            while self.running:
-                try:
-                    # 尝试获取日志记录
-                    try:
-                        record = self.log_queue.get(timeout=0.1)
-                        if record is None:  # 停止信号
-                            break
-                        batch.append(record)
-                    except Empty:
-                        pass
-
-                    current_time = time.time()
-
-                    # 检查是否需要批量写入
-                    should_flush = (
-                            len(batch) >= self.batch_size or
-                            (batch and current_time - last_flush_time >= self.flush_interval)
-                    )
-
-                    if should_flush and batch:
-                        self._write_batch(batch)
-                        batch.clear()
-                        last_flush_time = current_time
-
-                except Exception as e:
-                    print(f"异步日志工作线程错误: {e}")
-
-            # 处理剩余的日志
-            if batch:
-                self._write_batch(batch)
-
-        self.worker_thread = threading.Thread(target=worker, daemon=True)
-        self.worker_thread.start()
-
-    def _write_batch(self, batch):
-        """批量写入日志"""
-        try:
-            for record in batch:
-                self.target_handler.emit(record)
-
-            # 强制刷新
-            if hasattr(self.target_handler, 'flush'):
-                self.target_handler.flush()
-
-            self.stats['batches_written'] += 1
-
-        except Exception as e:
-            print(f"批量写入日志失败: {e}")
-
-    def emit(self, record):
-        """处理日志记录"""
-        try:
-            self.log_queue.put_nowait(record)
-            self.stats['total_logs'] += 1
-        except:
-            # 队列满了，丢弃日志（避免阻塞）
-            self.stats['queue_full_drops'] += 1
-
-    def get_stats(self):
-        """获取统计信息"""
-        return {
-            **self.stats,
-            'queue_size': self.log_queue.qsize(),
-            'is_running': self.running
-        }
-
-    def close(self):
-        """关闭处理器"""
-        self.running = False
-        self.log_queue.put(None)  # 发送停止信号
-
-        if self.worker_thread:
-            self.worker_thread.join(timeout=5)
-
-        super().close()
-
 # 初始化日志系统
-logger, trace_id_filter, file_handler = setup_high_performance_logging(use_async=True)     # 是否使用异步处理（根据需要调整）
+logger, trace_id_filter, file_handler = setup_high_performance_logging(PROGRAM_NAME, use_async=True)
+
 
 
 conf = config.get_config()
@@ -976,6 +629,24 @@ class AutoPayoutMonitor:
                 'api_response_time': 0
             }
 
+    async def _post_jazzcash_api(self, form_data, login_data):
+        """Direct aiohttp POST to JazzCash API. Retry once on failure."""
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=30),
+                    connector=aiohttp.TCPConnector(ssl=False)
+                ) as session:
+                    async with session.post(self.api_url, data=form_data) as resp:
+                        if 200 <= resp.status < 300:
+                            text = await resp.text()
+                            return simplejson.loads(text) if text else None
+            except Exception as e:
+                self.logger.error(f"网络请求错误: uid: {login_data['id']}; {e}")
+            if attempt == 0:
+                await asyncio.sleep(0.5)
+        return None
+
     async def call_jazzcash_balance_api(self, login_data):
         """调用JazzCash余额查询API（按照JazzCash文档格式）"""
         import base64
@@ -1024,43 +695,19 @@ class AutoPayoutMonitor:
                 'sign': sign
             }
             
-            # 使用封装的 retry_make_request 方法
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-            proxies = login_data.get('socks_ip')  # 使用账号的代理配置
-            
-            self.logger.info(f"调用JazzCash余额API: account_id={phone}, api_url={self.api_url}, proxies={proxies}")
+            self.logger.info(f"调用JazzCash余额API: account_id={phone}, api_url={self.api_url}")
             
             start_time = time.time()
-            response = await self.retry_make_request(
-                login_data, 
-                "POST", 
-                url=self.api_url, 
-                headers=headers, 
-                params=None, 
-                data=form_data, 
-                json_data=None, 
-                proxies=proxies
-            )
+            result = await self._post_jazzcash_api(form_data, login_data)
             response_time = time.time() - start_time
             
-            if response is None:
+            if result is None:
                 self.logger.error(f"API无响应")
                 return {
                     'success': False,
                     'error': 'API无响应',
                     'response_time': response_time
                 }
-            
-            if not 200 <= response.status_code < 300:
-                self.logger.error(f"HTTP错误: {response.status_code}")
-                return {
-                    'success': False,
-                    'error': f'HTTP错误: {response.status_code}',
-                    'response_time': response_time
-                }
-            
-            # 解析响应
-            result = response.json()
             
             if result.get('code') == 200:
                 # 根据JazzCash文档，余额在 data.data.avaliableBalance 字段
@@ -1089,7 +736,7 @@ class AutoPayoutMonitor:
                     'should_offline': True  # 标记需要下线
                 }
             elif result.get('code') == 423:
-                # 423 ServerBusy - 服务器忙，retry_make_request会自动重试
+                # 423 ServerBusy - 服务器忙
                 error_msg = result.get('msg', result.get('message', '服务器忙(423)'))
                 self.logger.warning(f"服务器忙: payment_id={payment_id}, error={error_msg}")
                 return {
@@ -1165,43 +812,19 @@ class AutoPayoutMonitor:
                 'sign': sign
             }
             
-            # 使用封装的 retry_make_request 方法
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-            proxies = login_data.get('socks_ip')  # 使用账号的代理配置
-            
             self.logger.info(f"调用JazzCash限额API: payment_id={payment_id}, account_id={phone}, api_url={self.api_url}")
             
             start_time = time.time()
-            response = await self.retry_make_request(
-                login_data, 
-                "POST", 
-                url=self.api_url, 
-                headers=headers, 
-                params=None, 
-                data=form_data, 
-                json_data=None, 
-                proxies=proxies
-            )
+            result = await self._post_jazzcash_api(form_data, login_data)
             response_time = time.time() - start_time
             
-            if response is None:
+            if result is None:
                 self.logger.error(f"限额API无响应: payment_id={payment_id}")
                 return {
                     'success': False,
                     'error': 'API无响应',
                     'response_time': response_time
                 }
-            
-            if not 200 <= response.status_code < 300:
-                self.logger.error(f"限额API HTTP错误: payment_id={payment_id}, status_code={response.status_code}")
-                return {
-                    'success': False,
-                    'error': f'HTTP错误: {response.status_code}',
-                    'response_time': response_time
-                }
-            
-            # 解析响应
-            result = response.json()
             
             if result.get('code') == 200:
                 # 🔥 根据实际API返回，限额在 data.data.accountLimits 和 data.data.remainingLimits
@@ -1774,172 +1397,6 @@ class AutoPayoutMonitor:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
             self.logger.error('update_key() 脚本运行错误{}\n{}\n{}'.format(e, error_message, simplejson.dumps(login_data)))
-
-    from contextlib import asynccontextmanager
-
-    @asynccontextmanager
-    async def async_session_context(self):
-        """异步会话上下文管理器"""
-        session = None
-        try:
-            timeout = aiohttp.ClientTimeout(total=30)
-            session = aiohttp.ClientSession(
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(ssl=False, limit=100)
-            )
-            self.logger.info("创建临时异步会话")
-            yield session
-        finally:
-            if session and not session.closed:
-                await session.close()
-                self.logger.info("关闭临时异步会话")
-
-    '''
-    1. **添加上下文管理器async_session_context： 方法负责创建和管理异步会话的生命周期 
-    2. **临时会话模式**：每次请求都创建一个新的临时会话，请求完成后自动关闭
-    3. **自动资源管理**：使用async with 确保会话在使用完毕后被正确关闭
-    4. **消除状态依赖**：不再依赖实例变量 self._async_session，完全无状态化
-    5. **事件循环兼容**：每个新的事件循环都会创建对应的新会话，彻底解决循环绑定问题
-    如果使用会话实例变量，会可能绑定到旧的会话中，而旧的会话可能已经关闭，导致"Event loop is closed" 错误
-    '''
-    async def make_request(self, login_data,  method, url, headers=None, params=None, data=None, json_data=None, proxies=None):
-        self.logger.info(
-            '请求 {method} {url}, params:{params} data:{data} json_data:{json_data}  代理： {proxies}'.format(
-                method=method, url=url, params=params, data=data, json_data=json_data, proxies=proxies))
-
-        try:
-            response = None
-
-            # 使用临时会话
-            async with self.async_session_context() as session:
-                # 准备请求参数
-                kwargs = {
-                    'headers': headers or {},
-                    'params': params,
-                    'allow_redirects': True,
-                    'ssl': False
-                }
-
-                # 设置代理
-                if proxies:
-                    proxy_url = proxies.get('http') or proxies.get('https')
-                    if proxy_url:
-                        kwargs['proxy'] = proxy_url
-
-                if method.upper() == 'GET':
-                    async with session.get(url, **kwargs) as resp:
-                        response_text = await resp.text()
-                        response = self._create_response_wrapper(resp, response_text)
-
-                elif method.upper() == 'POST':
-                    if data is not None:
-                        kwargs['data'] = data
-                    elif json_data is not None:
-                        kwargs['json'] = json_data
-                    # 如果data和json_data都为None，发送空POST请求
-
-                    async with session.post(url, **kwargs) as resp:
-                        response_text = await resp.text()
-                        response = self._create_response_wrapper(resp, response_text)
-                else:
-                    response = None
-
-            if response is not None:
-                self.logger.info(f'请求 {method} {url}, params:{params}, data:{data} json_data:{json_data}, response: {response}, response.text: {response.text}')
-            return response
-
-        except asyncio.TimeoutError as e:
-            self.logger.error(f"网络请求错误1： uid: {login_data['id']}; 错误详情:{e}")
-            return None
-        except aiohttp.ClientError as e:
-            self.logger.error(f"网络请求错误2： uid: {login_data['id']}; 错误详情:{e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"网络请求错误3： uid: {login_data['id']}; 错误详情:{e}")
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error(f'{login_data["id"]}, make_request 脚本运行错误{e}\n{error_message}\n{simplejson.dumps(login_data)}')
-            return None
-
-    def _create_response_wrapper(self, aiohttp_response, response_text):
-        """创建响应包装器，模拟requests.Response的接口"""
-
-        class AsyncResponseWrapper:
-            def __init__(self, aiohttp_resp, text):
-                self.status_code = aiohttp_resp.status
-                self.headers = dict(aiohttp_resp.headers)
-                self.text = text
-                self.url = str(aiohttp_resp.url)
-                self.reason = aiohttp_resp.reason
-
-                # 创建一个模拟的request对象
-                self.request = self._create_mock_request(aiohttp_resp)
-
-                # 尝试解析JSON
-                try:
-                    self._json = simplejson.loads(text) if text else None
-                except:
-                    self._json = None
-
-            def _create_mock_request(self, aiohttp_resp):
-                """创建模拟的request对象"""
-
-                class MockRequest:
-                    def __init__(self, aiohttp_resp):
-                        self.method = aiohttp_resp.method
-                        self.url = str(aiohttp_resp.url)
-                        self.headers = dict(aiohttp_resp.request_info.headers) if hasattr(aiohttp_resp, 'request_info') else {}
-
-                return MockRequest(aiohttp_resp)
-
-            def json(self):
-                """返回JSON数据"""
-                if self._json is not None:
-                    return self._json
-                return simplejson.loads(self.text)
-
-            @property
-            def content(self):
-                """返回字节内容"""
-                return self.text.encode('utf-8')
-
-            @property
-            def encoding(self):
-                """返回编码信息"""
-                return 'utf-8'
-
-            @property
-            def elapsed(self):
-                """返回耗时信息（模拟）"""
-
-                class MockElapsed:
-                    def total_seconds(self):
-                        return 0.0
-
-                return MockElapsed()
-
-            @property
-            def history(self):
-                """返回重定向历史（空列表）"""
-                return []
-
-            def __str__(self):
-                return f"<AsyncResponse [{self.status_code}]>"
-
-            def __repr__(self):
-                return self.__str__()
-
-        return AsyncResponseWrapper(aiohttp_response, response_text)
-
-    async def retry_make_request(self, *args, **kwargs):
-        res = await self.make_request(*args, **kwargs)
-        if res is None or not (200 <= res.status_code < 300):
-            self.logger.info(f"make_request() second try, args: {args}, kwargs: {kwargs}")
-            res = await self.make_request(*args, **kwargs)
-        if res is None or not (200 <= res.status_code < 300):
-            self.logger.warning(f"make_request() 获取响应错误, args: {str(args)}, kwargs: {str(kwargs)}")
-            return res
-        return res
 
     # 获取列表中的所有元素
     def read_redis_list(self, key):
