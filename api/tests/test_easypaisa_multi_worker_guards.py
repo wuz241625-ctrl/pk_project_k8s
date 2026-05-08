@@ -15,14 +15,13 @@ UNIQUE_MIGRATION = REPO_ROOT / "api" / "migrations" / "20260508170000_add_orders
 def test_easypaisa_worker_only_scans_submitted_collection_orders():
     source = PAKISTAN_WORKER.read_text()
 
-    assert "AND status = 2" in source
-    assert "AND od.status = 2" in source
-    assert "AND status IN (1, 2)" not in source
-    assert "AND od.status IN (1, 2)" not in source
+    assert "AND status IN (1, 2)" in source
+    assert "AND od.status IN (1, 2)" in source
+    assert "AND ofd.status = 2" in source
     assert "AND utr IS NOT NULL" in source
     assert "AND od.utr IS NOT NULL" in source
     assert "_credit_statement_matches_due_order" in source
-    assert "CREDIT流水未匹配 status=2 待确认订单" in source
+    assert "CREDIT流水未匹配 status IN (1,2) 已提交手机号订单" in source
 
 
 def test_easypaisa_statement_locks_are_atomic_and_worker_concurrency_is_capped():
@@ -45,13 +44,13 @@ def test_order_success_uses_atomic_redis_locks():
     assert "got_utr_lock = await self.redis.setnx(utr_lock_key, 1)" not in source
 
 
-def test_pakistan_success_ds_is_status2_row_locked_and_single_transition():
+def test_pakistan_success_ds_accepts_status1_or_status2_with_row_lock():
     source = WEBSOCKET_CALLBACK.read_text()
     success_ds_source = source.split("async def success_ds", 1)[1].split("\n\n# 代付确认", 1)[0]
 
-    assert "AND status = 2" in success_ds_source
+    assert "AND status IN (1, 2)" in success_ds_source
     assert "FOR UPDATE" in success_ds_source
-    assert "where code=%s and status=2 limit 1" in success_ds_source
+    assert "where code=%s and status in (1,2) limit 1" in success_ds_source
     assert "status in (-1,1,2)" not in success_ds_source.lower()
 
 

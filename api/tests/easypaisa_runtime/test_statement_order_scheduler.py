@@ -202,8 +202,8 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         executed_sql = "\n".join(sql for sql, _ in bank.db_connection.executed)
         self.assertIn("FROM orders_ds", executed_sql)
         self.assertIn("FROM orders_df", executed_sql)
+        self.assertIn("status IN (1, 2)", executed_sql)
         self.assertIn("status = 2", executed_sql)
-        self.assertNotIn("status IN (1, 2)", executed_sql)
 
     def test_main_runs_health_balance_when_no_due_statement_orders(self):
         bank = self._bank()
@@ -430,6 +430,27 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         )
 
         self.assertEqual(mapped["extOrderNo"], "48700398278")
+
+    def test_collection_credit_requires_official_ext_order_no(self):
+        bank = self._bank()
+
+        mapped = bank._build_credit_mapped_transaction(
+            {
+                "orderNo": "PWM20260419153343931564",
+                "amount": 1500.0,
+                "tradeTime": "2026-04-19T15:33:44",
+                "appTransaction": True,
+                "busTypeName": "Digital Account",
+                "historyDetailRspDTO": {
+                    "accountNo": "03413557183",
+                    "gatherNo": "AC03325009516",
+                    "fee": 0,
+                },
+            },
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516"},
+        )
+
+        self.assertIsNone(mapped)
 
     def test_collection_callback_lock_includes_amount_and_statement_ref(self):
         bank = self._bank()

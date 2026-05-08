@@ -397,7 +397,7 @@ class BankLogin:
             SELECT code, payment_id, partner_id, amount, utr, time_create
             FROM orders_ds
             WHERE payment_id = %s
-              AND status = 2
+              AND status IN (1, 2)
               AND utr IS NOT NULL
               AND utr <> ''
               AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
@@ -430,7 +430,7 @@ class BankLogin:
                 JOIN orders_ds od ON od.payment_id = p.id
                 WHERE p.wallet_status = 1
                   AND (p.bank_type = 97 OR p.bank_type = '97' OR p.bank_type_id = 97)
-                  AND od.status = 2
+                  AND od.status IN (1, 2)
                   AND od.utr IS NOT NULL
                   AND od.utr <> ''
                   AND od.time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
@@ -567,15 +567,7 @@ class BankLogin:
         return f"{value[:keep_left]}***{value[-keep_right:]}"
 
     def _extract_statement_ref(self, transaction: Dict[str, Any], detail_dto: Dict[str, Any]) -> str:
-        for key in ("extOrderNo", "transactionId", "transId"):
-            value = detail_dto.get(key)
-            if value:
-                return str(value).strip()
-        for key in ("transactionId", "transId", "rrn", "utr", "orderNo"):
-            value = transaction.get(key)
-            if value:
-                return str(value).strip()
-        value = detail_dto.get("orderNo")
+        value = detail_dto.get("extOrderNo")
         if value:
             return str(value).strip()
         return ""
@@ -679,6 +671,13 @@ class BankLogin:
 
         fee = self._to_money(detail_dto.get("fee")) or Decimal("0.00")
         statement_ref = self._extract_statement_ref(transaction, detail_dto)
+        if not statement_ref:
+            self.logger.warning(
+                f"EasyPaisa {account_context['id']} 账单流水缺少官方交易ID historyDetailRspDTO.extOrderNo，跳过: "
+                f"orderNo={transaction.get('orderNo')}"
+            )
+            return None
+
         payer_callback_utr = self._extract_payer_callback_utr(transaction, detail_dto)
         if not payer_callback_utr:
             self.logger.warning(f"EasyPaisa {account_context['id']} CREDIT流水缺少付款方手机号，跳过")
@@ -689,7 +688,7 @@ class BankLogin:
         if not payee_account:
             payee_account = str(account_context.get("account_accno") or "").strip()
 
-        ext_order_no = str(statement_ref or detail_dto.get("extOrderNo") or transaction.get("orderNo") or "").strip()
+        ext_order_no = statement_ref
         trade_time = (
             transaction.get("tradeTime")
             or transaction.get("trnDate")
@@ -1012,7 +1011,7 @@ class BankLogin:
 
                 if not self._credit_statement_matches_due_order(mapped_trans, ds_orders):
                     self.logger.info(
-                        f"easypaisa {payment_id}, CREDIT流水未匹配 status=2 待确认订单，跳过回调: "
+                        f"easypaisa {payment_id}, CREDIT流水未匹配 status IN (1,2) 已提交手机号订单，跳过回调: "
                         f"amount={mapped_trans.get('txnAmount')}, "
                         f"payer_phone={self._mask(mapped_trans.get('custRefNo'))}, "
                         f"trans_id={self._mask(mapped_trans.get('extOrderNo'))}"
