@@ -323,7 +323,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         self.assertIn("代付账单观测匹配", info_logs)
         self.assertIn("不回调", info_logs)
 
-    def test_collection_credit_does_not_filter_by_local_order_window(self):
+    def test_collection_credit_matches_when_statement_time_is_inside_order_window(self):
         ds_order = {
             "code": "DS001",
             "payment_id": 533295,
@@ -365,6 +365,45 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         self.assertEqual(sent_payload["utr"], "3001234567")
         self.assertEqual(sent_payload["amount"], "100.00")
         self.assertEqual(sent_payload["trans_id"], "EXT001")
+
+    def test_collection_credit_rejects_old_statement_before_order_window(self):
+        ds_order = {
+            "code": "DS001",
+            "payment_id": 533295,
+            "partner_id": 33056,
+            "amount": "1000.00",
+            "utr": "3348688642",
+            "time_create": "2026-05-08 20:20:40",
+        }
+        bank = self._bank(ds_rows=[ds_order])
+        bank.send = AsyncMock(return_value={"is_success": True})
+        bank.getBills = AsyncMock(return_value={
+            "is_success": True,
+            "transaction_history_list": [
+                {
+                    "orderNo": "PWM20260420082757177892",
+                    "amount": 1000.0,
+                    "tradeTime": "2026-04-20T08:27:57",
+                    "appTransaction": True,
+                    "busTypeName": "Digital Account - 93571572",
+                    "historyDetailRspDTO": {
+                        "fromFri": "FRI:93571572/MM",
+                        "gatherNo": "AC03325009516",
+                        "accountNo": "03348688642",
+                        "fee": 0,
+                        "extOrderNo": "48727541553",
+                    },
+                }
+            ],
+        })
+
+        result = asyncio.run(bank.grabstatement(
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516", "account_accno": "68382729"},
+            statement_context={"df_orders": [], "ds_orders": [ds_order], "has_due": True},
+        ))
+
+        self.assertTrue(result)
+        bank.send.assert_not_awaited()
 
     def test_collection_credit_callback_uses_payer_phone_and_amount_without_fee(self):
         ds_order = {

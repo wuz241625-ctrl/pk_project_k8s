@@ -644,12 +644,20 @@ class BankLogin:
             return False
         statement_amount = self._to_money(mapped_trans.get("txnAmount"))
         statement_utr = self._normalize_msisdn(mapped_trans.get("custRefNo"))
-        if statement_amount is None or not statement_utr:
+        statement_time = self._parse_statement_time(mapped_trans.get("tradeTime"))
+        if statement_amount is None or not statement_utr or not statement_time:
             return False
         for order in ds_orders:
             order_amount = self._to_money(order.get("amount"))
             order_utr = self._normalize_msisdn(order.get("utr"))
-            if order_amount == statement_amount and order_utr == statement_utr:
+            order_time = self._parse_statement_time(order.get("time_create"))
+            if not order_time:
+                continue
+            if (
+                order_amount == statement_amount
+                and order_utr == statement_utr
+                and order_time <= statement_time <= order_time + timedelta(minutes=8)
+            ):
                 return True
         return False
 
