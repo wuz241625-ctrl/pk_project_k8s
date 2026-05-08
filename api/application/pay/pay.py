@@ -103,8 +103,8 @@ class Pay(BaseHandler):
             merchant_rate = channel_result['merchant_rate']
             earn_merchant = channel_result['earn_merchant']
 
-            # Step 4: Create order
-            order_result = await self._create_order(data, merchant_rate, earn_merchant, gateway, merchant_id, merchant_code, amount, user_id)
+            # Step 4: Build order data. 自有代收派单成功后才写入 orders_ds。
+            order_result = await self._build_order_data(data, merchant_rate, earn_merchant, gateway, merchant_id, merchant_code, amount, user_id)
             if order_result is None:
                 return
 
@@ -363,8 +363,8 @@ class Pay(BaseHandler):
             'earn_merchant': earn_merchant,
         }
 
-    async def _create_order(self, data, merchant_rate, earn_merchant, gateway, merchant_id, merchant_code, amount, user_id):
-        """Order generation (insert into orders_ds)."""
+    async def _build_order_data(self, data, merchant_rate, earn_merchant, gateway, merchant_id, merchant_code, amount, user_id):
+        """生成订单数据；自有代收派单成功后才落 orders_ds。"""
         order_data = dict()
         self.logger.info(f"生成订单，订单数据准备: {order_data}")
         order_data['code'] = await self.create_order_code('S')  # 订单号
@@ -388,13 +388,16 @@ class Pay(BaseHandler):
         if 'player_ip' in data:
             order_data['player_ip'] = data['player_ip']  # 用户IP
 
-        self.logger.info(f"创建订单: {order_data}")
+        return {'order_data': order_data}
+
+    async def _insert_order_for_external_dispatch(self, order_data):
+        """三方强制通道需要先落订单给三方回写；自有代收不走这里。"""
+        self.logger.info(f"创建三方通道订单: {order_data}")
         if not await self.create_result('orders_ds', order_data):
             self.logger.warning(f"订单 {order_data['code']} 创建失败")
             await self.json_response(data=msg[10014])
-            return None
-
-        return {'order_data': order_data}
+            return False
+        return True
 
     async def generate_qr_code(self, payment_id: str, account_id: str, amount: str, logger=None):
         """为 EasyPaisa 1010 生成带金额与 7 分钟过期时间的 Raast 动态 QR。"""
@@ -439,20 +442,24 @@ class Pay(BaseHandler):
         original_amount = amount
         push_success = False  # 标记是否成功派单
         upi = ""
-        # 调用 push_order 并将返回的字典赋给一个变量
-        push_result = await push_order(self, order_data, merchant['target_payment'])
+        qrcode = ""
+        push_result = None
 
         if merchant_channel['is_force']:
             self.logger.info(f"强制支付，跳转到其他支付网关: {merchant_channel['otherpay']}")
+            if not await self._insert_order_for_external_dispatch(order_data):
+                return
             order_pay_url = await self.other_pay(merchant_channel['otherpay'], order_data)
-        elif push_result and push_result.get('success'):
+        else:
+            # 调用 push_order 并将返回的字典赋给一个变量。派单失败不写 orders_ds，也不再三方兜底。
+            push_result = await push_order(self, order_data, merchant['target_payment'])
+
+        if push_result and push_result.get('success'):
             # 自己的代收系统派单成功
             push_success = True
             upi = push_result.get('upi')
+            qrcode = push_result.get('qrcode') or ""
             order_pay_url = self.application.pay_url + '{token}'.format(token=order_token)
-        elif merchant_channel['otherpay']:
-            self.logger.info(f"使用其他支付网关: {merchant_channel['otherpay']}")
-            order_pay_url = await self.other_pay(merchant_channel['otherpay'], order_data)
         # 判断是否是需要接入自有收银台的三方支付
         if merchant_channel['otherpay'] and order_pay_url:
             other_pay = merchant_channel['otherpay']
@@ -537,6 +544,7 @@ class Pay(BaseHandler):
         if order_pay_url:
             result = dict(code=0, data=order_pay_url, message='下单成功')
             result['upi'] = upi
+            result['qrcode'] = qrcode
             result['amount'] = amount
             result['token'] = order_token
             result['order_code'] = order_data['code']
@@ -578,9 +586,7 @@ class Pay(BaseHandler):
             ))
             return await self.json_response(result)
 
-        # 码不足且无三方接单，取消订单
-        self.logger.info(f"更新订单状态，订单号: {order_data['code']}，设置状态为 -1")
-        await self.update_result('orders_ds', {'status': -1}, {'code': order_data['code']})
+        self.logger.info(f"订单 {order_data['code']} 派单失败，未写入 orders_ds")
 
         # 检查是否存在 api_result 属性并处理
         if hasattr(self, 'api_result') and self.api_result:
@@ -748,4 +754,3 @@ class Pay(BaseHandler):
                 return channel['amount_min'] <= amount <= channel['amount_max']
         except Exception:
             return False
-

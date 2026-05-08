@@ -4,22 +4,9 @@ from datetime import datetime
 from decimal import Decimal, ROUND_DOWN
 from aiomysql import DictCursor
 
-async def _requeue_df_if_online(self, payment_id):
-    """EasyPaisa 代付不再回写旧 payment_active_df，只清理残留。"""
-    await self.redis.lrem('payment_active_df', 0, payment_id)
-    return False
-
 
 # 代收确认
 async def success_ds(self, data):
-    condition = 'utr'
-    if "code" in data.keys() and data['code']:
-        if data['bank_name'] == 'indusind' and len(data['code']) == 4:
-            condition = 'left(auth_code,4)'
-        elif data['bank_name'] == 'phonepe' and len(data['code']) == 5:
-            condition = 'auth_code'
-        elif len(data['code']) == 5:
-            condition = 'auth_code'
     amount = Decimal(data['amount'])
     original_amount = amount  # 保存原始小数金额用于清理
     has_decimal = amount % 1 != 0  # 判断金额是否为小数
@@ -60,9 +47,6 @@ async def success_ds(self, data):
             self.logger.exception(f'检查小数点回调超时失败: {e}')
             return dict(code=99, msg='Decimal callback timeout check failed')
     
-    # 根据确认码或UTR查找订单
-    sql_select_order = """select * from orders_ds where amount=%s and {}=%s and status in (-1,1,2) and 
-                            date_add(time_create, interval 8 minute) > now() order by id limit 1""".format(condition)
     # 商户代理费率
     sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant 
                                     where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join 
@@ -71,65 +55,32 @@ async def success_ds(self, data):
     sql_select_rates_partner = """select rates from channel where code=%s"""
     # 更新系统余额
     sql_update_payment = """update payment set sys_balance=sys_balance+%s where id=%s"""
-    # 更新订单
-    # sql_update_order = """update orders_ds set earn_merchant=%s,earn_partner=%s,earn_system=%s,partner_id=%s,payment_id=%s,
-                        # utr=%s,time_success=%s,status=3,upi=%s where code=%s and status in (-1,1,2) limit 1"""
-
     sql_update_order = """update orders_ds set earn_merchant=%s,earn_partner=%s,earn_system=%s,partner_id=%s,payment_id=%s,
                             utr=%s,time_success=%s,status=3,upi=%s,tax=%s,trans_id=%s where code=%s and status in (-1,1,2) limit 1"""
 
     # 根据收款资料id查询
     sql_select_payment = """select * from payment where id=%s order by id limit 1"""
 
-    # _order = await self.query(sql_select_order, *(Decimal(data['amount']), data['code'] if condition != 'utr' else data['utr']))
-    pakistan_flag = True
-    if has_decimal or pakistan_flag:
-        self.logger.info(f"[订单匹配] 金额 {amount} 含小数，使用更严格规则匹配订单（按 payment_id + 时间）")
-        # 检查传入的数据中是否有 trans_id，并获取其值
-        input_trans_id = data.get('trans_id')
-
-        # 动态构建 SQL 语句的基础部分
-        sql_select_order = """
-            SELECT * FROM orders_ds 
-            WHERE amount=%s AND payment_id=%s AND utr=%s
-        """
-        params = [amount, data['payment_id'], data['utr']]
-
-        # 根据传入的 trans_id 是否存在，动态添加 CASE WHEN 条件
-        if input_trans_id:
-            # 如果传入的 trans_id 不为空，则添加 CASE WHEN 逻辑
-            sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
-            params.append(input_trans_id)
-
-        # 添加其他固定的查询条件
-        sql_select_order += """
-            AND status IN (-1,1,2) 
-            AND date_add(time_create, interval 8 minute) > now()
-            ORDER BY id DESC LIMIT 1
-        """
-
-        self.logger.info(f"[订单匹配11] 执行 SQL: {sql_select_order.strip()} 参数: {params}")
-
-        _order = await self.query(sql_select_order, *params)
-
-        if not _order:
-            self.logger.warning('utr:{} Not Order found. payment_id={}'.format(data['utr'], data['payment_id']))
-            return dict(code=99, msg='Order not found')
-
-    else:
-        self.logger.info(f"[订单匹配] 金额 {amount} 为整数，使用默认规则（{condition} 匹配）")
-        self.logger.info(f"[订单匹配] 执行 SQL: {sql_select_order.strip()} 参数: 金额={amount}, 匹配字段={condition}, 值={data['trans_id'] if condition != 'utr' else data['utr']}")
-        _order = await self.query(sql_select_order,
-            amount, data['trans_id'] if condition != 'utr' else data['utr'])
+    self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + utr）")
+    input_trans_id = data.get('trans_id')
+    sql_select_order = """
+        SELECT * FROM orders_ds
+        WHERE amount=%s AND payment_id=%s AND utr=%s
+    """
+    params = [amount, data['payment_id'], data['utr']]
+    if input_trans_id:
+        sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
+        params.append(input_trans_id)
+    sql_select_order += """
+        AND status IN (-1,1,2)
+        AND date_add(time_create, interval 8 minute) > now()
+        ORDER BY id DESC LIMIT 1
+    """
+    self.logger.info(f"[订单匹配11] 执行 SQL: {sql_select_order.strip()} 参数: {params}")
+    _order = await self.query(sql_select_order, *params)
     if not _order:
-        if not condition == 'utr': # 如果查询不到，重新按utr查询
-            self.logger.warning('utr:{}Not Order not found'.format(data['utr']))
-            sql_select_order = """select * from orders_ds where amount=%s and {}=%s and utr=%s and trans_id=%s and status in (-1,1,2) and 
-                                    date_add(time_create, interval 8 minute) > now() order by id limit 1""".format('utr')
-            _order = await self.query(sql_select_order, *(Decimal(data['amount']), data['utr'], data['utr'], data['trans_id']))
-        if not _order:
-            self.logger.warning('utr:{}Not Order not found k2'.format(data['utr']))
-            return dict(code=99, msg='Order not found')
+        self.logger.warning('utr:{} Not Order found. payment_id={}'.format(data['utr'], data['payment_id']))
+        return dict(code=99, msg='Order not found')
     _payment = await self.query(sql_select_payment, self.qr_id)
     if not _payment:
         return dict(code=99, msg='Payment not found')
@@ -151,48 +102,25 @@ async def success_ds(self, data):
             try:
                 amount = Decimal(data['amount'])
                 partner_id = int(self.partner_id)
-                # 查找订单
-                if has_decimal or pakistan_flag:
-                    self.logger.info(f"[订单匹配] 金额 {amount} 含小数，使用更严格规则匹配订单（按 payment_id + 时间）")
-                    # 检查传入的数据中是否有 trans_id，并获取其值
-                    input_trans_id = data.get('trans_id')
-
-                    # 动态构建 SQL 语句的基础部分
-                    sql_select_order = """
-                        SELECT * FROM orders_ds 
-                        WHERE amount=%s AND payment_id=%s AND utr=%s
-                    """
-                    params = [amount, data['payment_id'], data['utr']]
-
-                    # 根据传入的 trans_id 是否存在，动态添加 CASE WHEN 条件
-                    if input_trans_id:
-                        # 如果传入的 trans_id 不为空，则添加 CASE WHEN 逻辑
-                        sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
-                        params.append(input_trans_id)
-
-                    sql_select_order += """
-                        AND status IN (-1,1,2) 
-                        AND date_add(time_create, interval 8 minute) > now() 
-                        ORDER BY id DESC LIMIT 1
-                    """
-
-                    self.logger.info(f"[订单匹配22] 执行 SQL: {sql_select_order.strip()} 参数: {params}")
-
-                    # 使用 cur.execute 方法执行查询，并将动态构建的参数列表转换为元组
-                    if not await cur.execute(sql_select_order, tuple(params)):
-                        self.logger.warning('utr:{} Not Order found. payment_id={}'.format(data['utr'], data['payment_id']))
-                        return dict(code=99, msg='Order not found')
-                else:
-                    if not await cur.execute(sql_select_order, (amount, data['code'] if condition != 'utr' else data['utr'])):
-                        if not condition == 'utr':  # 如果查询不到，重新按utr查询
-                            sql_select_order = """select * from orders_ds where amount=%s and {}=%s and utr=%s and status in (-1,1,2) and 
-                                                    date_add(time_create, interval 8 minute) > now() order by id limit 1""".format('utr')
-                            if not await cur.execute(sql_select_order, (amount, data['utr'], data['utr'])):
-                                self.logger.warning('utr:{}Not Order not found2'.format(data['utr']))
-                                return dict(code=99, msg='Order not found')
-                        else:
-                            self.logger.warning('utr:{}Not Order not found'.format(data['utr']))
-                            return dict(code=99, msg='Order not found')
+                self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + utr）")
+                input_trans_id = data.get('trans_id')
+                sql_select_order = """
+                    SELECT * FROM orders_ds
+                    WHERE amount=%s AND payment_id=%s AND utr=%s
+                """
+                params = [amount, data['payment_id'], data['utr']]
+                if input_trans_id:
+                    sql_select_order += " AND (CASE WHEN trans_id IS NOT NULL AND trans_id != '' THEN trans_id = %s ELSE 1=1 END)"
+                    params.append(input_trans_id)
+                sql_select_order += """
+                    AND status IN (-1,1,2)
+                    AND date_add(time_create, interval 8 minute) > now()
+                    ORDER BY id DESC LIMIT 1
+                """
+                self.logger.info(f"[订单匹配22] 执行 SQL: {sql_select_order.strip()} 参数: {params}")
+                if not await cur.execute(sql_select_order, tuple(params)):
+                    self.logger.warning('utr:{} Not Order found. payment_id={}'.format(data['utr'], data['payment_id']))
+                    return dict(code=99, msg='Order not found')
                 order = (await cur.fetchall())[0]
                 code = order['code']
 
@@ -343,13 +271,7 @@ async def success_df(self, data):
     amount = abs(Decimal(data['amount']))
     source_utr = data['trans_id']
     final_utr = data['utr']
-    if data['bank_name'] == 'freecharge':
-        condition = '  and ifsc=%s and right(payment_account,4)=%s and partner_id=%s'
-        value = (amount, data['ifsc'], data['code'], data['partner_id'])
-    elif data['bank_name'] == 'mobi':
-        condition = ' and payment_account=%s and partner_id=%s'
-        value = (amount, data['code'], data['partner_id'])
-    elif data['bank_name'] == 'AU C':
+    if data['bank_name'] == 'AU C':
         condition = ' and ifsc=%s and right(payment_account,4)=%s and partner_id=%s'
         value = (amount, data['ifsc'], data['code'][-4:], data['partner_id'])
     elif data['bank_name'] == 'NAGERCOIL ENBL':
@@ -358,12 +280,6 @@ async def success_df(self, data):
     elif data['bank_name'] == 'feb':
         condition = ' and ifsc=%s  and payment_id=%s'
         value = (amount, data['ifsc'], data['payment_id'])
-    elif data['bank_name'] in ['jio', 'indus']:
-        condition = ' and ifsc=%s and payment_account=%s and payment_id=%s'
-        value = (amount, data['ifsc'], data['account'], data['payment_id'])
-    elif data['bank_name'] == 'maha':
-        condition = ' and code=%s and partner_id=%s'
-        value = (amount, data['code'], data['partner_id'])
     # 对于 pakistan 银行：使用回调金额和 payment_account、partner_id 进行比对 。
     elif data['bank_name'] in ['easypaisa', 'jazzcash']:
         final_utr = data['account']   # 需要将account作为收款手机号→作为utr的数据处理
@@ -382,12 +298,7 @@ async def success_df(self, data):
                             (select @orgId:=%s) vars,merchant) t where id is not null order by pid desc"""
     # 更新系统余额
     sql_update_payment = """update payment set sys_balance=sys_balance+%s where id=%s"""
-    if 'maha' == str(data['bank_name']).lower():
-        # 更新订单
-        sql_update = f"update orders_df set earn_merchant=%s,time_success=%s,status=3,payment_img=1,utr='{final_utr}' where code=%s and status in (-1,1,2) limit 1"
-    else:
-        # 更新订单
-        sql_update = """update orders_df set earn_merchant=%s,time_success=%s,status=3,utr=%s where code=%s and status in (-1,1,2) limit 1"""
+    sql_update = """update orders_df set earn_merchant=%s,time_success=%s,status=3,utr=%s where code=%s and status in (-1,1,2) limit 1"""
     self.logger.info('UTR:{} - 执行查询订单操作。SQL: {}, 参数: {}'.format(final_utr, sql_select_order, value))
     _order = await self.query(sql_select_order, *value)
     self.logger.info('UTR:{} - 查询订单完成。返回结果: {}'.format(final_utr, _order))
@@ -546,9 +457,6 @@ async def success_df(self, data):
                         
                 await conn.commit()
                 
-                # 重新接单
-                await _requeue_df_if_online(self, self.qr_id)
-                    
                 # 回调
                 await self.redis.publish('order_df_notify', code)
                 
@@ -1110,8 +1018,6 @@ async def cancel_df(self, data):
                 return dict(code=99, msg='Order exception')
             else:
                 await conn.commit()
-                # 重新接单
-                await _requeue_df_if_online(self, order['payment_id'])
                 # 驳回回调
                 # await self.redis.publish('order_df_notify', code)
                 # if active_children_count == 0:

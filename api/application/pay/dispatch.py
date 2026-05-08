@@ -26,7 +26,7 @@ def _normalize_bank_type(value):
         return None
 
 
-def _requires_collection_account_iban(payment, bank=None) -> bool:
+def _requires_collection_qrcode(payment, bank=None) -> bool:
     bank = bank or {}
     bank_name = str(bank.get('name') or '').upper()
     bank_type = _normalize_bank_type((payment or {}).get('bank_type'))
@@ -36,7 +36,7 @@ def _requires_collection_account_iban(payment, bank=None) -> bool:
         return False
     if bank_name == 'EASYPAISA' or bank_type == 97 or bank_type_id == 97:
         return True
-    return True
+    return False
 
 
 def _parse_payment_id_list(value) -> List[str]:
@@ -237,6 +237,15 @@ async def _fetch_partner_uncallback_debit_amount_in_tx(cur, partner_id):
     return row.get('amount_d') or Decimal(0)
 
 
+async def _insert_order_ds_in_tx(handler, cur, order_data):
+    keys, placeholders, values = await handler.dict_to_kv(order_data)
+    sql = "insert into orders_ds ({keys}) values ({vals})".format(
+        keys=keys,
+        vals=placeholders,
+    )
+    return await cur.execute(sql, (*values,))
+
+
 async def update_target_in_redis(handler):
     """更新商户指定码的缓存"""
     target_payment_key = 'target_payment_key'
@@ -289,6 +298,7 @@ async def push_order(handler, data, target_payment):
     amount = data['amount']
     start_time = datetime.datetime.now().timestamp()
     upi = ''
+    qrcode = ''
 
     gonghu_ds_payment_ids = []
     target_payment = target_payment if target_payment else ''
@@ -320,7 +330,7 @@ async def push_order(handler, data, target_payment):
         count=len(_list or []),
     ))
     if not _list:
-        return is_push
+        return {"success": False, "upi": "", "qrcode": ""}
     _new_vip_list = {}
     for row in _list:
         _new_vip_list[row['vip']] = {
@@ -422,19 +432,15 @@ async def push_order(handler, data, target_payment):
         ) or {}
         handler.logger.info(f"Step 10: bank_id {bank_id}, {bank}")
 
-        if _requires_collection_account_iban(payment, bank):
-            paymentNew = await handler.get_result_by_condition(
-                'payment',
-                ['account_iban'],
-                {'id': payment_id}
-            )
-            # 仅 EasyPaisa 代收二维码链路要求 account_iban。
-            if not paymentNew or not paymentNew.get('account_iban'):
-                handler.logger.warn(f"在获取 ID 为 {payment_id} 的支付信息时，account_iban 键不存在或为空，已跳过, code: {code}")
+        payment_qrcode = ''
+        if _requires_collection_qrcode(payment, bank):
+            payment_qrcode = await handler.generate_qr_code(payment['id'], payment['upi'], data['amount'])
+            if not payment_qrcode:
+                handler.logger.warn(f"码 {payment_id} 生成二维码失败，已跳过, code: {code}")
                 continue
-            handler.logger.info(f"成功获取 ID 为 {payment_id} 的支付信息，account_iban 存在 {paymentNew.get('account_iban')}, code: {code}")
+            handler.logger.info(f"码 {payment_id} 已生成二维码，继续派单, code: {code}")
         else:
-            handler.logger.info(f"码 {payment_id} 不需要 account_iban/二维码，继续派单, code: {code}")
+            handler.logger.info(f"码 {payment_id} 不需要二维码，继续派单, code: {code}")
 
         handler.logger.info(f"从 payment 中获取 bank_type_id，赋值 bank_id = {bank_id}")
 
@@ -692,12 +698,11 @@ async def push_order(handler, data, target_payment):
                         handler.logger.warning('{partner_id}接单扣除账户余额失败,code: {code}'.format(partner_id=partner_id, code=code))
                         continue
 
-                    # 改变订单状态
-                    key_update, val_update = await handler.dict_to_equal(order_data)
-                    sql = 'update orders_ds set {keys} where code=%s and status=0'.format(keys=key_update)
-                    if not await cur.execute(sql, (*val_update, data['code'])):
+                    insert_order_data = dict(data)
+                    insert_order_data.update(order_data)
+                    if not await _insert_order_ds_in_tx(handler, cur, insert_order_data):
                         await conn.rollback()
-                        handler.logger.warning('{partner_id}接单修改订单状态失败,code: {code}'.format(partner_id=partner_id, code=code))
+                        handler.logger.warning('{partner_id}接单创建订单失败,code: {code}'.format(partner_id=partner_id, code=code))
                         continue
                 except Exception as e:
                     await conn.rollback()
@@ -711,6 +716,8 @@ async def push_order(handler, data, target_payment):
                     is_push = True
                     # 添加upi返回
                     handler.upi = order_data['upi']
+                    upi = order_data['upi']
+                    qrcode = payment_qrcode
 
                     ts_now = int(time.time())
 
@@ -749,22 +756,14 @@ async def push_order(handler, data, target_payment):
 
                         handler.logger.info(f"已设置 send_orders_interval_{payment_id}，值: {ts_now}，过期时间: {interval_seconds} 秒")
 
-                    # 添加一个redis key用于提示加速爬取账单，按最短时间爬取一次
-                    await handler.redis.set(f"crawl_frequently_{payment_id}", 1, 60 * 8)
-                    handler.logger.info(f"[代收] push_order 成功设置 Redis 键: crawl_frequently_{payment_id}, paymentid: {payment_id}, 过期时间为 {8} 分钟。")
-                    # 调用封装好的函数
                     if bank.get('name') == 'EASYPAISA':
-                        qr_code = await handler.generate_qr_code(payment['id'], payment['upi'], data['amount'])
-                        await handler.redis.set('order_ds_third_qr_{}'.format(code), qr_code, 60 * 20)
-                        upi = qr_code
-                        if qr_code:
-                            handler.logger.info(f"订单代码 {code}  , 金额 {amount} 生成的QR码文本是: {qr_code}")
+                        await handler.redis.set('order_ds_third_qr_{}'.format(code), qrcode, 60 * 20)
+                        if qrcode:
+                            handler.logger.info(f"订单代码 {code}  , 金额 {amount} 生成的二维码文本是: {qrcode}")
                         else:
-                            handler.logger.info(f"订单代码 {code}  , 金额 {amount} 未能生成QR码。")
+                            handler.logger.info(f"订单代码 {code}  , 金额 {amount} 未生成二维码。")
                     elif bank.get('name') == 'JAZZCASH':
-                        await handler.redis.set(f"crawl_frequently_{payment_id}", 1, 60 * 3)
-                        handler.logger.info(f"[代收] push_order_new 成功设置 Redis 键: crawl_frequently_{payment_id}, paymentid: {payment_id}, 过期时间为 {3} 分钟。")
                         pass
 
                     break
-    return {"success": is_push, "upi": upi}
+    return {"success": is_push, "upi": upi, "qrcode": qrcode}

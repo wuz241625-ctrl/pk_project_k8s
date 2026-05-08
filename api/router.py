@@ -2,6 +2,7 @@ from tornado.web import url
 
 from application.app.issue import issue
 from application.pay import pay, order, status, thirdCallback
+from application.pay import payout, utr_callback
 from application.pay.easypay_handler import EasypayInitiate
 from application.websocket import monitor
 from application.websocket import monitor_http
@@ -11,8 +12,8 @@ from application.bot import bot
 urls = [
     # api相关
     url("/pay", pay.Pay),  # 代收下单
-    url('/pay/ds/utr', pay.ds_utr),  # 代收订单UTR补单
-    url("/pay/df", pay.Pay_df),  # 代付下单
+    url('/pay/ds/utr', utr_callback.ds_utr),  # 代收订单UTR补单
+    url("/pay/df", payout.Pay_df),  # 代付下单
     url('/status/ds', status.Status_ds),  # 代收订单状态查询
     url('/status/df', status.Status_df),  # 代付订单状态查询
     url('/balance', status.Balance),  # 代付订单状态查询

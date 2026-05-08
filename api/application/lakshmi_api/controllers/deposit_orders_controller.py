@@ -412,9 +412,6 @@ class Order(OrderHandler):
                     await self.save_order_to_redis_cache(deposit_order, payment)
                     await self._unlock_row_by_redis(serial_number)
 
-                    # 添加一个redis key用于提示加速爬取账单，按最短时间爬取一次
-                    await self.redis.set(f"crawl_frequently_{payment.id}", 1, 60 * 8)
-                    self.logger.info(f"[代付抢单] 成功设置 Redis 键: crawl_frequently_{payment.id}, paymentid: {payment.id}, 过期时间为 {8} 分钟。")
                     return True
             except Exception as error:
                 await self._unlock_row_by_redis(serial_number)

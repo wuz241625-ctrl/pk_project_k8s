@@ -1504,66 +1504,12 @@ class Success(BaseHandler):
 
             if data['bank_name'] == 'easypaisa':
                 self.logger.info('监控调用:(easypaisa协议)' + json.dumps(data))
-                # if data['type'] == 'UPI':  # 写入upi,同时启用
-                #     if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                #         return await self.json_response(msg[10001])
-                #     # 检测是否有重复的，有重复直接不写入，直接下线
-                #     upi_check = await self.check_upi(data['upi'], self.qr_id)
-                #     if upi_check:
-                #         self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                #         if not await self.update_result('payment', {'remarks': 'upi already exist'}, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(easypaisa协议),更新upi remarks错误'+ json.dumps(upi_check) + json.dumps(data))
-                #         msg[10025]['message'] = 'upi already exist'
-                #         return await self.json_response(msg[10025])
-
-                #     upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                #     if not upi or upi['upi'] != data['upi']:
-                #         await self.save_upi_to_history(data['upi'], self.qr_id)
-                #         update_arr = {'upi': data['upi'],'upi_list': data['upi_list']}
-                #         if 'remarks' in data:
-                #             update_arr['remarks'] = data['remarks']
-                #         if not await self.update_result('payment', update_arr, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(easypaisa协议),更新upi错误' + json.dumps(data))
-                #             return await self.json_response(msg[10018])
-                #     if upi['status'] != 1:
-                #         if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(easypaisa协议),更新upi状态错误' + json.dumps(data))
-                #             return await self.json_response(msg[10020])
-                #     res = dict(type='UPI', code=100, msg='update upi success.')
-                #     return await self.json_response(res)
                 if data['type'] == 'New':  # 回调相关
                     r = await self._handle_pakistan_statement_callback(data, 'easypaisa')
                     return await self.json_response(r)
                 
             elif data['bank_name'] == 'jazzcash':
                 self.logger.info('监控调用:(jazzcash协议)' + json.dumps(data))
-                # if data['type'] == 'UPI':  # 写入upi,同时启用
-                #     if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'upi']):
-                #         return await self.json_response(msg[10001])
-                #     # 检测是否有重复的，有重复直接不写入，直接下线
-                #     upi_check = await self.check_upi(data['upi'], self.qr_id)
-                #     if upi_check:
-                #         self.logger.warning('upi重复:{upi},{id},重复的id{id2}'.format(upi=data['upi'],id=upi_check[0]['id'],id2=self.qr_id))
-                #         if not await self.update_result('payment', {'remarks': 'upi already exist'}, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(jazzcash协议),更新upi remarks错误'+ json.dumps(upi_check) + json.dumps(data))
-                #         msg[10025]['message'] = 'upi already exist'
-                #         return await self.json_response(msg[10025])
-
-                #     upi = await self.get_result_by_condition('payment', ['upi', 'status'], {'id': self.qr_id})
-                #     if not upi or upi['upi'] != data['upi']:
-                #         await self.save_upi_to_history(data['upi'], self.qr_id)
-                #         update_arr = {'upi': data['upi'],'upi_list': data['upi_list']}
-                #         if 'remarks' in data:
-                #             update_arr['remarks'] = data['remarks']
-                #         if not await self.update_result('payment', update_arr, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(jazzcash协议),更新upi错误' + json.dumps(data))
-                #             return await self.json_response(msg[10018])
-                #     if upi['status'] != 1:
-                #         if not await self.update_result('payment', {'status': 1}, {'id': self.qr_id}):
-                #             self.logger.info('监控调用:(jazzcash协议),更新upi状态错误' + json.dumps(data))
-                #             return await self.json_response(msg[10020])
-                #     res = dict(type='UPI', code=100, msg='update upi success.')
-                #     return await self.json_response(res)
                 if data['type'] == 'New':  # 回调相关
                     r = await self._handle_pakistan_statement_callback(data, 'jazzcash')
                     return await self.json_response(r)
@@ -1574,42 +1520,24 @@ class Success(BaseHandler):
             ret = dict(code=99, msg='data error.')
             return await self.json_response(ret)
 
-    async def check_upi(self, upi, payment_id):
-        sql = """select id from payment where upi=%s and id != %s"""
-        return await self.query(sql, upi, payment_id)
-
-    # 更新upi到历史
-    async def save_upi_to_history(self, upi, payment_id):
-        db_payment = await self.get_result_by_condition('payment', ['id', 'partner_id', 'bank_type_id'], {'id': payment_id})
-        if db_payment:
-            paymnetUpiHistory = dict()
-            paymnetUpiHistory['payment_id'] = db_payment.get('id')
-            paymnetUpiHistory['partner_id'] = db_payment.get('partner_id')
-            paymnetUpiHistory['bank_id'] = db_payment.get('bank_type_id')
-            paymnetUpiHistory['upi'] = upi
-            paymnetUpiHistory['time_create'] = datetime.now()
-            result = await self.create_result('payment_upi_history', paymnetUpiHistory)
-            print(f"result payment_upi_history: {result}")
 
 # 机器人回调
 class SuccessBot(BaseHandler):
-    """获取订单状态"""
+    """旧机器人银行账单回调入口。"""
 
     async def post(self):
         try:
             ret = dict(code=99, msg='data error.')
-            # 只接受白名单ip访问
             ip = await self.get_ip()
             successBotsAllowIp = await self.redis.get('successBotsAllowIp')
             if not successBotsAllowIp:
                 self.logger.warning("未获取到ip白名单")
                 return await self.json_response(data=msg[10000])
-            else:
-                successBotsAllowIp = str(successBotsAllowIp).strip().split(',')
-                allow_ip = [i.strip() for i in successBotsAllowIp if i != '']
-                if not ip in allow_ip:
-                    self.logger.warning("非法ip" + ip)
-                    return await self.json_response(data=msg[10000])
+            successBotsAllowIp = str(successBotsAllowIp).strip().split(',')
+            allow_ip = [i.strip() for i in successBotsAllowIp if i != '']
+            if ip not in allow_ip:
+                self.logger.warning("非法ip" + ip)
+                return await self.json_response(data=msg[10000])
 
             dataJson = self.request.body
             self.logger.info("接收参数" + str(dataJson))
@@ -1659,7 +1587,6 @@ class SuccessBot(BaseHandler):
             ret = dict(code=99, msg='data error.')
             return await self.json_response(ret)
 
-    # 银行回调
     async def callBack(self, data, description):
         try:
             orders, r = await self.ordersDfQuery(data)
@@ -1669,18 +1596,16 @@ class SuccessBot(BaseHandler):
             data['payment_id'] = orders[0]["payment_id"]
             self.qr_id = data['payment_id']
             self.partner_id = data['partner_id']
-            if data['type'] == 'New':  # 回调相关
-                r = dict()
+            if data['type'] == 'New':
                 self.logger.info('机器人调用:(银行{bank_name}),id:{id}, 获取ifsc：{ifsc}， 账户尾号:{code}'.format(bank_name=data['bank_name'], id=self.qr_id, ifsc=data['ifsc'], code=data['code']))
                 if data['trade_type'] == 2:
-                    if await self.get_result_by_condition('bank_record', ['*'],{'utr': data['utr'], 'amount': data['amount'],'trade_type': 2}):
+                    if await self.get_result_by_condition('bank_record', ['*'], {'utr': data['utr'], 'amount': data['amount'], 'trade_type': 2}):
                         self.logger.info("bank_record已存在记录data:{data}".format(data=simplejson.dumps(data)))
                         return msg[10019]
 
                     r = await callback.success_df(self, data)
                     self.logger.info("代付回调返回:" + json.dumps(r))
                 else:
-                    # 暂时回调代付的，其他的不理
                     return msg[10020]
                 bankRecord = dict()
                 for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code']:
@@ -1693,23 +1618,21 @@ class SuccessBot(BaseHandler):
                 bankRecord['partner_id'] = self.partner_id
                 await self.create_result('bank_record', bankRecord)
                 return r
+            return msg[10020]
         except Exception as e:
             self.logger.exception(e)
             ret = dict(code=99, msg='data error.')
             return ret
 
-    # au银行数据解析
     async def auParse(self, content, amount):
         data = dict()
         try:
-            # 转入(UPI/IMPS/NEFT)
             if content[:6] == 'UPI/CR' or (content[:5] == 'IMPS-' and Decimal(amount) > Decimal(0)) or (
                     'NEFT' in content and Decimal(amount) > Decimal(0)):
                 contents = content.split('/')
                 data['trade_type'] = 1
                 data['utr'] = contents[2]
                 data['code'] = contents[6][:5]
-            # 转出(UPI/IMPS/NEFT)
             if (content[:7] == 'UPI/DR/' and Decimal(amount) < Decimal(0)) or (
                     content[:5] == 'IMPS-' and Decimal(amount) < Decimal(0)):
                 data['trade_type'] = 2
@@ -1723,10 +1646,6 @@ class SuccessBot(BaseHandler):
                     data['utr'] = contents[1]
                     data['ifsc'] = contents[3]
                     data['code'] = contents[4][-4:]
-                # else:
-                #     contents = content.split('-')
-                #     data['utr'] = contents[1].strip(' ')
-            # 退回(UPI/IMPS)
             elif content[:10] == 'UPI/DR-REV' or 'RETURN IMPS' in content:
                 data['trade_type'] = 3
                 if 'UPI' in content:
@@ -1739,7 +1658,6 @@ class SuccessBot(BaseHandler):
                     data['utr'] = contents[1]
                     data['ifsc'] = contents[3]
                     data['code'] = contents[4]
-            # 手续费
             elif 'IMPS OUTWARD CHARGE' in content:
                 data['trade_type'] = 4
             return data
@@ -1747,11 +1665,9 @@ class SuccessBot(BaseHandler):
             self.logger.exception("解析失败:" + str(e) + content)
             return False
 
-    # nagercol银行数据解析
     async def nagercolParse(self, content, amount):
         data = dict()
         try:
-            # 转出(UPI/IMPS/NEFT)
             if content[:5] == 'IMPS-' and Decimal(amount) < Decimal(0):
                 data['trade_type'] = 2
                 if 'IMPS' in content:
@@ -1759,15 +1675,11 @@ class SuccessBot(BaseHandler):
                     data['utr'] = contents[1]
                     data['ifsc'] = contents[2]
                     data['code'] = contents[3]
-                # else:
-                #     contents = content.split('-')
-                #     data['utr'] = contents[1].strip(' ')
             return data
         except Exception as e:
             self.logger.exception("解析失败:" + str(e))
             return False
 
-    # 代付订单查询
     async def ordersDfQuery(self, data):
         amount = abs(Decimal(data['amount']))
         if data['bank_name'] == 'AU C':
@@ -1779,7 +1691,6 @@ class SuccessBot(BaseHandler):
         else:
             condition = ' and left(ifsc,4)=%s and right(payment_account,4)=%s' if data['ifsc'] else ''
             value = (amount, data['ifsc'][:4], data['code'][-4:]) if data['ifsc'] else (amount, data['code'][-4:])
-        # 通过IFSC前四位和银行卡后四位查找订单
         sql_select_order = """select * from orders_df where amount=%s{condition} and status
                                 in (-1,1,2) and date_add(time_accept, interval 3 hour ) > now() order by id limit 1""".format(
             condition=condition)

@@ -409,7 +409,7 @@ class JazzCash:
     async def _select_proxy_ip(self, bankname):
         """
         选择代理IP，保持一致性
-        参考jio_bank.py的_select_proxy_ip方法
+        参考历史代理实现的_select_proxy_ip方法
         """
         funcName = '选择代理IP'
         try:
@@ -427,10 +427,10 @@ class JazzCash:
     async def _get_proxies(self, bankname):
         """
         从Redis获取可用的代理IP列表并随机选择一个
-        参考jio_bank.py的_get_proxies()方法（使用被注释的Redis逻辑）
+        参考历史代理实现的_get_proxies()方法（使用被注释的Redis逻辑）
         """
         funcName = '从Redis获取可用的代理IP列表并随机选择一个'
-        # ================ Redis代理获取逻辑 (来自jio_bank.py注释代码) ================
+        # ================ Redis代理获取逻辑 (来自历史代理实现注释代码) ================
         try:
             # 从Redis获取印度SOCKS代理IP列表
             redis_key = self.PROXIES_IP_KEY.format(bankname=bankname)
@@ -683,7 +683,7 @@ class JazzCash:
             return None
 
     def retry_make_request(self, *args, **kwargs):
-        """简化的retry_make_request - 保持与jio_bank.py一致"""
+        """简化的retry_make_request - 保持与历史代理实现一致"""
         # 第一次尝试
         res = self.make_request(*args, **kwargs)
         if res is not None and (200 <= res.status_code < 300):
@@ -1950,18 +1950,9 @@ class JazzCash:
                 self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
                 await self._update_payment(session_payment_id, session_data, account_entire=account_entire_json, account_accno=account_accno, account_iban=account_iban)
 
-                # ========== 11. 清理旧 Redis 接单投影 ==========
-                # MySQL 三最终态是唯一资格源：wallet_status/collection_status/payout_status。
-                await self.redis.srem('payment_online_ds', session_payment_id)
-                await self.redis.srem('payment_online_df', session_payment_id)
-                await self.redis.lrem('payment_active_df', 0, session_payment_id)
-                qr_channel = session_data.get('qr_channel', '1003')
-                channels = qr_channel.split(',') if isinstance(qr_channel, str) else [qr_channel]
-                for channel in channels:
-                    channel = channel.strip()
-                    await self.redis.lrem(f'payment_active_{channel}', 0, session_payment_id)
+                # ========== 11. MySQL 三最终态是唯一资格源 ==========
                 self.logger.info(
-                    f'{self._log_key(funcName)} 已清理旧 Redis 接单投影: payment_id={session_payment_id}, channels={channels}'
+                    f'{self._log_key(funcName)} 不写旧 Redis 接单投影: payment_id={session_payment_id}'
                 )
 
                 # ========== 12. 返回成功 ==========

@@ -27,7 +27,6 @@ from datetime import datetime
 from typing import List, Dict, Any
 from logging.handlers import TimedRotatingFileHandler
 from requests.adapters import HTTPAdapter
-from response_logger import ResponseLogger
 
 # API_URL = 'http://104.198.86.150:83'
 # USER_ID = 'ba08c3c0e4f546ad92dd2c2e8542ca36'
@@ -36,6 +35,7 @@ from response_logger import ResponseLogger
 # 将项目的主目录添加进系统path，才能直接调用application文件夹下面的模块等
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
+sys.path.insert(0, current_dir)
 sys.path.insert(0, parent_dir)
 
 from response_logger import ResponseLogger
@@ -69,6 +69,9 @@ class BankLogin:
         self.time_grab = 40  # 短时间频繁爬取
         self.time_grab2 = 10 * 60  # 长时间爬取
         self.order_time_out = 5 * 60
+        self.statement_ds_window_seconds = 7 * 60
+        self.statement_df_window_seconds = 10 * 60
+        self.statement_df_probe_interval = 2 * 60
         self.check_client_send_sms_time_out = 90  # 等待发送短信的最长时间
         self.try_sendOTP_limit = 3  # 最大尝试发送OTP的次数
         self.try_verify_otp_limit = 2  # 最大尝试验证OTP的次数
@@ -93,7 +96,7 @@ class BankLogin:
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
         # 新增: 初始化数据库连接
         self.db_connection = self.check_db_connection()
-    
+
     def check_db_connection(self):
             """
             检查并返回pymysql数据库连接。
@@ -165,25 +168,8 @@ class BankLogin:
         return data
 
     def sync_mysql_wallet_collection_accounts(self):
-        rows = self.fetch_wallet_collection_rows()
-        synced = 0
-        for row in rows:
-            payment_id = str(row.get("id"))
-            existing = None
-            raw_existing = self.redis.hget(self.hash_key, payment_id)
-            if raw_existing:
-                try:
-                    if isinstance(raw_existing, bytes):
-                        raw_existing = raw_existing.decode()
-                    existing = simplejson.loads(raw_existing)
-                except Exception:
-                    existing = None
-            login_data = self._wallet_collection_login_data(row, existing)
-            self.redis.hset(self.hash_key, payment_id, simplejson.dumps(login_data, ensure_ascii=False))
-            if self.redis.zscore(self.set_key, payment_id) is None:
-                self.redis.zadd(self.set_key, {payment_id: 0})
-            synced += 1
-        return synced
+        self.logger.info("JazzCash 已切换为 MySQL 订单窗口调度，不再同步旧 hash/set 采集投影")
+        return 0
 
     def _read_payment_final_state_flags(self, payment_id):
         if not self.db_connection or not self.db_connection.open:
@@ -233,29 +219,212 @@ class BankLogin:
             return "ds_dispatch_off"
         return "order_paused"
 
+    def _ensure_db_connection(self):
+        if not hasattr(self, "db_connection"):
+            return False
+        if not getattr(self, "db_connection", None) or not self.db_connection.open:
+            self.logger.error("数据库连接已关闭，尝试重新连接...")
+            self.db_connection = self.check_db_connection()
+        return bool(getattr(self, "db_connection", None))
+
+    def _fetch_rows(self, sql, params=None):
+        if not self._ensure_db_connection():
+            return []
+        with self.db_connection.cursor() as cur:
+            try:
+                cur.execute(sql, params or ())
+                rows = cur.fetchall() or []
+                self.db_connection.commit()
+                return rows
+            except Exception as e:
+                self.db_connection.rollback()
+                self.logger.error(f"JazzCash MySQL 查询失败: {e}; sql={sql}", exc_info=True)
+                return []
+
+    def _fetch_one(self, sql, params=None):
+        if not self._ensure_db_connection():
+            return None
+        with self.db_connection.cursor() as cur:
+            try:
+                cur.execute(sql, params or ())
+                row = cur.fetchone()
+                self.db_connection.commit()
+                return row
+            except Exception as e:
+                self.db_connection.rollback()
+                self.logger.error(f"JazzCash MySQL 查询失败: {e}; sql={sql}", exc_info=True)
+                return None
+
+    def fetch_due_statement_payment_ids(self, limit=200):
+        rows = self._fetch_rows(
+            """
+            SELECT DISTINCT id
+            FROM (
+                SELECT p.id
+                FROM payment p
+                JOIN orders_ds od ON od.payment_id = p.id
+                WHERE p.wallet_status = 1
+                  AND (p.bank_type = 98 OR p.bank_type = '98' OR p.bank_type_id = 98)
+                  AND od.status IN (1, 2)
+                  AND od.time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
+                UNION
+                SELECT p.id
+                FROM payment p
+                JOIN orders_df ofd ON ofd.payment_id = p.id
+                WHERE p.wallet_status = 1
+                  AND (p.bank_type = 98 OR p.bank_type = '98' OR p.bank_type_id = 98)
+                  AND ofd.status = 2
+                  AND ofd.time_accept IS NOT NULL
+                  AND ofd.time_accept >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            ) due_payment
+            LIMIT {limit}
+            """.format(limit=int(limit))
+        )
+        payment_ids = []
+        for row in rows:
+            payment_id = row.get("id")
+            if payment_id in [None, ""]:
+                continue
+            payment_ids.append(str(payment_id))
+        return payment_ids
+
+    def fetch_due_statement_scan_context(self, payment_id):
+        context = {"payment_id": payment_id, "ds_orders": [], "df_orders": [], "has_due": False, "interval": 60}
+        context["ds_orders"] = self._fetch_rows(
+            """
+            SELECT code, payment_id, partner_id, amount, time_create
+            FROM orders_ds
+            WHERE payment_id = %s
+              AND status IN (1, 2)
+              AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
+            ORDER BY id DESC
+            LIMIT 20
+            """,
+            (payment_id,),
+        )
+        context["df_orders"] = self._fetch_rows(
+            """
+            SELECT code, payment_id, partner_id, amount, time_accept, payment_account, utr
+            FROM orders_df
+            WHERE payment_id = %s
+              AND status = 2
+              AND time_accept IS NOT NULL
+              AND time_accept >= DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            ORDER BY id DESC
+            LIMIT 20
+            """,
+            (payment_id,),
+        )
+        context["has_due"] = bool(context["ds_orders"] or context["df_orders"])
+        context["interval"] = self.statement_df_probe_interval if context["df_orders"] and not context["ds_orders"] else 60
+        return context
+
+    def fetch_statement_account_context(self, payment_id):
+        row = self._fetch_one(
+            """
+            SELECT id, phone, partner_id, upi, channel, net_trade_pw
+            FROM payment
+            WHERE id = %s
+              AND wallet_status = 1
+              AND (bank_type = 98 OR bank_type = '98' OR bank_type_id = 98)
+            LIMIT 1
+            """,
+            (payment_id,),
+        )
+        if not row:
+            self.logger.info(f"JazzCash {payment_id} MySQL 无可用采集账号上下文，跳过账单查询")
+            return None
+        account_context = dict(row)
+        account_context["id"] = str(payment_id)
+        account_context["real_payment_id"] = str(payment_id)
+        account_context["status"] = "grabstatement"
+        account_context["channels"] = account_context.get("channel")
+        account_context["qr_channel"] = self._first_channel(account_context.get("channel"))
+        return account_context
+
+    def reserve_due_statement_scan_context(self, context):
+        reserved = dict(context)
+        reserved_df_orders = []
+        for order in context.get("df_orders", []):
+            code = order.get("code")
+            if not code:
+                continue
+            lock_key = f"payout_unknown_probe_lock:{self.name}:{code}"
+            if self.redis.setnx(lock_key, 1):
+                self.redis.expire(lock_key, self.statement_df_probe_interval)
+                reserved_df_orders.append(order)
+            else:
+                self.logger.info(f"JazzCash 代付未知订单 {code} 两分钟探测锁未释放，跳过本轮账单观测")
+        reserved["df_orders"] = reserved_df_orders
+        reserved["has_due"] = bool(reserved.get("ds_orders") or reserved_df_orders)
+        return reserved
+
+    def acquire_statement_wallet_lock(self, payment_id, ttl):
+        lock_key = f"statement_scan_lock:{self.name}:{payment_id}"
+        if not self.redis.setnx(lock_key, 1):
+            self.logger.info(f"JazzCash {payment_id} 账单爬取锁未释放，跳过本轮")
+            return False
+        self.redis.expire(lock_key, ttl)
+        return True
+
+    async def process_statement_payment_id_async(self, payment_id):
+        context = self.fetch_due_statement_scan_context(payment_id)
+        context = self.reserve_due_statement_scan_context(context)
+        if not context.get("has_due"):
+            self.logger.info(f"JazzCash {payment_id} 没有待确认订单，跳过账单查询")
+            return False
+
+        account_context = self.fetch_statement_account_context(payment_id)
+        if not account_context:
+            return False
+
+        if not self.acquire_statement_wallet_lock(payment_id, max(60, int(context.get("interval") or 60))):
+            return False
+
+        payment_mock = self.redis.get(f"payment_mock:{payment_id}") or self.redis.get(f"payment_mock:{account_context['id']}")
+        if payment_mock:
+            self.local_mock = True
+
+        self.logger.info(
+            f"JazzCash MySQL账单调度处理 payment_id={payment_id}, "
+            f"ds_orders={len(context.get('ds_orders') or [])}, df_orders={len(context.get('df_orders') or [])}"
+        )
+        return await self.grabstatement(account_context, if_first_time=False)
+
+    async def process_statement_payment_ids_concurrent(self, payment_ids: List[str], concurrent_limit: int = 20):
+        if not payment_ids:
+            return
+
+        semaphore = asyncio.Semaphore(concurrent_limit)
+
+        async def process_with_semaphore(payment_id):
+            async with semaphore:
+                return await self.process_statement_payment_id_async(payment_id)
+
+        start_time = time.time()
+        results = await asyncio.gather(
+            *(process_with_semaphore(payment_id) for payment_id in payment_ids),
+            return_exceptions=True,
+        )
+        end_time = time.time()
+        success_count = sum(1 for r in results if r is True)
+        error_count = sum(1 for r in results if isinstance(r, Exception))
+        self.logger.info(
+            f"进程 {os.getpid()} JazzCash MySQL账单候选并发处理完成: "
+            f"总数 {len(payment_ids)}, 成功 {success_count}, 失败 {len(results) - success_count}, "
+            f"异常 {error_count}, 耗时 {end_time - start_time:.2f}秒"
+        )
+
     def sync_job_projection(self, login_data, schedule_score=None):
         payment_id = login_data.get('real_payment_id') or login_data.get('id')
         if payment_id in [None, ""]:
             raise ValueError("sync_job_projection requires payment id")
-        merged = {}
-        existing = self.redis.hget(self.hash_key, payment_id)
-        if existing:
-            try:
-                if isinstance(existing, bytes):
-                    existing = existing.decode('utf-8')
-                parsed = simplejson.loads(existing)
-                if isinstance(parsed, dict):
-                    merged.update(parsed)
-            except Exception:
-                merged = {}
-        merged.update(login_data)
-        merged['id'] = payment_id
-        merged['real_payment_id'] = payment_id
-        merged['status'] = 'grabstatement'
-        self.redis.hset(self.hash_key, payment_id, simplejson.dumps(merged, ensure_ascii=False))
-        score = int(time.time()) if schedule_score is None else int(schedule_score)
-        self.redis.zadd(self.set_key, {payment_id: score})
-        return merged
+        projected = dict(login_data)
+        projected['id'] = payment_id
+        projected['real_payment_id'] = payment_id
+        projected['status'] = 'grabstatement'
+        self.logger.info(f"{payment_id} JazzCash 旧 hash/set 投影已退役，本次不写入 Redis 调度队列")
+        return projected
 
     def get_log_stats(self):
         """获取日志统计信息（如果使用异步处理器）"""
@@ -415,18 +584,20 @@ class BankLogin:
             return False
 
     def update_key(self, login_data):
+        payment_id = login_data.get('id')
         try:
-            policy = self.payment_final_state_policy(login_data['id'], login_data)
-            if policy == "offline":
-                self.redis.hdel(self.hash_key, login_data['id'])
-                self.redis.zrem(self.set_key, login_data['id'])
-                self.logger.warning(f"{login_data['id']} DB wallet_status 已关闭，已移除 JazzCash 采集投影")
-                return
-            self.sync_job_projection(login_data, schedule_score=int(time.time()))
+            if payment_id and self.payment_final_state_policy(payment_id, login_data) == "offline":
+                self.redis.hdel(self.hash_key, payment_id)
+                self.redis.zrem(self.set_key, payment_id)
+                self.logger.warning(f"{payment_id} DB wallet_status 已关闭，已清理 JazzCash 旧采集投影")
+                return login_data
         except Exception as e:
-            tb_str = traceback.format_exc()
-            error_message = ''.join(tb_str)
-            self.logger.error('update_key() 脚本运行错误{}\n{}\n{}'.format(e, error_message, simplejson.dumps(login_data)))
+            self.logger.error(f"{payment_id} JazzCash 旧采集投影清理检查失败: {e}", exc_info=True)
+        self.logger.info(
+            f"{payment_id} JazzCash 已切换为 MySQL 订单窗口调度，"
+            "不再写入 hash_jazzcash/set_jazzcash 旧投影"
+        )
+        return login_data
 
 
 
@@ -637,11 +808,11 @@ class BankLogin:
             }
             # 记录发送前的日志
             self.logger.info(f"payment_id: {login_data['id']} 正在尝试发送状态更新请求: {simplejson.dumps(orders_send)}")
-        
+
             if_send = await self.send(orders_send, login_data)
             # 记录第一次发送后的日志
             self.logger.info(f"payment_id: {login_data['id']} 第一次状态更新请求返回: {simplejson.dumps(if_send)}")
-        
+
             if if_send['is_success'] is False:
                 # time.sleep(0.5)
                 await asyncio.sleep(0.5)
@@ -867,7 +1038,7 @@ class BankLogin:
                     normalized_account_id = normalized_account_id[1:]
                 elif normalized_account_id.startswith('92'):
                     normalized_account_id = normalized_account_id[2:]
-                    
+
                 # 检查是否包含 92 前缀（例如: '923710910652'）
                 full_account_id_92 = '92' + normalized_account_id
 
@@ -887,7 +1058,7 @@ class BankLogin:
                 df_flag = False
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:] 
+                match_suffix = full_account_id_92[-9:]
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -916,7 +1087,7 @@ class BankLogin:
                         txn_amount = float(amount_debited)
                     except ValueError:
                         txn_amount = 0.0
-                    
+
                     # # 出款时，对方是收款方 (BENEFICIARY_MSISDN 或 ACCOUNT_NUMBER)
                     # cust_ref_no = transaction.get('BENEFICIARY_MSISDN') or transaction.get('ACCOUNT_NUMBER')
                     # 出款时，对方是收款方 (取自 CONTEXT_DATA 中的 ACCOUNT_NUMBER)
@@ -925,7 +1096,7 @@ class BankLogin:
                     # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                     if isinstance(receive_account, str):
                         receive_account = receive_account.strip()
-                        
+
                         # 检查是否以 '92' 开头
                         if receive_account.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -940,11 +1111,11 @@ class BankLogin:
                     if not payee_account_no:
                         # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                         receive_account = transaction.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-                        
+
                         # 对新获取的 receive_account 同样进行格式处理
                         if isinstance(receive_account, str):
                             receive_account = receive_account.strip()
-                            
+
                             # 检查是否以 '92' 开头
                             if receive_account.startswith('92'):
                                 # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -953,10 +1124,10 @@ class BankLogin:
                                 receive_account = '0' + receive_account
 
                         # 再次赋值给 payee_account_no
-                        payee_account_no = receive_account 
+                        payee_account_no = receive_account
 
                     # 最终 payee_account_no 包含了所需的值
-                    
+
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)--对应是付款的账号
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     # ---------- 格式处理 ----------
@@ -982,7 +1153,7 @@ class BankLogin:
                     # 入款时，对方是付款方 (INITIATOR_MSISDN)
                     cust_ref_no = transaction.get('INITIATOR_MSISDN', '')
                     payee_account_no = full_account_id_92 # 自己的账户
-                    
+
                     # ---------- 格式处理 ----------
                     if isinstance(cust_ref_no, str):
                         cust_ref_no = cust_ref_no.strip()
@@ -990,7 +1161,7 @@ class BankLogin:
                             cust_ref_no = cust_ref_no[2:]
                         elif cust_ref_no.startswith('0') and len(cust_ref_no) > 10:
                             cust_ref_no = cust_ref_no[1:]
-                        
+
                 # --- 状态和日志 ---
                 txn_status = 'SUCCESS' # queryBill 成功返回的记录通常是成功交易
 
@@ -1000,7 +1171,7 @@ class BankLogin:
                 mapped_trans = {
                     'txnType': txn_type,
                     # 统一使用计算后的金额
-                    'txnAmount': txn_amount, 
+                    'txnAmount': txn_amount,
                     # custRefNo: 出款是对方账号/手机，入款是对方手机
                     'custRefNo': cust_ref_no,
                     'txnStatus': txn_status,
@@ -1050,15 +1221,13 @@ class BankLogin:
                 self.on_off(login_data, 0)
 
             grabstatement = False
-            #  如果有相关的key，按短时间爬取一次，如果没有，则按长时间一次
-            crawl_frequently = self.redis.get('crawl_frequently_{}'.format(login_data['id']))
             # 【核心修改】：抓单失败后强制走60秒短间隔
             self.logger.info(f"login_data==检测=={login_data}")
             if login_data.get(f"last_grab_failed_{login_data['id']}", False):
                 _time_grab = 60
                 self.logger.info(f"检测到 payment_id {login_data['id']} 上次抓单失败，强制使用60秒短间隔")
-            elif crawl_frequently or ('try_count' in login_data and login_data['try_count'] > 0):
-                # 有相关的key或者有重试的，都按指定的最短时间爬取一次
+            elif 'try_count' in login_data and login_data['try_count'] > 0:
+                # 有重试计数的按指定的最短时间爬取一次
                 _time_grab = self.time_grab
                 self.logger.info(f"条件满足，选择最短爬取间隔: {_time_grab} 秒")
 
@@ -1072,12 +1241,12 @@ class BankLogin:
             current_time = int(time.time())
             last_request_time = login_data.get('time', 0)
             required_time = current_time - _time_grab
-            
+
             # 将 Unix 时间戳转换为可读的日期格式
             last_request_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(last_request_time))
             current_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(current_time))
             required_time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(required_time))
-            
+
             # self.logger.info(f"上次请求时间: {last_request_time_str}")
             self.logger.info(f"当前时间 - 间隔要求: {current_time_str} - {_time_grab}秒 = {required_time_str}")
 
@@ -1243,7 +1412,7 @@ class BankLogin:
                          f"从 {len(members)} 个成员中分配到 {len(allocated_members)} 个")
 
         return allocated_members
-    
+
     async def verify_and_handle_abnormal_payout(self, login_data, order_data):
         self.logger.info(f"verify_and_handle_abnormal_payout 异常订单数据: {order_data}")
         receive_account = order_data.get('account_id', '')
@@ -1307,7 +1476,7 @@ class BankLogin:
 
                 # 提取用于匹配的后九位数字
                 # full_account_id_92 足够长 (至少9位)
-                match_suffix = full_account_id_92[-9:] 
+                match_suffix = full_account_id_92[-9:]
 
                 # 提取 ac_from 和 ac_to 的后九位数字
                 # 使用切片 [-9:] 确保只取后九位进行匹配
@@ -1327,7 +1496,7 @@ class BankLogin:
                     # 理论上 JazzCash 流水总有一个方向是自己，如果都不是，视为异常或无法识别的内部交易，默认按入款处理 (保守策略)
                     self.logger.warning(f"grabstatement 交易流水获取: Transaction {counter}: 无法识别交易方向，AC_FROM/AC_TO 后缀均不匹配。默认标记为入款。")
                     df_flag = False
-                    
+
                 if not df_flag:
                     # 如果不是代付（出款），且您只关心代付流水，则跳过
                     continue
@@ -1345,7 +1514,7 @@ class BankLogin:
                 # ---------- 格式处理 (ACCOUNT_NUMBER) ----------
                 if isinstance(receive_account_1, str):
                     receive_account_1 = receive_account_1.strip()
-                    
+
                     # 检查是否以 '92' 开头
                     if receive_account_1.startswith('92'):
                         # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1360,11 +1529,11 @@ class BankLogin:
                 if not payee_account_no:
                     # 重新获取 BENEFICIARY_MSISDN 赋值给 receive_account
                     receive_account_1 = trans.get('CONTEXT_DATA', {}).get('BENEFICIARY_MSISDN', '')
-                    
+
                     # 对新获取的 receive_account 同样进行格式处理
                     if isinstance(receive_account_1, str):
                         receive_account_1 = receive_account_1.strip()
-                        
+
                         # 检查是否以 '92' 开头
                         if receive_account_1.startswith('92'):
                             # 1. 如果以 '92' 开头，去掉开头的 '92'
@@ -1373,7 +1542,7 @@ class BankLogin:
                             receive_account_1 = '0' + receive_account_1
 
                     # 再次赋值给 payee_account_no
-                    payee_account_no = receive_account_1 
+                    payee_account_no = receive_account_1
 
                 # 最终 payee_account_no 包含了所需的值
 
@@ -1388,8 +1557,8 @@ class BankLogin:
                         # 2. 在处理后的 cust_ref_no 前面加上一个 '0'
                         cust_ref_no = '0' + cust_ref_no
                     # else: 如果不以 '92' 开头，则不进行任何处理，保持原样（但仍执行了 strip()）
-                
-            
+
+
                 # ---------- 新增逻辑：提取最终结果的后九位 ----------
                 if isinstance(cust_ref_no, str) and cust_ref_no:
                     cust_ref_no = cust_ref_no[-9:]
@@ -1424,19 +1593,19 @@ class BankLogin:
                             # 记录因风控逻辑跳过
                             self.logger.info(f"{login_data['id']}, 交易 {utr}: 【风控跳过：交易时间早于失败标记时间】 失败标记时间: {failed_time}，交易时间: {trans_time}。")
                             continue
-                            
+
                     except Exception as e:
                         self.logger.error(f"处理 payment_id_failed_jazzcash 检查时发生异常: {e}")
                         pass
                     # === 新增风控检查结束 ===
-                    
+
                     txn_type = 'PAY'
                     txn_status = 'SUCCESS' # QueryBill 成功返回的记录通常是成功交易
 
                     # 构造 mapped_trans
                     mapped_trans = {
                         'txnType': txn_type,
-                        'txnAmount': transaction_amount, 
+                        'txnAmount': transaction_amount,
                         # custRefNo 和 accountNo 字段指向收款方
                         'custRefNo': cust_ref_no,
                         'txnStatus': txn_status,
@@ -1445,12 +1614,12 @@ class BankLogin:
                         # payeeAccountNo 指向自己的账户（代付方）
                         'payeeAccountNo': extracted_number,
                         # payeeIfsc 使用 bankCode
-                        'payeeIfsc': trans.get('bankCode', ''), 
+                        'payeeIfsc': trans.get('bankCode', ''),
                         'tradeTime': trans.get('TRX_DTTM', ''),
                         # extOrderNo 使用 TRANS_ID (流水号)
-                        'extOrderNo': trans.get('TRANS_ID', ''), 
+                        'extOrderNo': trans.get('TRANS_ID', ''),
                         'fee': float(trans.get('FEE', 0)),
-                        'appTransaction': True 
+                        'appTransaction': True
                     }
                     # 调用 transaction_callback
                     await self.transaction_callback(mapped_trans, login_data)
@@ -1544,7 +1713,7 @@ class BankLogin:
                         self.logger.info(f"{_id}, 失败订单 {ABNORMAL_PAYOUTS_KEY} 处理完成并移除")
                     except Exception as e:
                         self.logger.error(f"{_id}, 处理失败订单 {ABNORMAL_PAYOUTS_KEY} 失败: {e}")
-                    
+
                 # 状态检查
                 # if login_data['status'] not in ['sendOTP', 'grabOTP', 'device_check', 'send_sms', 'wait_client_send_sms', 'verify_sms', 'grabstatement']:
                 if login_data['status'] not in ['grabstatement']:
@@ -1561,9 +1730,7 @@ class BankLogin:
                     return False
                 else:
                     self.update_key(login_data)
-                    # 对检测短信是否发送的时间有要求, 必须放到前面
-                    # if login_data['status'] == 'wait_client_send_sms':
-                    #     self.redis.zadd(self.set_key, {login_data['id']: 0})
+                    # 旧 hash/set 调度已退役；账单采集由 MySQL 订单窗口触发。
                     self.read_cache(f'async_main() True', login_data)
                     return True
 
@@ -1606,99 +1773,34 @@ class BankLogin:
 
     def main(self):
         try:
-            # 生成新的trace_id
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
-            synced_wallet_accounts = self.sync_mysql_wallet_collection_accounts()
-            self.logger.info(f"JazzCash wallet_status MySQL扫描完成: synced={synced_wallet_accounts}")
+            due_payment_ids = self.fetch_due_statement_payment_ids(limit=200)
+            self.logger.info(f"JazzCash MySQL账单调度扫描完成: due_payment_ids={len(due_payment_ids)}")
 
-            # 1 先检查pre_login_*中的相关数据，查看是否已经有成功的
-            pre_lgoin_keys = f"pre_login_{self.name}_*"
-            keys = self.redis.keys(pre_lgoin_keys)
-            self.logger.info(f"待抓取账单: {pre_lgoin_keys}，共获取到 {len(keys)} 个待处理pre_lgoin_keys：{keys}")
-
-            for key in keys:
-                _id = key.decode()
-                self.logger.info(f"当前正在处理: {_id}")
-                _lock = self.get_lock(_id)
-                if not _lock:
-                    self.logger.warning(f"{_id} 未获取到锁，跳过")
-                    continue
-
-                # 获取 key 对应的 value（json string）
-                value = self.redis.get(key)
-                if not value:
-                    self.logger.warning(f"{_id} 对应值为空，跳过处理")
-                    self.del_lock(_id, _lock)
-                    continue
-
-                data = simplejson.loads(value.decode())
-                if self.redis.hexists(self.hash_key, data['id']):
-                    # 如果有，则抛弃 删除pre_login*
-                    self.redis.delete(_id)
-                    self.logger.error(f" {self.hash_key} {data['id']} 已存在数据！")
-                else:
-                    # 如果没有则放置在hash和有序集合
-                    # if data.get("status") == "loginSuccessful":
-                    # 将status值转为小写后再进行判断
-                    status = data.get("status")
-                    if status and status.lower() == "activesuccessful":
-                        self.logger.info(f"{_id} {data['real_payment_id']}登录成功，推进至抓账单阶段")
-                        data['status'] = "grabstatement"
-                        data['id'] = data['real_payment_id']
-                        policy = self.payment_final_state_policy(data['id'], data)
-                        if policy == "offline":
-                            self.redis.delete(_id)
-                            self.del_lock(_id, _lock)
-                            continue
-                        self.sync_job_projection(data, schedule_score=0)
-                        self.logger.info(f"已将 {data['id']} {data['real_payment_id']}推入 hash_key: {self.hash_key} 和 zset: {self.set_key}")
-                        # 添加判断在线的key
-                        _key1 = 'login_on_{}_{}'.format(self.name, data['real_payment_id'])
-                        self.redis.setex(_key1, 11 * 60, 1)
-                        # 删除pre_login*
-                        self.redis.delete(_id)
-                        self.logger.info(f"已删除当前用户账单 {_id}，{data['real_payment_id']}已经进入处理中")
-                    else:
-                        self.logger.info(f"⏩ {_id} {data.get('real_payment_id')} 状态为 {data.get('status')}，跳过")
-
-                self.del_lock(_id, _lock)
-
-            # 2 处理有序集合数据 - 使用分片和并发处理
-            self.read_zset(self.set_key)
-
-            # 从有序集合中，获取10S外的成员，增加获取数量以支持多进程分片
-            zrangebyscore_max = int(time.time()) - 10
-            # 增加获取数量，考虑多进程分片的情况
-            batch_size = 200  # 原来是100，现在增加到200
-            members = self.redis.zrangebyscore(self.set_key, 0, zrangebyscore_max, 0, batch_size)
-
-            if not members:
-                self.logger.info(f"{self.set_key} min:0, max:{zrangebyscore_max} set中没有数据")
+            if not due_payment_ids:
+                self.logger.info("JazzCash MySQL账单调度没有待处理 payment_id")
                 time.sleep(2)
                 return
 
-            # 根据进程数量分配members
+            members = [str(payment_id).encode() for payment_id in due_payment_ids]
             allocated_members = self.get_process_allocated_members(members)
+            allocated_payment_ids = [member.decode() for member in allocated_members]
 
-            if not allocated_members:
+            if not allocated_payment_ids:
                 self.logger.info(f"进程 {os.getpid()} 没有分配到需要处理的数据")
                 time.sleep(2)
                 return
 
-            # 使用协程并发处理分配的members
+            loop = None
             try:
-                # 创建新的事件循环
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-
-                # 并发处理，每个进程最多20个并发
-                loop.run_until_complete(self.process_members_concurrent(allocated_members, concurrent_limit=20))
-
+                loop.run_until_complete(
+                    self.process_statement_payment_ids_concurrent(allocated_payment_ids, concurrent_limit=20)
+                )
             except Exception as e:
-                self.logger.error(f"并发处理失败: {e}")
-
+                self.logger.error(f"JazzCash MySQL账单候选并发处理失败: {e}")
             finally:
-                # 关闭事件循环
                 if loop and not loop.is_closed():
                     loop.close()
 

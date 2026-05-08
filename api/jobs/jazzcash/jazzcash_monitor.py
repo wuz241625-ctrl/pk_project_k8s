@@ -54,8 +54,8 @@ class AutoPayoutMonitor:
         self.logger = logger
         # 如果使用异步日志处理器，可以定期检查状态
         self.log_handler = file_handler
-        
-        
+
+
         # 默认检查间隔配置（5分钟）
         self.check_interval = 300  # 5分钟检查一次
 
@@ -69,17 +69,17 @@ class AutoPayoutMonitor:
         """初始化 JazzCash 自动代付监控特定配置"""
         # 监控配置
         self.balance_cache_ttl = 300  # 余额缓存5分钟
-        
+
         # JazzCash API配置（与 EasyPaisa 共用凭证，通过端口区分）
         self.api_url = conf.get('jazzcash_api_url', 'http://34.150.42.92:84')
         self.user_id = conf.get('jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
         self.secret_key = conf.get('jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
-        
+
         # 添加payment_id到phone的缓存配置
         self.payment_phone_cache = {}  # 缓存payment_id到phone的映射
         self.cache_ttl = 300  # 缓存5分钟
         self.cache_timestamps = {}  # 缓存时间戳
-        
+
         # Redis键名配置
         self.REDIS_KEYS = {
             'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',  # 余额有序集合（auto_payout.py使用）
@@ -92,7 +92,7 @@ class AutoPayoutMonitor:
         }
 
     # ==================== JazzCash 自动代付监控相关方法 ====================
-    
+
     def check_auto_payout_locks(self, account_id: str, payment_id: str) -> dict:
         """
         检查账号是否被auto_payout.py锁定
@@ -105,7 +105,7 @@ class AutoPayoutMonitor:
                 'can_monitor': True,
                 'lock_details': {}
             }
-            
+
             # 检查账号锁（使用手机号作为account_id）
             account_lock_key = f"{self.REDIS_KEYS['jazzcash_account_lock_prefix']}{account_id}"
             account_lock_value = self.redis.get(account_lock_key)
@@ -118,7 +118,7 @@ class AutoPayoutMonitor:
                     'ttl': self.redis.ttl(account_lock_key)
                 }
                 self.logger.info(f"账号 {account_id} 被auto_payout.py锁定: {account_lock_value.decode()}")
-            
+
             # 检查payment_id锁
             payment_lock_key = f"{self.REDIS_KEYS['payment_id_lock_prefix']}{payment_id}"
             payment_lock_value = self.redis.get(payment_lock_key)
@@ -131,9 +131,9 @@ class AutoPayoutMonitor:
                     'ttl': self.redis.ttl(payment_lock_key)
                 }
                 self.logger.info(f"Payment ID {payment_id} 被auto_payout.py锁定: {payment_lock_value.decode()}")
-            
+
             return lock_info
-            
+
         except Exception as e:
             self.logger.error(f"检查auto_payout.py锁失败: {e}")
             # 出错时为了安全，返回不能监控
@@ -143,7 +143,7 @@ class AutoPayoutMonitor:
                 'can_monitor': False,
                 'error': str(e)
             }
-    
+
     def test_lock_mechanism(self, account_id: str = "test_account", payment_id: str = "test_payment"):
         """
         测试锁机制是否正常工作
@@ -151,108 +151,108 @@ class AutoPayoutMonitor:
         """
         try:
             self.logger.info("=== 测试锁机制 ===")
-            
+
             # 1. 测试无锁状态
             lock_info = self.check_auto_payout_locks(account_id, payment_id)
             self.logger.info(f"无锁状态测试: can_monitor={lock_info['can_monitor']}")
-            
+
             # 2. 模拟账号锁
             account_lock_key = f"{self.REDIS_KEYS['jazzcash_account_lock_prefix']}{account_id}"
             self.redis.setex(account_lock_key, 60, "test_order_123_abcd1234")
             lock_info = self.check_auto_payout_locks(account_id, payment_id)
             self.logger.info(f"账号锁测试: can_monitor={lock_info['can_monitor']}, account_locked={lock_info['account_locked']}")
-            
+
             # 3. 模拟payment_id锁
             payment_lock_key = f"{self.REDIS_KEYS['payment_id_lock_prefix']}{payment_id}"
             self.redis.setex(payment_lock_key, 60, "test_value_5678efgh")
             lock_info = self.check_auto_payout_locks(account_id, payment_id)
             self.logger.info(f"双锁测试: can_monitor={lock_info['can_monitor']}, both_locked={lock_info['account_locked'] and lock_info['payment_id_locked']}")
-            
+
             # 4. 清理测试锁
             self.redis.delete(account_lock_key)
             self.redis.delete(payment_lock_key)
             lock_info = self.check_auto_payout_locks(account_id, payment_id)
             self.logger.info(f"清理后测试: can_monitor={lock_info['can_monitor']}")
-            
+
             self.logger.info("=== 锁机制测试完成 ===")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"测试锁机制失败: {e}")
             return False
-    
+
     async def get_online_payments_from_db(self):
         """从数据库获取在线状态的payment账号"""
         import pymysql
-        
+
         try:
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     sql = """
                         SELECT id, phone, account, name, bank_type, bank_type_id, partner_id,
                                wallet_status
-                        FROM payment 
+                        FROM payment
                         WHERE wallet_status = 1
                           AND (bank_type = 98 OR bank_type_id = 98)
                         ORDER BY id
                     """
-                    
+
                     cur.execute(sql)
                     results = cur.fetchall()
-                    
+
                     self.logger.info(f"从数据库获取到 {len(results)} 个在线payment账号")
                     return results
-                    
+
             finally:
                 connection.close()
-                
+
         except Exception as e:
             self.logger.error(f"从数据库获取payment账号失败: {e}")
             return []
-    
+
     def get_phone_by_payment_id(self, payment_id):
         """通过payment_id查询手机号和相关信息"""
         import pymysql
         import time
-        
+
         start_time = time.time()
         self.logger.info(f"开始查询payment_id: {payment_id} 的详细信息")
-        
+
         try:
             self.logger.info(f"连接数据库: {conf['mysql_host']}:{conf.get('mysql_port', 3306)}")
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     sql = """
                         SELECT phone, account, name, bank_type, partner_id, status, certified
-                        FROM payment 
+                        FROM payment
                         WHERE id = %s
                     """
                     self.logger.info(f"执行SQL查询: payment_id={payment_id}")
                     self.logger.info(f"SQL语句: {sql.strip()}")
-                    
+
                     query_start = time.time()
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
                     query_time = time.time() - query_start
-                    
+
                     if result:
                         self.logger.info(f"查询成功! payment_id={payment_id}, 查询耗时: {query_time:.3f}s")
                         self.logger.info(f"查询结果:")
@@ -262,13 +262,13 @@ class AutoPayoutMonitor:
                         self.logger.info(f"   银行类型: {result['bank_type']}")
                         self.logger.info(f"   合作伙伴ID: {result['partner_id']}")
                         self.logger.info(f"   状态: {result['status']} (认证: {result['certified']})")
-                        
+
                         # 检查状态是否符合使用条件
                         if result['status'] == 1 and result['certified'] == 1:
                             self.logger.info(f"账号状态正常，可以使用")
                         else:
                             self.logger.warning(f"账号状态异常: status={result['status']}, certified={result['certified']}")
-                        
+
                         return result
                     else:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
@@ -277,33 +277,33 @@ class AutoPayoutMonitor:
                 connection.close()
                 total_time = time.time() - start_time
                 self.logger.info(f"数据库连接已关闭, 总耗时: {total_time:.3f}s")
-                
+
         except Exception as e:
             total_time = time.time() - start_time
             self.logger.error(f"查询payment_id {payment_id} 失败: {e}, 耗时: {total_time:.3f}s")
             import traceback
             self.logger.error(f"详细错误信息: {traceback.format_exc()}")
             return None
-    
+
     # 添加缓存版本的查询方法，提高性能
-    
+
     def get_phone_by_payment_id_cached(self, payment_id):
         """带缓存的payment_id查询方法"""
         import time
-        
+
         current_time = time.time()
         cache_key = str(payment_id)
-        
+
         self.logger.info(f"尝试从缓存获取payment_id: {payment_id} 的信息")
         self.logger.info(f"缓存键: {cache_key}")
         self.logger.info(f"当前缓存统计: 总条目数={len(self.payment_phone_cache)}, TTL={self.cache_ttl}s")
-        
+
         # 检查缓存是否有效
         if cache_key in self.payment_phone_cache:
             if cache_key in self.cache_timestamps:
                 cache_age = current_time - self.cache_timestamps[cache_key]
                 self.logger.info(f"缓存存在，缓存年龄: {cache_age:.1f}s / {self.cache_ttl}s")
-                
+
                 if cache_age < self.cache_ttl:
                     cached_result = self.payment_phone_cache[cache_key]
                     self.logger.info(f"缓存命中! payment_id={payment_id}")
@@ -317,63 +317,63 @@ class AutoPayoutMonitor:
                 del self.payment_phone_cache[cache_key]
         else:
             self.logger.info(f"缓存未命中，payment_id={payment_id} 不在缓存中")
-        
+
         # 缓存失效或不存在，查询数据库
         self.logger.info(f"缓存失效，开始数据库查询...")
         payment_info = self.get_phone_by_payment_id(payment_id)
-        
+
         if payment_info:
             self.logger.info(f"查询成功，更新缓存: payment_id={payment_id}")
             self.payment_phone_cache[cache_key] = payment_info
             self.cache_timestamps[cache_key] = current_time
-            
+
             # 清理过期缓存项
             expired_keys = []
             for k, timestamp in self.cache_timestamps.items():
                 if current_time - timestamp >= self.cache_ttl:
                     expired_keys.append(k)
-            
+
             if expired_keys:
                 self.logger.info(f"清理 {len(expired_keys)} 个过期缓存项")
                 for k in expired_keys:
                     self.payment_phone_cache.pop(k, None)
                     self.cache_timestamps.pop(k, None)
-            
+
             self.logger.info(f"缓存更新完成，当前缓存大小: {len(self.payment_phone_cache)} 项")
         else:
             self.logger.warning(f"数据库查询失败，payment_id={payment_id} 不会被缓存")
-        
+
         return payment_info
-    
+
     def check_payment_status_in_db(self, payment_id):
         """检查payment在数据库中的状态是否仍然在线"""
         import pymysql
         import time
-        
+
         start_time = time.time()
         self.logger.debug(f"检查payment_id: {payment_id} 的数据库状态")
-        
+
         try:
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     sql = """
                         SELECT status, certified
-                        FROM payment 
+                        FROM payment
                         WHERE id = %s
                     """
-                    
+
                     cur.execute(sql, payment_id)
                     result = cur.fetchone()
-                    
+
                     if result:
                         is_online = result['status'] == 1 and result['certified'] == 1
                         self.logger.debug(f"payment_id {payment_id} 数据库状态: status={result['status']}, certified={result['certified']}, is_online={is_online}")
@@ -381,31 +381,31 @@ class AutoPayoutMonitor:
                     else:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return False
-                        
+
             finally:
                 connection.close()
                 query_time = time.time() - start_time
                 self.logger.debug(f"payment_id {payment_id} 状态检查耗时: {query_time:.3f}s")
-                
+
         except Exception as e:
             query_time = time.time() - start_time
             self.logger.error(f"检查payment_id {payment_id} 数据库状态失败: {e}, 耗时: {query_time:.3f}s")
             # 出错时为了安全，返回False（不在线）
             return False
-    
+
     async def get_online_jazzcash_accounts(self):
         """从hash_{self.name}中获取已登录成功的JazzCash账号列表"""
         if self.name != 'jazzcash':
             return []
-            
+
         try:
             # 1. 从Redis Hash中获取所有已登录账号
             hash_data = self.redis.hgetall(self.hash_key)
-            
+
             if not hash_data:
                 self.logger.info(f"{self.hash_key}中没有已登录的JazzCash账号")
                 return []
-            
+
             # 转换为账号对象列表
             accounts = []
             for account_id, login_data_str in hash_data.items():
@@ -413,25 +413,25 @@ class AutoPayoutMonitor:
                     # 解码账号ID
                     if isinstance(account_id, bytes):
                         account_id = account_id.decode()
-                    
+
                     # 解析登录数据
                     login_data = simplejson.loads(login_data_str.decode() if isinstance(login_data_str, bytes) else login_data_str)
-                    
+
                     # 只处理状态为 loginSuccessful 的账号（已登录成功）
                     if login_data.get('status') != 'loginSuccessful':
                         self.logger.debug(f"账号 {account_id} 状态为 {login_data.get('status')}，跳过监控")
                         continue
-                    
+
                     # 🔥 现在account_id是payment_id（数字），需要查询手机号
                     payment_id = account_id
                     payment_info = self.get_phone_by_payment_id_cached(payment_id)
-                    
+
                     if not payment_info or not payment_info.get('phone'):
                         self.logger.warning(f"payment_id {payment_id} 无法获取手机号，跳过监控")
                         continue
-                    
+
                     phone = payment_info['phone']
-                    
+
                     # 构造账号信息
                     account_info = {
                         'id': payment_id,  # payment.id（数字）
@@ -445,14 +445,14 @@ class AutoPayoutMonitor:
                         'login_data': login_data  # 保存完整的登录数据
                     }
                     accounts.append(account_info)
-                    
+
                 except Exception as e:
                     self.logger.error(f"解析账号数据失败 {account_id}: {e}")
                     continue
-            
+
             self.logger.info(f"从{self.hash_key}获取到 {len(accounts)} 个已登录账号: {[a['id'] for a in accounts]}")
             return accounts
-            
+
         except Exception as e:
             self.logger.error(f"获取在线JazzCash账号列表失败: {e}")
             return []
@@ -461,9 +461,9 @@ class AutoPayoutMonitor:
         """检查单个账号的健康状态"""
         from datetime import datetime
         from decimal import Decimal
-        
+
         payment_id = login_data['id']  # 现在是payment.id（数字）
-        
+
         # 🔥 通过payment_id查询手机号信息
         payment_info = self.get_phone_by_payment_id_cached(payment_id)
         if not payment_info or not payment_info.get('phone'):
@@ -479,13 +479,13 @@ class AutoPayoutMonitor:
                 'error_message': f'无法获取payment_id {payment_id} 的手机号信息',
                 'api_response_time': 0
             }
-        
+
         phone = payment_info['phone']
         account_name = f"JazzCash_{phone}"  # 使用手机号显示
-        
+
         try:
             self.logger.info(f"检查账号 payment_id:{payment_id} phone:{phone} ({account_name}) 的健康状态")
-            
+
             # 初始化状态信息，使用查询到的手机号
             status_info = {
                 'account_id': payment_id,  # 保持使用payment_id作为标识符
@@ -500,17 +500,17 @@ class AutoPayoutMonitor:
                 'error_message': None,
                 'api_response_time': 0
             }
-            
+
             # 🔥 1. 调用JazzCash API检查账号状态和余额（带重试机制）
             max_retries = 4  # 最多重试4次
             retry_delay = 1  # 每次重试间隔1秒
             api_result = None
-            
+
             for attempt in range(max_retries):
                 self.logger.info(f"账号 {payment_id} 余额查询 - 第 {attempt + 1} 次尝试")
                 try:
                     api_result = await self.call_jazzcash_balance_api(login_data)
-                    
+
                     # 如果是423错误且还有重试机会，则重试
                     if api_result and api_result.get('should_retry'):
                         if attempt < max_retries - 1:
@@ -522,22 +522,22 @@ class AutoPayoutMonitor:
                         else:
                             # 重试后仍然失败
                             self.logger.error(f"账号 {payment_id} 重试 {max_retries} 次后仍收到 423 错误")
-                    
+
                     # 成功或其他非423错误，跳出重试循环
                     break
-                    
+
                 except Exception as e:
                     self.logger.error(f"账号 {payment_id} 余额查询异常: {e}")
                     api_result = {'success': False, 'error': str(e)}
                     break
-            
+
             # 🔥 2. 调用限额查询API（带重试机制）
             limits_result = None
-            
+
             for attempt in range(max_retries):
                 try:
                     limits_result = await self.call_jazzcash_limits_api(login_data)
-                    
+
                     # 如果是423错误且还有重试机会，则重试
                     if limits_result and limits_result.get('should_retry'):
                         if attempt < max_retries - 1:
@@ -548,15 +548,15 @@ class AutoPayoutMonitor:
                             continue
                         else:
                             self.logger.error(f"账号 {payment_id} 限额查询重试 {max_retries} 次后仍失败")
-                    
+
                     # 成功或其他非423错误，跳出重试循环
                     break
-                    
+
                 except Exception as e:
                     self.logger.error(f"账号 {payment_id} 限额查询异常: {e}")
                     limits_result = {'success': False, 'error': str(e)}
                     break
-            
+
             # 3. 处理余额查询结果
             if api_result and api_result.get('success'):
                 # ✅ API调用成功
@@ -567,7 +567,7 @@ class AutoPayoutMonitor:
                     'api_response_time': api_result.get('response_time', 0)
                 })
                 self.logger.info(f"账号 payment_id:{payment_id} phone:{phone} 余额查询成功，当前余额: {status_info['balance']}")
-                
+
             elif api_result and api_result.get('should_offline'):
                 # ❌ 501错误 - 账号无效，强制下线
                 status_info.update({
@@ -578,7 +578,7 @@ class AutoPayoutMonitor:
                     'force_offline': True
                 })
                 self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} 收到501错误，将强制下线: {api_result.get('error')}")
-                
+
             else:
                 # ❌ API调用失败（包括423错误、其他错误）
                 status_info.update({
@@ -587,13 +587,13 @@ class AutoPayoutMonitor:
                     'error_message': api_result.get('error', 'API调用失败') if api_result else 'API无响应',
                     'api_response_time': api_result.get('response_time', 0) if api_result else 0
                 })
-                
+
                 # 根据错误类型输出不同的日志
                 if api_result and api_result.get('should_retry'):
                     self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} 重试{max_retries}次后仍收到423错误，将执行下线: {api_result.get('error')}")
                 else:
                     self.logger.warning(f"账号 payment_id:{payment_id} phone:{phone} API调用失败: {api_result.get('error') if api_result else 'API无响应'}")
-            
+
             # 🔥 3. 处理限额查询结果（独立保存，不影响status_info）
             if isinstance(limits_result, Exception):
                 # 限额查询异常
@@ -604,7 +604,7 @@ class AutoPayoutMonitor:
                 limits_data['phone'] = phone
                 limits_data['query_time'] = datetime.now().isoformat()
                 limits_data['response_time'] = limits_result.get('response_time', 0)
-                
+
                 # 🔥 直接保存到Redis（独立的Hash），不放入status_info
                 await self.save_limits_to_redis(payment_id, limits_data)
                 self.logger.info(f"账号 payment_id:{payment_id} 限额查询成功并已保存到Redis")
@@ -612,10 +612,10 @@ class AutoPayoutMonitor:
                 # 限额查询失败
                 error = limits_result.get('error') if isinstance(limits_result, dict) else str(limits_result)
                 self.logger.warning(f"账号 payment_id:{payment_id} 限额查询失败: {error}")
-            
+
             self.logger.info(f"账号 payment_id:{payment_id} phone:{phone} 检查完成: {status_info['status']}, 余额: {status_info['balance']}")
             return status_info
-            
+
         except Exception as e:
             self.logger.error(f"检查账号 payment_id:{payment_id} 健康状态异常: {e}")
             return {
@@ -651,10 +651,10 @@ class AutoPayoutMonitor:
         """调用JazzCash余额查询API（按照JazzCash文档格式）"""
         import base64
         import hashlib
-        
+
         try:
             payment_id = login_data['id']  # 现在是payment.id（数字）
-            
+
             # 🔥 通过payment_id查询手机号
             payment_info = self.get_phone_by_payment_id_cached(payment_id)
             if not payment_info or not payment_info.get('phone'):
@@ -664,43 +664,43 @@ class AutoPayoutMonitor:
                     'error': f'无法获取payment_id {payment_id} 的手机号信息',
                     'response_time': 0
                 }
-            
+
             phone = payment_info['phone']  # 从数据库查询到的手机号
             self.logger.debug(f"payment_id {payment_id} 对应的手机号: {phone}")
-            
+
             # 🔥 JazzCash 余额查询只需要 account_id（与 EasyPaisa 不同，不需要 account_accno）
             # 构造payload数据
             payload_data = {
                 "account_id": phone  # 手机号
             }
             self.logger.info(f"payment_id {payment_id} JazzCash余额查询，account_id={phone}")
-            
+
             # 构造内层payload（按照JazzCash文档格式）
             inner_payload = {
                 "id": str(uuid.uuid4()),  # 生成UUID
                 "action": "queryBalance",
                 "payload": payload_data
             }
-            
+
             # 构造FormBody格式（按照JazzCash文档）
             data_b64 = base64.b64encode(json.dumps(inner_payload).encode()).decode()
-            
+
             # 计算MD5签名
             sign_string = data_b64 + self.secret_key
             sign = hashlib.md5(sign_string.encode()).hexdigest()
-            
+
             form_data = {
                 'user_id': self.user_id,
                 'data': data_b64,
                 'sign': sign
             }
-            
+
             self.logger.info(f"调用JazzCash余额API: account_id={phone}, api_url={self.api_url}")
-            
+
             start_time = time.time()
             result = await self._post_jazzcash_api(form_data, login_data)
             response_time = time.time() - start_time
-            
+
             if result is None:
                 self.logger.error(f"API无响应")
                 return {
@@ -708,7 +708,7 @@ class AutoPayoutMonitor:
                     'error': 'API无响应',
                     'response_time': response_time
                 }
-            
+
             if result.get('code') == 200:
                 # 根据JazzCash文档，余额在 data.data.avaliableBalance 字段
                 data = result.get('data', {})
@@ -716,7 +716,7 @@ class AutoPayoutMonitor:
                 inner_data = data.get('data', {}) if isinstance(data, dict) else {}
                 # 注意：API 返回的是 avaliableBalance（拼写错误，但这是实际返回）
                 balance = inner_data.get('avaliableBalance', inner_data.get('availableBalance', 0))
-                
+
                 self.logger.info(f"余额查询成功: payment_id={payment_id}, balance={balance}")
                 return {
                     'success': True,
@@ -755,7 +755,7 @@ class AutoPayoutMonitor:
                     'response_time': response_time,
                     'data': result
                 }
-                        
+
         except Exception as e:
             self.logger.error(f"调用JazzCash余额API异常: {e}")
             import traceback
@@ -770,10 +770,10 @@ class AutoPayoutMonitor:
         """调用JazzCash限额查询API"""
         import base64
         import hashlib
-        
+
         try:
             payment_id = login_data['id']
-            
+
             # 🔥 通过payment_id查询手机号
             payment_info = self.get_phone_by_payment_id_cached(payment_id)
             if not payment_info or not payment_info.get('phone'):
@@ -783,41 +783,41 @@ class AutoPayoutMonitor:
                     'error': f'无法获取payment_id {payment_id} 的手机号信息',
                     'response_time': 0
                 }
-            
+
             phone = payment_info['phone']
             self.logger.debug(f"payment_id {payment_id} 限额查询，使用手机号: {phone}")
-            
+
             # 构造payload数据（限额查询只需要account_id）
             payload_data = {
                 "account_id": phone  # 手机号
             }
-            
+
             # 构造内层payload
             inner_payload = {
                 "id": str(uuid.uuid4()),  # 生成UUID
                 "action": "queryLimits",  # 🔥 限额查询接口
                 "payload": payload_data
             }
-            
+
             # 构造FormBody格式（按照JazzCash文档）
             data_b64 = base64.b64encode(json.dumps(inner_payload).encode()).decode()
-            
+
             # 计算MD5签名
             sign_string = data_b64 + self.secret_key
             sign = hashlib.md5(sign_string.encode()).hexdigest()
-            
+
             form_data = {
                 'user_id': self.user_id,
                 'data': data_b64,
                 'sign': sign
             }
-            
+
             self.logger.info(f"调用JazzCash限额API: payment_id={payment_id}, account_id={phone}, api_url={self.api_url}")
-            
+
             start_time = time.time()
             result = await self._post_jazzcash_api(form_data, login_data)
             response_time = time.time() - start_time
-            
+
             if result is None:
                 self.logger.error(f"限额API无响应: payment_id={payment_id}")
                 return {
@@ -825,16 +825,16 @@ class AutoPayoutMonitor:
                     'error': 'API无响应',
                     'response_time': response_time
                 }
-            
+
             if result.get('code') == 200:
                 # 🔥 根据实际API返回，限额在 data.data.accountLimits 和 data.data.remainingLimits
                 data = result.get('data', {})
                 inner_data = data.get('data', {}) if isinstance(data, dict) else {}
-                
+
                 # 提取限额信息（accountLimits 是总限额，remainingLimits 是剩余限额）
                 account_limits = inner_data.get('accountLimits', {})
                 remaining_limits = inner_data.get('remainingLimits', {})
-                
+
                 # 转换为前端兼容格式（debit=转出/发送, credit=转入/接收）
                 # 前端显示格式：剩余/总额
                 limits_info = {
@@ -854,7 +854,7 @@ class AutoPayoutMonitor:
                     'creditYearly': remaining_limits.get('yearlyReceivingLimit', '0'),
                     'creditYearlyThreshold': account_limits.get('yearlyReceivingLimit', '0'),
                 }
-                
+
                 self.logger.info(f"限额查询成功: payment_id={payment_id}, 日转出限额={limits_info['debitDaily']}/{limits_info['debitDailyThreshold']}, 月转出限额={limits_info['debitMonthly']}/{limits_info['debitMonthlyThreshold']}, 日转入限额={limits_info['creditDaily']}/{limits_info['creditDailyThreshold']}")
                 return {
                     'success': True,
@@ -894,7 +894,7 @@ class AutoPayoutMonitor:
                     'response_time': response_time,
                     'data': result
                 }
-                        
+
         except Exception as e:
             self.logger.error(f"调用JazzCash限额API异常: {e}")
             import traceback
@@ -909,9 +909,9 @@ class AutoPayoutMonitor:
         """保存限额数据到Redis Hash"""
         try:
             from datetime import datetime
-            
+
             limits_hash_key = self.REDIS_KEYS['jazzcash_limits_hash']
-            
+
             # 构造完整的限额数据记录（使用前端兼容字段）
             limits_record = {
                 'payment_id': str(payment_id),
@@ -933,20 +933,20 @@ class AutoPayoutMonitor:
                 'update_time': datetime.now().isoformat(),
                 'response_time': limits_data.get('response_time', 0)
             }
-            
+
             # 🔥 存储到Hash：field=payment_id, value=JSON字符串
             self.redis.hset(
                 limits_hash_key,
                 str(payment_id),
                 json.dumps(limits_record)
             )
-            
+
             # 🔥 不设置过期时间，永久保存限额数据用于历史查询
             # self.redis.expire(limits_hash_key, self.limits_cache_ttl)
-            
+
             self.logger.info(f"限额数据已保存到Redis: payment_id={payment_id}, 日转出限额={limits_record['debitDaily']}/{limits_record['debitDailyThreshold']}, 月转出限额={limits_record['debitMonthly']}/{limits_record['debitMonthlyThreshold']}, 日转入限额={limits_record['creditDaily']}/{limits_record['creditDailyThreshold']}")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"保存限额数据到Redis失败: payment_id={payment_id}, error={e}")
             import traceback
@@ -958,13 +958,13 @@ class AutoPayoutMonitor:
         try:
             limits_hash_key = self.REDIS_KEYS['jazzcash_limits_hash']
             limits_json = self.redis.hget(limits_hash_key, str(payment_id))
-            
+
             if limits_json:
                 limits_data = json.loads(limits_json.decode() if isinstance(limits_json, bytes) else limits_json)
                 return limits_data
             else:
                 return None
-                
+
         except Exception as e:
             self.logger.error(f"从Redis获取限额数据失败: payment_id={payment_id}, error={e}")
             return None
@@ -974,16 +974,16 @@ class AutoPayoutMonitor:
         try:
             account_id = status_info['account_id']
             balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-            
+
             # 先判断是否正常
             if status_info['is_online'] and status_info['status'] == 'online':
                 # 200成功：更新余额到有序集合和状态缓存，上线处理
                 balance = float(status_info['balance'])
-                
+
                 # 🔥 使用有序集合存储余额（账号ID作为member，余额作为score）
                 # 不设置过期时间，数据永久保存，离线时手动删除
                 self.redis.zadd(balance_sorted_set, {account_id: balance})
-                
+
                 # 更新状态缓存（包含余额）
                 status_key = f"{self.REDIS_KEYS['jazzcash_status_prefix']}{account_id}"
                 status_data = {
@@ -994,9 +994,9 @@ class AutoPayoutMonitor:
                     'api_response_time': status_info['api_response_time']
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
-                
+
                 # MySQL 三最终态是资格源；在线成功只更新余额和状态缓存。
-                
+
             else:
                 # API错误：只更新状态缓存（不包含余额），下线处理
                 status_key = f"{self.REDIS_KEYS['jazzcash_status_prefix']}{account_id}"
@@ -1008,7 +1008,7 @@ class AutoPayoutMonitor:
                     # 注意：不包含balance字段，保持原有余额不变
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
-                
+
                 # 下线处理：保留余额数据在有序集合中，不删除（以便Admin后台查看最后余额）
                 # self.redis.zrem(balance_sorted_set, account_id)  # 已注释：不删除余额
                 # 根据错误类型记录日志和特殊处理
@@ -1022,10 +1022,10 @@ class AutoPayoutMonitor:
                     self.logger.warning(f"账号 {account_id} 因API错误被下线: {status_info.get('error_message')}")
                 else:
                     self.logger.info(f"账号 {account_id} 已下线: {status_info['status']}")
-            
+
             self.logger.debug(f"账号 {account_id} Redis缓存更新完成")
             return False  # 正常处理，账号未删除
-            
+
         except Exception as e:
             self.logger.error(f"更新账号 {account_id} Redis缓存失败: {e}")
             return False  # 异常情况，账号未删除
@@ -1036,39 +1036,39 @@ class AutoPayoutMonitor:
             offline_accounts = [s for s in all_status if not s['is_online']]
             error_accounts = [s for s in all_status if 'error' in s['status']]
             invalid_accounts = [s for s in all_status if s['status'] == 'account_invalid']
-            
+
             if offline_accounts:
                 account_names = [s['account_name'] for s in offline_accounts]
                 self.logger.warning(f"发现 {len(offline_accounts)} 个离线账号: {account_names}")
-            
+
             # 代收业务不需要关心余额不足的问题，已删除 low_balance 处理逻辑
-            
+
             if invalid_accounts:
                 for account in invalid_accounts:
                     self.logger.error(f"账号 {account['account_name']} 收到501错误已强制下线: {account['error_message']}")
-            
+
             if error_accounts:
                 for account in error_accounts:
                     if account['status'] != 'account_invalid':  # 避免重复记录501错误
                         self.logger.error(f"账号 {account['account_name']} 检查异常: {account['error_message']}")
-                    
+
         except Exception as e:
             self.logger.error(f"处理问题账号异常: {e}")
 
     async def generate_monitor_report(self, all_status):
         """生成监控报告"""
         from datetime import datetime
-        
+
         try:
             total_count = len(all_status)
             online_count = len([s for s in all_status if s['is_online']])
             offline_count = total_count - online_count
-            
+
             total_balance = sum(s['balance'] for s in all_status)
             online_balance = sum(s['balance'] for s in all_status if s['is_online'])
-            
+
             avg_response_time = sum(s['api_response_time'] for s in all_status) / total_count if total_count > 0 else 0
-            
+
             report = {
                 'report_time': datetime.now().isoformat(),
                 'total_accounts': total_count,
@@ -1079,21 +1079,21 @@ class AutoPayoutMonitor:
                 'online_balance': str(online_balance),
                 'avg_response_time': f"{avg_response_time:.2f}s"
             }
-            
+
             # 存储到Redis
             report_key = self.REDIS_KEYS['jazzcash_monitor_report']
             self.redis.hmset(report_key, report)
             self.redis.expire(report_key, 3600)  # 1小时过期
-            
+
             # 输出报告
             self.logger.info(f"=== JazzCash自动代付账号监控报告 ===")
             self.logger.info(f"总账号: {total_count}, 在线: {online_count}, 离线: {offline_count}")
             self.logger.info(f"在线率: {report['online_rate']}")
             self.logger.info(f"总余额: {total_balance}, 在线余额: {online_balance}")
             self.logger.info(f"平均响应时间: {report['avg_response_time']}")
-            
+
             return report
-            
+
         except Exception as e:
             self.logger.error(f"生成监控报告异常: {e}")
             return {}
@@ -1101,43 +1101,44 @@ class AutoPayoutMonitor:
     async def run_easypaisa_monitor_check(self):
         """执行 JazzCash 监控检查（方法名保留以兼容调用）"""
         return await self.run_jazzcash_monitor_check()
-    
+
     async def run_jazzcash_monitor_check(self):
         """执行 JazzCash 监控检查"""
         try:
             self.logger.info("=" * 50)
-            self.logger.info(f"开始检查{self.hash_key}中已登录成功的JazzCash账号状态")
-            
-            # 1. 获取已登录账号（从hash_jazzcash中获取状态为loginSuccessful的账号）
-            accounts = await self.get_online_jazzcash_accounts()
+            self.logger.info("开始从 MySQL payment.wallet_status 检查 JazzCash 账号健康状态")
+
+            accounts = await self.get_online_payments_from_db()
             if not accounts:
-                self.logger.warning(f"{self.hash_key}中没有已登录成功的JazzCash账号需要检查")
+                self.logger.info("MySQL 中没有 wallet_status=1 的 JazzCash 账号需要检查")
                 return
-            
-            # 2. 并发检查所有账号状态
+
+            members = [str(account['id']).encode() for account in accounts if account.get('id') is not None]
+            allocated_members = self.get_process_allocated_members(members)
+            allocated_ids = {member.decode() for member in allocated_members}
+            if not allocated_ids:
+                self.logger.info("当前进程没有分配到 JazzCash monitor 账号")
+                return
+            accounts = [account for account in accounts if str(account.get('id')) in allocated_ids]
+
             check_tasks = [self.check_account_health(account) for account in accounts]
             all_status = await asyncio.gather(*check_tasks, return_exceptions=True)
-            
-            # 3. 过滤异常结果
+
             valid_status = []
             for status in all_status:
                 if isinstance(status, Exception):
                     self.logger.error(f"账号检查异常: {status}")
                 else:
                     valid_status.append(status)
-            
-            # 4. 更新缓存
+
             for status in valid_status:
                 await self.update_redis_cache(status)
-            
-            # 5. 处理有问题的账号
+
             await self.handle_problematic_accounts(valid_status)
-            
-            # 6. 生成监控报告
             await self.generate_monitor_report(valid_status)
-            
-            self.logger.info(f"{self.hash_key}中的JazzCash账号状态检查完成")
-            
+
+            self.logger.info("JazzCash MySQL 钱包健康状态检查完成")
+
         except Exception as e:
             self.logger.error(f"JazzCash账号状态检查异常: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
@@ -1173,49 +1174,9 @@ class AutoPayoutMonitor:
             self.check_redis_connection()  # 递归尝试，不恢复连接不进行下一步
 
     def check_data_consistency(self):
-        """检查Hash和ZSet数据一致性"""
-        try:
-            hash_members = set(self.redis.hkeys(self.hash_key))
-            zset_members = set(self.redis.zrange(self.set_key, 0, -1))
-            
-            # 只在Hash中存在的账号
-            hash_only = hash_members - zset_members
-            if hash_only:
-                self.logger.warning(f"🔍 发现{len(hash_only)}个账号只在Hash中存在: {list(hash_only)[:5]}{'...' if len(hash_only) > 5 else ''}")
-                
-                # 自动修复: 将Hash中的账号添加到ZSet
-                for payment_id in hash_only:
-                    try:
-                        initial_timestamp = int(time.time()) - self.check_interval - 60
-                        self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
-                        self.logger.info(f"✅ 自动修复: 将账号 {payment_id} 添加到ZSet")
-                    except Exception as e:
-                        self.logger.error(f"❌ 自动修复失败 {payment_id}: {e}")
-                        
-            # 只在ZSet中存在的账号  
-            zset_only = zset_members - hash_members
-            if zset_only:
-                self.logger.warning(f"🧹 发现{len(zset_only)}个账号只在ZSet中存在: {list(zset_only)[:5]}{'...' if len(zset_only) > 5 else ''}")
-                
-                # 自动修复: 删除ZSet中的孤立数据
-                for payment_id in zset_only:
-                    try:
-                        self.redis.zrem(self.set_key, payment_id)
-                        self.logger.info(f"✅ 自动修复: 从ZSet中删除孤立账号 {payment_id}")
-                    except Exception as e:
-                        self.logger.error(f"❌ 自动修复失败 {payment_id}: {e}")
-            
-            is_consistent = len(hash_only) == 0 and len(zset_only) == 0
-            if is_consistent:
-                self.logger.debug(f"✅ Hash和ZSet数据一致性检查通过 (共{len(hash_members)}个账号)")
-            else:
-                self.logger.info(f"🔧 Hash和ZSet数据不一致已自动修复: Hash({len(hash_members)}), ZSet({len(zset_members)})")
-                
-            return is_consistent
-            
-        except Exception as e:
-            self.logger.error(f"❌ 数据一致性检查失败: {e}")
-            return False
+        """旧 hash/set 一致性检查已退役。"""
+        self.logger.info("JazzCash monitor 已切换为 MySQL wallet_status 调度，跳过旧 hash/set 一致性检查")
+        return True
 
     def get_proxies(self):
         try:
@@ -1286,13 +1247,13 @@ class AutoPayoutMonitor:
             # 1. 删除主数据存储
             hash_deleted = self.redis.hdel(self.hash_key, account_id)
             zset_deleted = self.redis.zrem(self.set_key, account_id)
-            
+
             # 2. 删除JazzCash特定缓存
             # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
             # balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
             # balance_deleted = self.redis.zrem(balance_sorted_set, account_id)
             self.redis.delete(f'jazzcash_status:{account_id}')
-            
+
             # 3. 删除登录状态键
             self.redis.delete(f'login_on_{self.name}_{account_id}')
 
@@ -1301,12 +1262,12 @@ class AutoPayoutMonitor:
                 self.update_payment_status_to_offline(account_id, reason)
             except Exception as db_e:
                 self.logger.error(f"更新数据库payment表状态失败: {db_e}")
-            
+
             self.logger.warning(f"🗑️ 已完全删除账号 {account_id} 的所有数据，原因: {reason}")
             self.logger.info(f"删除详情: hash删除{hash_deleted}项, zset删除{zset_deleted}项, balance删除{balance_deleted}项")
-            
+
             return True
-            
+
         except Exception as e:
             self.logger.error(f"删除账号 {account_id} 数据时出错: {e}")
             return False
@@ -1315,21 +1276,21 @@ class AutoPayoutMonitor:
         """更新payment表中账号状态为下线"""
         try:
             import pymysql
-            
+
             connection = pymysql.connect(
                 host=conf['mysql_host'],
-                user=conf['mysql_user'], 
+                user=conf['mysql_user'],
                 password=conf['mysql_password'],
                 db=conf['mysql_database'],
                 charset='utf8mb4',
                 cursorclass=pymysql.cursors.DictCursor
             )
-            
+
             try:
                 with connection.cursor() as cur:
                     # 更新payment表状态为0（下线），并清理最终业务状态
                     sql = """
-                        UPDATE payment 
+                        UPDATE payment
                         SET status = 0,
                             wallet_status = 0,
                             collection_status = 0,
@@ -1337,20 +1298,20 @@ class AutoPayoutMonitor:
                             time_update = NOW()
                         WHERE id = %s
                     """
-                    
+
                     affected_rows = cur.execute(sql, (account_id,))
                     connection.commit()
-                    
+
                     if affected_rows > 0:
                         self.logger.info(f"✅ 已将payment表中账号 {account_id} 状态更新为下线，原因: {reason}")
                     else:
                         self.logger.warning(f"⚠️ payment表中未找到账号 {account_id}，可能已被删除")
-                    
+
                     return affected_rows > 0
-                    
+
             finally:
                 connection.close()
-                
+
         except Exception as e:
             self.logger.error(f"❌ 更新payment表账号 {account_id} 状态失败: {e}")
             return False
@@ -1373,26 +1334,16 @@ class AutoPayoutMonitor:
 
     def update_key(self, login_data, next_check_interval=None):
         """
-        更新账号时间戳
+        旧 hash/set 调度兼容入口。
         Args:
             login_data: 账号数据
             next_check_interval: 下次检查间隔（秒），None表示使用默认check_interval
         """
         try:
-            # 如果未指定间隔，使用默认值
-            if next_check_interval is None:
-                next_check_interval = self.check_interval
-            
-            # 🔥 动态计算时间戳：timestamp = 当前时间 - (默认间隔 - 期望间隔)
-            # 例如：期望1分钟后检查，则 timestamp = now() - (300 - 60) = now() - 240
-            timestamp = int(time.time()) - (self.check_interval - next_check_interval)
-            
-            # 更新集合和hash里的值
-            self.redis.hset(self.hash_key, login_data['id'], simplejson.dumps(login_data))
-            self.redis.zadd(self.set_key, {login_data['id']: timestamp})
-            
-            if next_check_interval != self.check_interval:
-                self.logger.info(f"账号 {login_data['id']} 设置为 {next_check_interval}秒 后重新检查")
+            self.logger.info(
+                f"账号 {login_data.get('id')} JazzCash monitor 已切换为 MySQL wallet_status 调度，"
+                "不再写入旧 hash/set 检查队列"
+            )
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -1541,10 +1492,10 @@ class AutoPayoutMonitor:
         """异步处理单个member"""
         try:
             _id = member.decode()
-            
+
             # JazzCash 监控业务逻辑
             return await self._process_jazzcash_monitor(member)
-            
+
             # ==================== 原有银行业务逻辑（已注释） ====================
             # 以下代码为原有的银行爬取账单业务逻辑，现已注释
             """
@@ -1611,9 +1562,7 @@ class AutoPayoutMonitor:
                     return False
                 else:
                     self.update_key(login_data)
-                    # 对检测短信是否发送的时间有要求, 必须放到前面
-                    # if login_data['status'] == 'wait_client_send_sms':
-                    #     self.redis.zadd(self.set_key, {login_data['id']: 0})
+                    # 旧 hash/set 调度已退役；健康检查由 MySQL wallet_status 触发。
                     self.read_cache(f'async_main() True', login_data)
                     return True
 
@@ -1622,11 +1571,11 @@ class AutoPayoutMonitor:
                 self.del_lock(_id, _lock)
             """
             # ==================== 原有银行业务逻辑结束 ====================
-            
+
             # 对于其他银行，暂时返回 True（业务逻辑已注释）
             self.logger.info(f"银行 {self.name} 的爬取业务逻辑已注释，跳过处理 member: {_id}")
             return True
-            
+
         except Exception as e:
             tb_str = traceback.format_exc()
             error_message = ''.join(tb_str)
@@ -1637,11 +1586,11 @@ class AutoPayoutMonitor:
         """处理 JazzCash 自动代付监控业务逻辑"""
         _id = member.decode()
         _lock = None
-        
+
         try:
             # 设置 trace_id
             trace_id_filter.trace_id = f"jazzcash_autopayout_monitor_{os.getpid()}"
-            
+
             # 获取账号的登录数据
             login_data_str = self.redis.hget(self.hash_key, _id)
             if not login_data_str:
@@ -1662,7 +1611,7 @@ class AutoPayoutMonitor:
 
             # 解析登录数据
             login_data = simplejson.loads(login_data_str.decode())
-            
+
             # 🔥 新增：重新检查数据库中的status状态，确保账号仍然在线
             payment_id = login_data.get('id', _id)
             if not self.check_payment_status_in_db(payment_id):
@@ -1676,7 +1625,7 @@ class AutoPayoutMonitor:
             # 🔥 新增：检查auto_payout.py的锁状态
             account_id = login_data.get('phone', _id)  # 使用手机号作为account_id
             payment_id = login_data.get('id', _id)     # payment_id
-            
+
             lock_info = self.check_auto_payout_locks(account_id, payment_id)
             if not lock_info['can_monitor']:
                 self.logger.warning(f"账号 {_id} (phone:{account_id}) 被auto_payout.py锁定，跳过监控")
@@ -1687,30 +1636,30 @@ class AutoPayoutMonitor:
                 return True  # 返回True表示正常跳过，不是错误
 
             self.logger.info(f"开始执行账号 {_id} 的 JazzCash 自动代付监控检查 (未被auto_payout.py锁定)")
-            
+
             # 直接使用 login_data 进行监控检查，无需构造额外的 account_info
             # login_data 中已包含所有必要信息：id, status, partner_id, phone 等
             status_info = await self.check_account_health(login_data)
-            
+
             # 🔥 监控过程中再次检查锁状态（防止监控过程中被锁定）
             lock_info_after = self.check_auto_payout_locks(account_id, payment_id)
             if not lock_info_after['can_monitor']:
                 self.logger.warning(f"账号 {_id} 监控期间被auto_payout.py锁定，提前结束监控")
                 return True  # 正常退出，避免继续操作可能干扰auto_payout.py
-            
+
             # 更新Redis缓存（内部会处理501错误删除逻辑）
             account_deleted = await self.update_redis_cache(status_info)
             if account_deleted:
                 # 501错误，账号已被删除，停止后续处理
                 return True
-            
+
             # 处理问题账号（主要是日志记录）
             await self.handle_problematic_accounts([status_info])
-            
+
             # 正常账号处理
             if status_info.get('is_online') and status_info.get('status') == 'online':
                 # ✅ 账号正常
-                self.on_off(login_data, 1)  
+                self.on_off(login_data, 1)
                 self.update_key(login_data, next_check_interval=300)  # 5分钟后重新检查
                 self.logger.info(f"账号 {_id} 监控正常，5分钟后重新检查")
             else:
@@ -1718,10 +1667,10 @@ class AutoPayoutMonitor:
                 self.on_off(login_data, 0)
                 self.update_key(login_data, next_check_interval=60)   # 1分钟后重新检查 ⚡
                 self.logger.warning(f"账号 {_id} 监控异常({status_info.get('status')})，已下线接单，1分钟后重新检查: {status_info.get('error_message')}")
-            
+
             self.logger.info(f"账号 {_id} 的 JazzCash 自动代付监控检查完成")
             return True
-            
+
         except Exception as e:
             self.logger.error(f"JazzCash 自动代付监控业务逻辑处理异常: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
@@ -1761,248 +1710,25 @@ class AutoPayoutMonitor:
 
     def main(self):
         try:
-            # 生成新的trace_id
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
-
-            # 新增: 定期数据一致性检查（每10次执行一次）
             if not hasattr(self, '_consistency_check_counter'):
                 self._consistency_check_counter = 0
             self._consistency_check_counter += 1
-            
-            if self._consistency_check_counter % 10 == 1:  # 每10次检查一次
-                self.logger.info("🔍 执行定期数据一致性检查...")
+            if self._consistency_check_counter % 10 == 1:
+                self.logger.info("执行 JazzCash monitor 数据一致性检查")
                 self.check_data_consistency()
 
-            # 1. 从数据库 payment 表中获取在线状态的账号
-            try:
-                online_payments = asyncio.run(self.get_online_payments_from_db())
-                
-                if not online_payments:
-                    self.logger.info("payment表中没有在线账号需要检查")
-                else:
-                    self.logger.info(f"开始处理 {len(online_payments)} 个在线账号...")
-                    added_count = 0
-                    skipped_count = 0
-                    
-                    for payment_data in online_payments:
-                        payment_id = payment_data['id']
-                        self.logger.info(f"🔍 处理账号 payment_id:{payment_id} (类型:{type(payment_id)})")
-                        
-                        # 检查Redis连接
-                        try:
-                            redis_test = self.redis.ping()
-                            self.logger.debug(f"Redis连接测试: {redis_test}")
-                        except Exception as ping_e:
-                            self.logger.error(f"❌ Redis连接失败: {ping_e}")
-                            continue
-                        
-                        # 检查是否已存在，确保Hash和ZSet数据一致性
-                        hash_exists = self.redis.hexists(self.hash_key, payment_id)
-                        zset_score = self.redis.zscore(self.set_key, payment_id)
-                        zset_exists = zset_score is not None
-                        self.logger.debug(f"账号 {payment_id} 存在检查: Hash={hash_exists}, ZSet={zset_exists}")
-                        
-                        if hash_exists and zset_exists:
-                            # 时间戳合理，完全跳过
-                            skipped_count += 1
-                            self.logger.info(f"⏩ 账号 payment_id:{payment_id} 已存在于{self.hash_key}，跳过")
-                            continue
-                        elif hash_exists and not zset_exists:
-                            # Hash存在但ZSet不存在，只添加到ZSet
-                            self.logger.warning(f"🔄 账号 payment_id:{payment_id} Hash存在但ZSet缺失，补充到ZSet")
-                            try:
-                                initial_timestamp = int(time.time()) - self.check_interval - 60
-                                zset_result = self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
-                                self.logger.info(f"✅ 补充到ZSet成功: {zset_result}, 时间戳: {initial_timestamp}")
-                                skipped_count += 1
-                                continue
-                            except Exception as e:
-                                self.logger.error(f"❌ 补充到ZSet失败: {e}")
-                                # 继续执行完整的添加流程
-                        elif not hash_exists and zset_exists:
-                            # ZSet存在但Hash不存在，清理ZSet中的孤立数据
-                            self.logger.warning(f"🧹 账号 payment_id:{payment_id} ZSet存在但Hash缺失，清理ZSet中的孤立数据")
-                            try:
-                                self.redis.zrem(self.set_key, payment_id)
-                                self.logger.info(f"✅ 清理ZSet中的孤立数据成功")
-                            except Exception as e:
-                                self.logger.error(f"❌ 清理ZSet失败: {e}")
-                            # 继续执行完整的添加流程
-                        else:
-                            # 都不存在，继续执行完整的添加流程
-                            self.logger.info(f"➕ 账号 payment_id:{payment_id} Hash和ZSet都不存在，执行完整添加")
-                            
-                        # 构造 login_data（保持与现有格式兼容）
-                        login_data = {
-                            'id': payment_id,
-                            'real_payment_id': payment_id,
-                            'phone': payment_data['phone'],
-                            'bank_type': payment_data['bank_type'],
-                            'partner_id': payment_data['partner_id'],
-                            'account': payment_data.get('account'),
-                            'name': payment_data.get('name')
-                            # 不添加 'status': 'loginSuccessful'  
-                        }
-                        
-                        try:
-                            # 推入监控系统
-                            self.logger.debug(f"开始写入Redis: payment_id:{payment_id}")
-                            
-                            # 写入hash
-                            hash_result = self.redis.hset(self.hash_key, payment_id, simplejson.dumps(login_data))
-                            self.logger.debug(f"Hash写入结果: {hash_result}")
-                            
-                            # 写入zset
-                            # 🔥 使用较老的时间戳，让新账号可以立即被处理（而不是等5分钟）
-                            initial_timestamp = int(time.time()) - self.check_interval - 60  # 比5分钟间隔更早1分钟
-                            zset_result = self.redis.zadd(self.set_key, {payment_id: initial_timestamp})
-                            self.logger.debug(f"ZSet写入结果: {zset_result}, 时间戳: {initial_timestamp}")
-                            
-                            # 添加在线标记
-                            _key1 = f'login_on_{self.name}_{payment_id}'
-                            expire_result = self.redis.setex(_key1, 11 * 60, 1)
-                            self.logger.debug(f"在线标记设置结果: {expire_result}")
-                            
-                            added_count += 1
-                            self.logger.info(f"✅ 成功添加账号 payment_id:{payment_id} phone:{payment_data['phone']} 到监控系统")
-                            
-                        except Exception as redis_e:
-                            self.logger.error(f"❌ Redis写入失败 payment_id:{payment_id}: {redis_e}")
-                            continue
-                    
-                    self.logger.info(f"📊 账号处理统计: 总数={len(online_payments)}, 新增={added_count}, 跳过={skipped_count}")
-            except Exception as e:
-                self.logger.error(f"从数据库获取在线账号异常: {e}")
-                import traceback
-                self.logger.error(f"详细错误: {traceback.format_exc()}")
-
-            # 2 处理有序集合数据 - 使用分片和并发处理
-            self.logger.info("开始处理有序集合数据阶段")
-            self.logger.info(f"当前检查间隔: {self.check_interval}秒")
-            self.logger.info(f"有序集合键名: {self.set_key}")
-            
-            # 读取并显示有序集合的基本信息
-            self.logger.info("读取有序集合的完整内容...")
-            self.read_zset(self.set_key)
-
-            # 从有序集合中，获取5分钟外的成员，增加获取数量以支持多进程分片
-            current_timestamp = int(time.time())
-            zrangebyscore_max = current_timestamp - self.check_interval
-            
-            self.logger.info(f"计算有序集合查询参数:")
-            self.logger.info(f"  当前时间戳: {current_timestamp}")
-            self.logger.info(f"  最大查询时间戳: {zrangebyscore_max}")
-            self.logger.info(f"  时间差: {current_timestamp - zrangebyscore_max}秒")
-            
-            # 增加获取数量，考虑多进程分片的情况
-            batch_size = 200  # 原来是100，现在增加到200
-            self.logger.info(f"设置批量大小: {batch_size}")
-            
-            self.logger.info(f"执行有序集合范围查询: ZRANGEBYSCORE {self.set_key} 0 {zrangebyscore_max} LIMIT 0 {batch_size}")
-            members = self.redis.zrangebyscore(self.set_key, 0, zrangebyscore_max, 0, batch_size)
-            
-            self.logger.info(f"有序集合查询结果: 获取到 {len(members)} 个需要处理的成员")
-
-            if not members:
-                self.logger.info("有序集合查询结果为空")
-                self.logger.info(f"查询条件: key={self.set_key}, min=0, max={zrangebyscore_max}")
-                self.logger.info("可能原因: 1)所有账号都在检查间隔内 2)有序集合为空 3)时间戳配置问题")
-                time.sleep(2)
-                return
-            
-            # 输出找到的成员详情
-            self.logger.info("找到需要处理的成员列表:")
-            for i, member in enumerate(members[:10]):  # 只显示前10个，避免日志过多
-                member_str = member.decode() if isinstance(member, bytes) else str(member)
-                score = self.redis.zscore(self.set_key, member)
-                self.logger.info(f"  成员{i+1}: {member_str}, 时间戳: {score}")
-            if len(members) > 10:
-                self.logger.info(f"  ... 还有 {len(members) - 10} 个成员未显示")
-
-            # 根据进程数量分配members
-            self.logger.info("开始进程分片分配...")
-            allocated_members = self.get_process_allocated_members(members)
-            
-            self.logger.info(f"进程分片分配结果:")
-            self.logger.info(f"  总成员数: {len(members)}")
-            self.logger.info(f"  分配给当前进程的成员数: {len(allocated_members)}")
-            self.logger.info(f"  当前进程PID: {os.getpid()}")
-
-            if not allocated_members:
-                self.logger.info("当前进程未分配到需要处理的数据")
-                self.logger.info("可能原因: 1)其他进程负责处理这些成员 2)分片算法分配结果")
-                time.sleep(2)
-                return
-            
-            # 输出分配给当前进程的成员详情
-            self.logger.info("分配给当前进程的成员:")
-            for i, member in enumerate(allocated_members):
-                member_str = member.decode() if isinstance(member, bytes) else str(member)
-                self.logger.info(f"  处理成员{i+1}: {member_str}")
-
-            # 使用协程并发处理分配的members
-            self.logger.info("开始协程并发处理阶段")
-            concurrent_limit = 20
-            self.logger.info(f"并发配置:")
-            self.logger.info(f"  并发限制: {concurrent_limit}")
-            self.logger.info(f"  待处理成员数: {len(allocated_members)}")
-            self.logger.info(f"  预计批次数: {(len(allocated_members) + concurrent_limit - 1) // concurrent_limit}")
-            
-            processing_start_time = time.time()
             loop = None
-            
             try:
-                self.logger.info("创建新的异步事件循环...")
-                # 创建新的事件循环
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                self.logger.info(f"事件循环创建成功: {type(loop).__name__}")
-
-                # 并发处理，每个进程最多20个并发
-                self.logger.info(f"启动并发处理，限制: {concurrent_limit} 个同时处理")
-                self.logger.info("调用process_members_concurrent方法开始处理...")
-                
-                loop.run_until_complete(self.process_members_concurrent(allocated_members, concurrent_limit=concurrent_limit))
-                
-                processing_end_time = time.time()
-                total_processing_time = processing_end_time - processing_start_time
-                self.logger.info(f"并发处理完成")
-                self.logger.info(f"处理统计:")
-                self.logger.info(f"  总处理时间: {total_processing_time:.2f}秒")
-                self.logger.info(f"  平均每个成员耗时: {total_processing_time/len(allocated_members):.2f}秒")
-                self.logger.info(f"  处理效率: {len(allocated_members)/total_processing_time:.2f}个/秒")
-
+                loop.run_until_complete(self.run_jazzcash_monitor_check())
             except Exception as e:
-                processing_end_time = time.time()
-                processing_time = processing_end_time - processing_start_time
-                self.logger.error(f"并发处理异常")
-                self.logger.error(f"异常信息: {str(e)}")
-                self.logger.error(f"异常类型: {type(e).__name__}")
-                self.logger.error(f"处理时间: {processing_time:.2f}秒")
-                self.logger.error(f"异常发生时已处理: 约{processing_time * len(allocated_members) / max(processing_time, 1):.0f}个成员")
-                
-                # 打印详细的错误追踪
-                import traceback
-                self.logger.error(f"详细错误追踪:")
-                for line in traceback.format_exc().splitlines():
-                    self.logger.error(f"  {line}")
-
+                self.logger.error(f"JazzCash MySQL monitor 检查异常: {e}")
+                self.logger.error(f"详细错误: {traceback.format_exc()}")
             finally:
-                # 关闭事件循环
-                self.logger.info("清理事件循环资源...")
                 if loop and not loop.is_closed():
-                    try:
-                        self.logger.info("关闭事件循环...")
-                        loop.close()
-                        self.logger.info("事件循环已成功关闭")
-                    except Exception as close_e:
-                        self.logger.error(f"关闭事件循环时发生错误: {close_e}")
-                else:
-                    self.logger.info("事件循环已经关闭或不存在")
-                
-                final_time = time.time()
-                total_stage_time = final_time - processing_start_time
-                self.logger.info(f"有序集合数据处理阶段完成，总耗时: {total_stage_time:.2f}秒")
+                    loop.close()
 
         except Exception as e:
             tb_str = traceback.format_exc()

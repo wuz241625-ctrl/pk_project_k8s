@@ -22,6 +22,11 @@ def _is_easypaisa_payment(payment):
     )
 
 
+def _is_mysql_final_state_payment(payment):
+    bank_type = str((payment or {}).get('bank_type_id') or (payment or {}).get('bank_type') or '')
+    return bank_type in {'97', '98'}
+
+
 def _as_int(value, default=0):
     try:
         return int(value)
@@ -55,8 +60,6 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                 await self.update_result('payment', {'balance': data['balance']}, {'id': self.qr_id})
                 # sys_balance = (await self.get_result_by_condition('payment', ['sys_balance'], {'id': self.qr_id}))['sys_balance']
                 # if sys_balance != Decimal(data['balance']):
-                #     await self.redis.srem('payment_online_ds', self.qr_id)
-                #     await self.redis.srem('payment_online_df', self.qr_id)
                 #     return await self.write_message(dict(code=99, msg='Balance error'))
             if data['type'] == 'OrderList':
                 data_r = await self.get_result_by_condition('payment', ['sys_balance'], {'id': self.qr_id})
@@ -142,43 +145,28 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
             self.logger.info(f"QR channels for qr_id={self.qr_id}: {self.qr_channels}")
             if str(bank.get('certified')) == '1':
                 if _type == 'ds':
-                    if _is_easypaisa_payment(bank):
-                        ds_enabled = _as_int(bank.get('collection_status')) == 1
-                        self.logger.info(
-                            "EasyPaisa monitor Online(ds) 已退役为只读: payment_id=%s collection_status=%s",
-                            self.qr_id,
-                            bank.get('collection_status'),
-                        )
-                        if not ds_enabled:
-                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
-                    else:
-                        # 非 EP 通道：保留原 legacy 写入
-                        await self.redis.sadd('payment_online_ds', self.qr_id)
-                        for channel in self.qr_channels:
-                            self.logger.info(f"Removing qr_id from payment_active_{channel}")
-                            await self.redis.lrem(f'payment_active_{channel}', 0, self.qr_id)
-                            self.logger.info(f"Adding qr_id to payment_active_{channel}")
-                            await self.redis.rpush(f'payment_active_{channel}', self.qr_id)
-                            self.logger.info(f"【码监控】: 准备将码 {self.qr_id} 重新添加到 Redis 队列 'payment_active_{channel}' 的队尾。")
+                    ds_enabled = _as_int(bank.get('collection_status')) == 1
+                    self.logger.info(
+                        "Wallet monitor Online(ds) 已退役为只读: payment_id=%s collection_status=%s",
+                        self.qr_id,
+                        bank.get('collection_status'),
+                    )
+                    if not ds_enabled:
+                        return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
                 elif _type == 'df':
                     sql = """select * from orders_df where payment_id=%s and status in (1,2)"""
                     order = await self.query(sql, self.qr_id)
                     if order:
                         return dict(code=201, msg='On Fail.Old order not success',
                                     data=json.dumps({'status': 0, 'type': _type}))
-                    if _is_easypaisa_payment(bank):
-                        df_enabled = _as_int(bank.get('payout_status')) == 1
-                        self.logger.info(
-                            "EasyPaisa monitor Online(df) 已退役为只读: payment_id=%s payout_status=%s",
-                            self.qr_id,
-                            bank.get('payout_status'),
-                        )
-                        if not df_enabled:
-                            return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
-                    else:
-                        await self.redis.sadd('payment_online_df', self.qr_id)
-                        await self.redis.lrem('payment_active_df', 0, self.qr_id)
-                        await self.redis.rpush('payment_active_df', self.qr_id)
+                    df_enabled = _as_int(bank.get('payout_status')) == 1
+                    self.logger.info(
+                        "Wallet monitor Online(df) 已退役为只读: payment_id=%s payout_status=%s",
+                        self.qr_id,
+                        bank.get('payout_status'),
+                    )
+                    if not df_enabled:
+                        return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
                 return dict(code=201, msg='On Success.', data=json.dumps({'status': 1, 'type': _type}))
             return dict(code=201, msg='On Fail.', data=json.dumps({'status': 0, 'type': _type}))
         else:
@@ -187,33 +175,18 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
                 bank = await self.get_result_by_condition(
                     'payment', ['bank_type', 'bank_type_id', 'channel'], {'id': self.qr_id}
                 )
-                if _is_easypaisa_payment(bank):
-                    self.logger.info(
-                        "EasyPaisa monitor Offline(ds) 已退役为 no-op: payment_id=%s",
-                        self.qr_id,
-                    )
-                else:
-                    # 非 EP 通道：保留原 legacy 写入
-                    await self.redis.srem('payment_online_ds', self.qr_id)
-                    # 下线删除所有通道
-                    pattern_t = 'payment_active_*'
-                    _active_channel = await self.redis.keys(pattern=pattern_t)
-                    self.logger.info(f"Active channels for offline removal: {_active_channel}")
-                    for i in _active_channel:
-                        self.logger.info(f"Removing qr_id from {i}")
-                        await self.redis.lrem(i, 0, self.qr_id)
+                self.logger.info(
+                    "Wallet monitor Offline(ds) 已退役为 no-op: payment_id=%s",
+                    self.qr_id,
+                )
             if not _type or _type == 'df':
                 bank = await self.get_result_by_condition(
                     'payment', ['bank_type', 'bank_type_id', 'channel'], {'id': self.qr_id}
                 )
-                if _is_easypaisa_payment(bank):
-                    self.logger.info(
-                        "EasyPaisa monitor Offline(df) 已退役为 no-op: payment_id=%s",
-                        self.qr_id,
-                    )
-                else:
-                    await self.redis.srem('payment_online_df', self.qr_id)
-                    await self.redis.lrem('payment_active_df', 0, self.qr_id)
+                self.logger.info(
+                    "Wallet monitor Offline(df) 已退役为 no-op: payment_id=%s",
+                    self.qr_id,
+                )
             if not _type:
                 await self.redis.delete('qrcode_key_{id}'.format(id=self.qr_id))
             return dict(code=201, msg='Off success.', data=json.dumps({'status': 0, 'type': _type}))
@@ -312,7 +285,4 @@ class Websocket(BaseHandler, websocket.WebSocketHandler):
         #     return {'code': 99, 'data': None, 'message': 'cancel fail.'}
         # # 重新派单 接单
         # await self.redis.publish('order_df_push', '{code}_{amount}'.format(code=code, amount=order['amount']))
-        # if await self.redis.sismember('payment_online_df', self.qr_id):
-        #     await self.redis.lrem('payment_active_df', 0, self.qr_id)
-        #     await self.redis.rpush('payment_active_df', self.qr_id)
         return {'code': 204, 'data': None, 'message': 'return order success.'}

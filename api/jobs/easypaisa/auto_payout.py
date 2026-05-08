@@ -218,6 +218,23 @@ class EasyPaisaAutoPayout:
             if connection:
                 connection.close()
 
+    def check_account_release_time(self, payment_id):
+        if hasattr(self, 'account_selector') and hasattr(self.account_selector, 'check_account_release_time'):
+            return self.account_selector.check_account_release_time(payment_id)
+        return True
+
+    async def check_account_online_status(self, payment_id):
+        if hasattr(self, 'account_selector') and hasattr(self.account_selector, 'check_account_online_status'):
+            return await self.account_selector.check_account_online_status(payment_id)
+
+        payment = self.get_phone_by_payment_id(payment_id) if hasattr(self, 'get_phone_by_payment_id') else None
+        if not payment or int(payment.get('payout_status') or 0) != 1:
+            return False
+        phone = payment.get('phone')
+        if hasattr(self, '_check_account_online_via_api'):
+            return bool(await self._check_account_online_via_api(phone))
+        return False
+
     async def process_members_concurrent(self, account_order_batches=None, members=None, concurrent_limit=20):
         """并发处理订单（预分配模式）"""
         if not account_order_batches:
@@ -230,12 +247,20 @@ class EasyPaisaAutoPayout:
             pid = account['payment_id']
             try:
                 for i, order in enumerate(orders):
-                    if i > 0 and not self.account_selector.check_account_release_time(pid):
+                    if i > 0 and not self.check_account_release_time(pid):
                         self.logger.info(f"账号{pid}已进入冷却期，剩余{len(orders)-i}个订单留给下轮")
                         break
                     try:
-                        result = await self.order_lifecycle.process_payout_order(order, selected_account=account)
-                        if result and result.get('success'):
+                        if hasattr(self, 'process_single_order_async'):
+                            result = await self.process_single_order_async(
+                                f"{order['code']}_{order['amount']}",
+                                pre_selected_account=account,
+                            )
+                        else:
+                            result = await self.order_lifecycle.process_payout_order(order, selected_account=account)
+                        if result is True:
+                            success += 1
+                        elif result and result.get('success'):
                             success += 1
                     except Exception as e:
                         self.logger.error(f"订单{order['code']}处理异常: {e}")

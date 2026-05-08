@@ -524,11 +524,10 @@ class EasyPaisa:
         return normalized
 
     @staticmethod
-    def _legacy_residue_keys(payment_id, phone=None):
+    def _current_login_session_keys(payment_id, phone=None):
         keys = [
             f'pre_login_easypaisa_{payment_id}',
             f'login_on_easypaisa_{payment_id}',
-            f'kick_off_{payment_id}',
         ]
         if phone:
             keys.extend(
@@ -610,7 +609,7 @@ class EasyPaisa:
     async def _select_proxy_ip(self, bankname):
         """
         选择代理IP，保持一致性
-        参考jio_bank.py的_select_proxy_ip方法
+        参考历史代理实现的_select_proxy_ip方法
         """
         funcName = '选择代理IP'
         try:            
@@ -628,10 +627,10 @@ class EasyPaisa:
     async def _get_proxies(self, bankname):
         """
         从Redis获取可用的代理IP列表并随机选择一个
-        参考jio_bank.py的_get_proxies()方法（使用被注释的Redis逻辑）
+        参考历史代理实现的_get_proxies()方法（使用被注释的Redis逻辑）
         """
         funcName = '从Redis获取可用的代理IP列表并随机选择一个'
-        # ================ Redis代理获取逻辑 (来自jio_bank.py注释代码) ================
+        # ================ Redis代理获取逻辑 (来自历史代理实现注释代码) ================
         try:
             # 从Redis获取印度SOCKS代理IP列表
             redis_key = self.PROXIES_IP_KEY.format(bankname=bankname)
@@ -1152,7 +1151,7 @@ class EasyPaisa:
             return None
 
     def retry_make_request(self, *args, **kwargs):
-        """简化的retry_make_request - 保持与jio_bank.py一致"""
+        """简化的retry_make_request - 保持与历史代理实现一致"""
         # 第一次尝试
         res = self.make_request(*args, **kwargs)
         if res is not None and (200 <= res.status_code < 300):
@@ -1372,7 +1371,7 @@ class EasyPaisa:
                 if current_status == LoginStatus.ACTIVE_SUCCESSFUL:
                     if await self._clear_stale_active_session_if_offline(redis_key, existing_session):
                         self.logger.warning(
-                            f'{self._log_key(funcName)} MySQL 最终态已离线，已清理残留成功会话并允许重新登录: {redis_key}'
+                            f'{self._log_key(funcName)} MySQL 已离线，已清理当前成功会话并允许重新登录: {redis_key}'
                         )
                         existing_session = None
                     else:
@@ -3138,7 +3137,7 @@ class EasyPaisa:
         try:
             self.logger.warning(f'{self._log_key(funcName)} 开始执行: payment_id={payment_id}, bankname={bankname}, reason={reason}')
 
-            # === 1. 查询 payment / phone / channel，用于统一清理旧在线投影 ===
+            # === 1. 查询 payment / phone / channel，用于统一当前登录会话下线 ===
             payment = None
             try:
                 with self.handler.db_orm.sessionmaker() as session:
@@ -3155,23 +3154,14 @@ class EasyPaisa:
             resolved_phone = None
             if payment and getattr(payment, 'phone', None):
                 resolved_phone = payment.phone
-            resolved_channels = self._normalize_channels(
-                payment.channel if payment and getattr(payment, 'channel', None) else None
-            )
-
-            # === 2. 清理旧 Redis 残留；MySQL 才是最终状态源，不再写 legacy gate ===
-            residue_keys = self._legacy_residue_keys(payment_id, resolved_phone)
-            deleted_residue = await self.redis.delete(*residue_keys)
-            for channel in resolved_channels:
-                await self.redis.lrem(f'payment_active_{channel}', 0, payment_id)
-            await self.redis.srem('payment_online_ds', payment_id)
-            await self.redis.srem('payment_online_df', payment_id)
-            await self.redis.lrem('payment_active_df', 0, payment_id)
+            # === 2. 清理当前上号会话；历史 Redis 垃圾交由独立脚本处理 ===
+            login_session_keys = self._current_login_session_keys(payment_id, resolved_phone)
+            deleted_sessions = await self.redis.delete(*login_session_keys)
             await self.redis.hdel('hash_easypaisa', payment_id)
             await self.redis.zrem('set_easypaisa', payment_id)
             self.logger.info(
-                f'{self._log_key(funcName)} [2/4] Redis 残留清理完成: '
-                f'phone={resolved_phone}, channels={resolved_channels}, deleted={deleted_residue}'
+                f'{self._log_key(funcName)} [2/4] 当前会话队列清理完成: '
+                f'phone={resolved_phone}, deleted={deleted_sessions}'
             )
 
             # === 3. 清理会话数据，避免下次登录被旧 session / pre_login 卡住 ===
