@@ -1242,6 +1242,109 @@ class Status(BaseHandler):
 
 class Success(BaseHandler):
     """获取订单状态"""
+
+    async def _handle_pakistan_statement_callback(self, data, bank_name):
+        self.logger.info(f'开始处理“New”类型回调 {data}')
+        if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr', 'trans_id']):
+            self.logger.warning('回调数据缺少关键字段')
+            return msg[10001]
+
+        self.logger.info(f"数据校验成功，接收到数据: {json.dumps(data)}")
+        if data['trade_type'] not in ['CREDIT', 'DEBIT']:
+            self.logger.info(f'监控调用:({bank_name}协议),不是入款和出款' + json.dumps(data))
+            return msg[10001]
+
+        lock_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
+        if not await self.redis.setnx(lock_key, '1'):
+            self.logger.info(f"监控调用:({bank_name}协议), {lock_key} 正在被其他进程处理，拒绝当前请求。")
+            return msg[10019]
+
+        try:
+            self.logger.info(f"成功获取分布式锁 {lock_key}, 设置过期时间为60秒")
+            await self.redis.expire(lock_key, 60)
+
+            if data['trade_type'] == 'CREDIT':
+                self.logger.info("处理入账 (CREDIT)")
+                data['trade_type'] = 1
+                statement_condition = {
+                    'trans_id': data['trans_id'],
+                    'utr': data['utr'],
+                    'amount': data['amount'],
+                    'trade_type': 1,
+                    'payment_id': data['payment_id'],
+                }
+            else:
+                self.logger.info("处理出账 (DEBIT)")
+                data['trade_type'] = 2
+                statement_condition = {
+                    'trans_id': data['trans_id'],
+                    'trade_type': 2,
+                    'payment_id': data['payment_id'],
+                }
+
+            statement_record = await self.get_result_by_condition(
+                'bank_record',
+                ['id', 'callback', 'order_code'],
+                statement_condition,
+            )
+            if statement_record:
+                self.logger.info(
+                    f"Duplicate statement accepted: bank_record_id={statement_record.get('id')}, "
+                    f"callback={statement_record.get('callback')}, order_code={statement_record.get('order_code')}, "
+                    f"trans_id={data['trans_id']}"
+                )
+                if int(statement_record.get('callback') or 0) == 0:
+                    self.logger.info("bank_record.callback=0 只允许补单链路处理，采集入口不重复推进业务回调。")
+                return dict(
+                    code=100,
+                    msg='Duplicate statement accepted',
+                    order=statement_record.get('order_code') or '',
+                )
+
+            if data['trade_type'] == 1:
+                self.logger.info("调用代收成功处理函数 success_ds")
+                r = await callback.success_ds(self, data)
+            else:
+                self.logger.info("调用代付成功处理函数 success_df")
+                r = await callback.success_df(self, data)
+
+            r_code = r.get("code", "")
+            r['code'] = r_code
+            self.logger.info(f'order/Success {bank_name} data1: {json.dumps(data)}, r.code: {r["code"]}')
+
+            if r['code'] == 99 and data['trade_type'] == 1:
+                self.logger.info("代收回调失败，准备额外扣除商户余额")
+                ew_code = await self.create_order_code('EW')
+                async with self.application.db.acquire() as conn:
+                    async with conn.cursor(DictCursor) as cur:
+                        if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
+                            self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
+                            await conn.rollback()
+                        else:
+                            data['ew_code'] = ew_code
+                            data['if_ew'] = '1'
+                            await conn.commit()
+
+            self.logger.info(f'order/Success {bank_name} data2: {json.dumps(data)}, r.code: {r["code"]}')
+            bankRecord = dict()
+            for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew', 'trans_id']:
+                if i in data.keys():
+                    bankRecord[i] = data[i]
+            if r['code'] == 100:
+                bankRecord['callback'] = 1
+                bankRecord['order_code'] = r.get('order', '')
+            bankRecord['content'] = json.dumps(data)
+            bankRecord['partner_id'] = self.partner_id
+
+            self.logger.info(f'order/Success {bank_name} data3: {json.dumps(data)}, r.code: {r["code"]}')
+            self.logger.info(f"即将创建银行流水记录: {json.dumps(bankRecord)}")
+            await self.create_result('bank_record', bankRecord)
+            self.logger.info("银行流水记录创建成功")
+            return r
+        finally:
+            await self.redis.delete(lock_key)
+            self.logger.info(f"最终释放分布式锁 {lock_key}")
+
     async def post(self):
         try:
             # 只接受白名单ip访问
@@ -1429,80 +1532,7 @@ class Success(BaseHandler):
                 #     res = dict(type='UPI', code=100, msg='update upi success.')
                 #     return await self.json_response(res)
                 if data['type'] == 'New':  # 回调相关
-                    self.logger.info(f'开始处理“New”类型回调 {data}')
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr', 'trans_id']):
-                        self.logger.warning('回调数据缺少关键字段')
-                        return await self.json_response(msg[10001])
-                    self.logger.info(f"数据校验成功，接收到数据: {json.dumps(data)}")
-                    if data['trade_type'] not in ['CREDIT', 'DEBIT']:  # 暂时先回调代收，不回调代付
-                        self.logger.info('监控调用:(easypaisa协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    # 入账（收入）
-                    lock_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
-                    if data['trade_type'] == 'CREDIT':
-                        self.logger.info("处理入账 (CREDIT)")
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'trans_id': data['trans_id'], 'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            self.logger.warning(f"发现重复的代收订单: UTR={data['utr']}, 金额={data['amount']}")
-                            return await self.json_response(msg[10019])
-                        self.logger.info(f"调用代收成功处理函数 success_ds")
-
-                        r = await callback.success_ds(self, data)
-                    # 出账（支出）
-                    elif data['trade_type'] == 'DEBIT':
-                        self.logger.info("处理出账 (DEBIT)")
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'trans_id': data['trans_id'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            self.logger.warning(f"发现重复的代付订单: trans_id={data['trans_id']}")
-                            return await self.json_response(msg[10019])
-                        self.logger.info(f"调用代付成功处理函数 success_df")
-                        r = await callback.success_df(self, data)
-                    r_code = r.get("code", "")
-                    r['code'] = r_code
-                    self.logger.info(f'order/Success easypaisa data1: {json.dumps(data)}, r.code: {r['code']}')
-                    # 代收回调失败额外扣除
-                    # 尝试原子性地获取锁。如果返回0，则表示锁已被其他进程获取。
-                    if not await self.redis.setnx(lock_key, '1'):
-                        self.logger.info(f"监控调用:(easypaisa协议), {lock_key} 正在被其他进程处理，拒绝当前请求。")
-                        return await self.json_response(msg[10019])
-                    try:
-                        self.logger.info(f"成功获取分布式锁 {lock_key}, 设置过期时间为60秒")
-                        await self.redis.expire(lock_key, 60) # 设置过期时间
-                        if r['code'] == 99 and data['trade_type'] == 1:
-                            self.logger.info("代收回调失败，准备额外扣除商户余额")
-                            ew_code = await self.create_order_code('EW')  # 额外流水号
-                            async with self.application.db.acquire() as conn:
-                                async with conn.cursor(DictCursor) as cur:
-                                    if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                        self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                        await conn.rollback()
-                                    else:
-                                        data['ew_code'] = ew_code
-                                        data['if_ew'] = '1'
-                                        await conn.commit()
-                        self.logger.info(f'order/Success easypaisa data2: {json.dumps(data)}, r.code: {r['code']}')
-                        bankRecord = dict()
-                        for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew', 'trans_id']:
-                            if i in data.keys():
-                                bankRecord[i] = data[i]
-                        if r['code'] == 100:
-                            bankRecord['callback'] = 1
-                            bankRecord['order_code'] = r['order']
-                        bankRecord['content'] = json.dumps(data)
-                        bankRecord['partner_id'] = self.partner_id
-
-                        self.logger.info(f'order/Success easypaisa data3: {json.dumps(data)}, r.code: {r['code']}')
-                        self.logger.info(f"即将创建银行流水记录: {json.dumps(bankRecord)}")
-                        await self.create_result('bank_record', bankRecord)
-                        self.logger.info(f"银行流水记录创建成功")
-                    finally:
-                        # 确保锁最终会被释放
-                        await self.redis.delete(lock_key)
-                        self.logger.info(f"最终释放分布式锁 {lock_key}")
-
+                    r = await self._handle_pakistan_statement_callback(data, 'easypaisa')
                     return await self.json_response(r)
                 
             elif data['bank_name'] == 'jazzcash':
@@ -1535,80 +1565,7 @@ class Success(BaseHandler):
                 #     res = dict(type='UPI', code=100, msg='update upi success.')
                 #     return await self.json_response(res)
                 if data['type'] == 'New':  # 回调相关
-                    self.logger.info(f'开始处理“New”类型回调 {data}')
-                    if await self.is_null(data, ['type', 'bank_name', 'payment_id', 'partner_id', 'amount', 'trade_type', 'utr', 'trans_id']):
-                        self.logger.warning('回调数据缺少关键字段')
-                        return await self.json_response(msg[10001])
-                    self.logger.info(f"数据校验成功，接收到数据: {json.dumps(data)}")
-                    if data['trade_type'] not in ['CREDIT', 'DEBIT']:  # 暂时先回调代收，不回调代付
-                        self.logger.info('监控调用:(jazzcash协议),不是入款和出款' + json.dumps(data))
-                        return await self.json_response(msg[10001])
-                    r = dict()
-                    # 入账（收入）
-                    lock_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
-                    if data['trade_type'] == 'CREDIT':
-                        self.logger.info("处理入账 (CREDIT)")
-                        data['trade_type'] = 1
-                        # 代收通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'trans_id': data['trans_id'], 'utr': data['utr'], 'amount': data['amount'], 'trade_type': 1, 'payment_id': data['payment_id']}):
-                            self.logger.warning(f"发现重复的代收订单: UTR={data['utr']}, 金额={data['amount']}")
-                            return await self.json_response(msg[10019])
-                        self.logger.info(f"调用代收成功处理函数 success_ds")
-
-                        r = await callback.success_ds(self, data)
-                    # 出账（支出）
-                    elif data['trade_type'] == 'DEBIT':
-                        self.logger.info("处理出账 (DEBIT)")
-                        data['trade_type'] = 2
-                        # 代付通过utr和金额查找重复订单
-                        if await self.get_result_by_condition('bank_record', ['id'], {'trans_id': data['trans_id'], 'trade_type': 2, 'payment_id': data['payment_id']}):
-                            self.logger.warning(f"发现重复的代付订单: trans_id={data['trans_id']}")
-                            return await self.json_response(msg[10019])
-                        self.logger.info(f"调用代付成功处理函数 success_df")
-                        r = await callback.success_df(self, data)
-                    r_code = r.get("code", "")
-                    r['code'] = r_code
-                    self.logger.info(f'order/Success jazzcash data1: {json.dumps(data)}, r.code: {r['code']}')
-                    # 代收回调失败额外扣除
-                    # 尝试原子性地获取锁。如果返回0，则表示锁已被其他进程获取。
-                    if not await self.redis.setnx(lock_key, '1'):
-                        self.logger.info(f"监控调用:(jazzcash协议), {lock_key} 正在被其他进程处理，拒绝当前请求。")
-                        return await self.json_response(msg[10019])
-                    try:
-                        self.logger.info(f"成功获取分布式锁 {lock_key}, 设置过期时间为60秒")
-                        await self.redis.expire(lock_key, 60) # 设置过期时间
-                        if r['code'] == 99 and data['trade_type'] == 1:
-                            self.logger.info("代收回调失败，准备额外扣除商户余额")
-                            ew_code = await self.create_order_code('EW')  # 额外流水号
-                            async with self.application.db.acquire() as conn:
-                                async with conn.cursor(DictCursor) as cur:
-                                    if not await self.change_balance(conn, cur, 'partner', data['partner_id'], -Decimal(data['amount']), ew_code, 0):
-                                        self.logger.warning('utr:{}Failed to deduct partner balance'.format(data['utr']))
-                                        await conn.rollback()
-                                    else:
-                                        data['ew_code'] = ew_code
-                                        data['if_ew'] = '1'
-                                        await conn.commit()
-                        self.logger.info(f'order/Success jazzcash data2: {json.dumps(data)}, r.code: {r['code']}')
-                        bankRecord = dict()
-                        for i in ['admin_id', 'payment_id', 'amount', 'trade_type', 'utr', 'code', 'ifsc', 'ew_code', 'if_ew', 'trans_id']:
-                            if i in data.keys():
-                                bankRecord[i] = data[i]
-                        if r['code'] == 100:
-                            bankRecord['callback'] = 1
-                            bankRecord['order_code'] = r['order']
-                        bankRecord['content'] = json.dumps(data)
-                        bankRecord['partner_id'] = self.partner_id
-
-                        self.logger.info(f'order/Success jazzcash data3: {json.dumps(data)}, r.code: {r['code']}')
-                        self.logger.info(f"即将创建银行流水记录: {json.dumps(bankRecord)}")
-                        await self.create_result('bank_record', bankRecord)
-                        self.logger.info(f"银行流水记录创建成功")
-                    finally:
-                        # 确保锁最终会被释放
-                        await self.redis.delete(lock_key)
-                        self.logger.info(f"最终释放分布式锁 {lock_key}")
-
+                    r = await self._handle_pakistan_statement_callback(data, 'jazzcash')
                     return await self.json_response(r)
         except Exception as e:
             tb_str = traceback.format_exc()

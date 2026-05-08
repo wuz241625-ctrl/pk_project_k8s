@@ -39,6 +39,29 @@ class StatementCallbackMysqlIdempotencySourceTests(unittest.TestCase):
         self.assertIn("create_result('bank_record'", order_callback)
         self.assertIn("success_busy_{trans_id}", order_callback)
 
+    def test_order_success_locks_statement_before_business_callback(self):
+        order_callback = ORDER_CALLBACK.read_text()
+
+        self.assertIn("async def _handle_pakistan_statement_callback", order_callback)
+        helper = order_callback.split("async def _handle_pakistan_statement_callback", 1)[1]
+        lock_index = helper.index("await self.redis.setnx(lock_key, '1')")
+        duplicate_index = helper.index("get_result_by_condition('bank_record'")
+        success_ds_index = helper.index("callback.success_ds")
+        success_df_index = helper.index("callback.success_df")
+
+        self.assertLess(lock_index, duplicate_index)
+        self.assertLess(lock_index, success_ds_index)
+        self.assertLess(lock_index, success_df_index)
+
+    def test_duplicate_statement_is_accepted_without_business_callback_retry(self):
+        order_callback = ORDER_CALLBACK.read_text()
+
+        self.assertIn("Duplicate statement accepted", order_callback)
+        self.assertIn("statement_record.get('callback')", order_callback)
+        self.assertIn("bank_record.callback=0 只允许补单链路处理", order_callback)
+        self.assertNotIn("发现重复的代收订单: UTR={data['utr']}, 金额={data['amount']}\")\n                            return await self.json_response(msg[10019])", order_callback)
+        self.assertNotIn("发现重复的代付订单: trans_id={data['trans_id']}\")\n                            return await self.json_response(msg[10019])", order_callback)
+
 
 if __name__ == "__main__":
     unittest.main()
