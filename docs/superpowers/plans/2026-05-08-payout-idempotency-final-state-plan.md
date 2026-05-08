@@ -154,3 +154,69 @@ git diff --check
 ```
 
 Expected: 前两条 `rg` 无命中，`git diff --check` 无输出。
+
+### Task 6: 加固采集回调入口幂等
+
+**Files:**
+- Modify: `api/application/pay/order.py`
+- Modify: `api/tests/test_statement_callback_mysql_idempotency.py`
+- Modify: `README.md`
+- Modify: `build.md`
+- Modify: `err.md`
+- Modify: `docs/superpowers/specs/2026-05-08-payout-idempotency-final-state-design.md`
+- Modify: `docs/superpowers/reports/2026-05-08-payout-idempotency-final-state-report.md`
+
+- [x] **Step 1: 写失败测试**
+
+测试断言：
+
+```python
+self.assertIn("async def _handle_pakistan_statement_callback", order_callback)
+self.assertLess(lock_index, success_ds_index)
+self.assertLess(lock_index, success_df_index)
+self.assertIn("Duplicate statement accepted", order_callback)
+self.assertIn("bank_record.callback=0 只允许补单链路处理", order_callback)
+```
+
+- [x] **Step 2: 运行测试确认失败**
+
+Run:
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_statement_callback_mysql_idempotency -v
+```
+
+Expected: FAIL，命中 `/order/Success` 缺少统一 helper、锁晚于业务回调、重复流水返回失败码。
+
+- [x] **Step 3: 实现采集入口统一处理**
+
+`Success._handle_pakistan_statement_callback()` 必须按顺序执行：
+
+```python
+lock_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
+if not await self.redis.setnx(lock_key, '1'):
+    return msg[10019]
+await self.redis.expire(lock_key, 60)
+statement_record = await self.get_result_by_condition('bank_record', ['id', 'callback', 'order_code'], condition)
+if statement_record:
+    return dict(code=100, msg='Duplicate statement accepted', order=statement_record.get('order_code') or '')
+r = await callback.success_ds(self, data)  # 或 success_df
+await self.create_result('bank_record', bankRecord)
+```
+
+- [x] **Step 4: 保持 callback=0 边界**
+
+`bank_record.callback=0` 是“流水已采集但未绑定订单”，只允许 `/pay/ds/utr` 等补单链路后续绑定，采集入口重复收到同一流水时只能返回 `code=100` 表示后端已接收，不能再次推进 `success_ds/success_df`。
+
+- [x] **Step 5: 验收**
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_statement_callback_mysql_idempotency -v
+PYTHONPATH=api python3 -m unittest \
+  api.tests.test_jazzcash_payout_state_machine \
+  api.tests.test_statement_callback_mysql_idempotency \
+  api.tests.test_jazzcash_auto_payout_v16 -v
+PYTHONPATH=api python3 -m pytest api/jobs/easypaisa/tests/test_order_lifecycle.py -q
+python3 -m py_compile api/application/pay/order.py
+git diff --check
+```

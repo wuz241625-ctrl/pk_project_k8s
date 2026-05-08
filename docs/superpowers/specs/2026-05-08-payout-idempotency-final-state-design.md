@@ -40,11 +40,16 @@
 ### 采集回调
 
 1. 账单 worker 扫到收入流水后每次都尝试回调内部接口。
-2. 内部接口用 MySQL 幂等判断重复：
-   - `bank_record.callback=0`
+2. `/order/Success` 对 EasyPaisa/JazzCash `New` 流水统一先抢 `success_busy_{trans_id}` 短锁，再查 MySQL `bank_record`，最后才进入 `callback.success_ds/success_df`。
+3. 重复流水不再返回失败码给采集 worker：
+   - `bank_record.callback=1` 表示流水已绑定订单，采集入口返回 `code=100` 幂等接收。
+   - `bank_record.callback=0` 表示流水已采集但未绑定订单，只允许补单链路处理；采集入口返回 `code=100` 幂等接收，但不再重复推进业务回调。
+4. 新流水仍由内部接口用 MySQL 幂等判断订单：
    - `orders_ds.status in (-1,1,2)`
    - `orders_ds.trans_id` 重复检查
-3. Redis 不再保存“已回调流水集合”，避免 Redis 丢失或过期导致业务语义变化。
+   - 成功时写 `bank_record.callback=1/order_code`
+   - 失败且需留痕时写 `bank_record.callback=0`
+5. Redis 不再保存“已回调流水集合”，避免 Redis 丢失或过期导致业务语义变化。
 
 ## 验收标准
 
@@ -54,3 +59,5 @@
 - `api/jobs/jazzcash/payout/order_lifecycle.py` 不再出现提前 `status IN (0, 1) -> 3`。
 - `api/jobs/jazzcash/payout/settlement.py` 必须包含 `WHERE code=%s AND status=1`。
 - `api/jobs/pakistanpay_v2.py` 和 `api/jobs/Jazzcashpay_v2.py` 不再出现 `if_callback_*` Redis 去重逻辑。
+- `/order/Success` 的 EasyPaisa/JazzCash `New` 回调必须在 `callback.success_ds/success_df` 前获取 `success_busy_{trans_id}`。
+- 重复 `bank_record` 必须返回 `code=100` 幂等接收，不能让 worker 反复重试；`callback=0` 只能留给补单链路。

@@ -88,3 +88,77 @@ git diff --check
 - JazzCash 成功态由 settlement 以 `status=1` 守卫推进。
 - JazzCash 只有 `402` 自动重试，第三次驳回；未知结果进入人工待确认。
 - 账单采集不再用 Redis 集合作为“已回调”最终判断，重复入账依赖 MySQL 订单/流水幂等。
+
+## 采集回调入口补充验收
+
+### 本次补充
+
+- `/order/Success` 新增 EasyPaisa/JazzCash 共用的 `_handle_pakistan_statement_callback()`。
+- `success_busy_{trans_id}` 提前到重复流水检查和 `callback.success_ds/success_df` 之前。
+- 重复 `bank_record` 返回 `code=100`，表示采集入口已接收该流水，避免 worker 反复重试。
+- `bank_record.callback=0` 明确定义为“流水已采集但未绑定订单”，只允许补单链路处理，采集入口不重复推进业务回调。
+
+### RED 记录
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_statement_callback_mysql_idempotency -v
+```
+
+结果：新增两条测试先失败，分别命中缺少统一 helper、锁晚于业务回调、重复流水未按幂等成功返回。
+
+### GREEN 记录
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_statement_callback_mysql_idempotency -v
+```
+
+结果：4 个测试通过。
+
+```bash
+PYTHONPATH=api python3 -m unittest \
+  api.tests.test_jazzcash_payout_state_machine \
+  api.tests.test_statement_callback_mysql_idempotency \
+  api.tests.test_jazzcash_auto_payout_v16 -v
+```
+
+结果：13 个测试通过。
+
+```bash
+PYTHONPATH=api python3 -m pytest api/jobs/easypaisa/tests/test_order_lifecycle.py -q
+```
+
+结果：27 个测试通过。
+
+```bash
+python3 -m py_compile \
+  api/application/pay/order.py \
+  api/jobs/jazzcash/payout/order_lifecycle.py \
+  api/jobs/jazzcash/payout/settlement.py \
+  api/jobs/jazzcash/payout/transfer_executor.py \
+  api/jobs/pakistanpay_v2.py \
+  api/jobs/Jazzcashpay_v2.py
+```
+
+结果：通过。
+
+```bash
+rg -n "if_callback|mark_transaction_callback|clean_if_callback_key|zscore\\(self\\.if_callback_key" \
+  api/jobs/pakistanpay_v2.py api/jobs/Jazzcashpay_v2.py
+```
+
+结果：无命中。
+
+```bash
+rg -n "status IN \\(0, 1\\)|new_retry_count > 8|reject_msg_codes|msg_cd in reject_msg_codes" \
+  api/jobs/jazzcash/payout/order_lifecycle.py \
+  api/jobs/jazzcash/payout/settlement.py \
+  api/jobs/jazzcash/payout/transfer_executor.py
+```
+
+结果：无命中。
+
+```bash
+git diff --check
+```
+
+结果：通过。
