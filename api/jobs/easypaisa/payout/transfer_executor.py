@@ -420,8 +420,8 @@ class TransferExecutor:
                             'order_status': 'P'
                         }
 
-                    else:
-                        # ========== orderStatus = S (成功) 或其他状态 ==========
+                    elif order_status == "S":
+                        # ========== orderStatus = S (成功) ==========
                         self.logger.info(f"转账成功(orderStatus={order_status})! 交易ID: {transaction_id}")
 
                         # 计算转账后余额（优化：避免额外API调用）
@@ -488,7 +488,39 @@ class TransferExecutor:
                             'transaction_id': transaction_id,
                             'message': f'EasyPaisa转账成功: {msg}',
                             'payer_phone': phone_number,
-                            'order_status': order_status or 'S'
+                            'order_status': order_status
+                        }
+                    else:
+                        # code=200 只代表官方接口接收成功，业务状态必须明确为 S 才能结算。
+                        error_message = f"EasyPaisa返回非成功状态: orderStatus={order_status}, msg={msg}"
+                        self.logger.error(error_message)
+
+                        process_details.update({
+                            'lock_release_time': datetime.now().isoformat(),
+                            'lock_release_status': 'success',
+                            'lock_release_details': {
+                                'account_lock_released': True,
+                                'payment_id_lock_released': True,
+                                'release_reason': 'order_status_not_success'
+                            },
+                            'order_status': order_status,
+                            'order_status_meaning': 'unknown_or_failed',
+                            'total_duration_ms': int((time.time() - process_start_time) * 1000)
+                        })
+
+                        self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
+                                                    "failed", transaction_id=transaction_id, start_time=start_time,
+                                                    before_balance=before_balance,
+                                                    error_message=error_message,
+                                                    process_details=process_details)
+
+                        return {
+                            'success': False,
+                            'message': error_message,
+                            'code': 200,
+                            'order_status': order_status,
+                            'can_retry': False,
+                            'transaction_id': transaction_id
                         }
                 elif code == 402:
                     return self._handle_402_response(order_data, account_info, inner_payload, api_result,

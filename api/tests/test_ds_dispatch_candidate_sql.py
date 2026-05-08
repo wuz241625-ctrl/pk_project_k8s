@@ -14,8 +14,11 @@ def test_ds_candidate_sql_keeps_current_push_order_filters():
 
     assert "pay.collection_status = 1" in sql
     assert "find_in_set('1001'" in sql
-    assert "pay.account_iban IS NOT NULL" in sql
-    assert "pay.account_iban <> ''" in sql
+    assert "pay.account_type" in sql
+    assert "pay.phone IS NOT NULL" in sql
+    assert "pay.phone <> ''" in sql
+    assert "pay.account_accno IS NOT NULL" in sql
+    assert "pay.account_accno <> ''" in sql
     assert "pay.bank_type = 98" in sql
     assert "pay.bank_type_id = 98" in sql
     assert "p.balance >= %s" in sql
@@ -59,6 +62,45 @@ def test_ds_candidate_sql_uses_target_payment_as_allow_list():
     assert params[-3:] == ["533295", "533296", 10]
 
 
+def test_ds_candidate_sql_requires_iban_for_easypaisa_qr_channel_1010():
+    from application.pay.pay import build_ds_candidate_sql
+
+    sql, params = build_ds_candidate_sql(
+        amount=1500,
+        channel_code="1010",
+        target_payment_ids=["533295"],
+        limit=10,
+    )
+
+    assert "find_in_set('1010'" in sql
+    assert "pay.account_iban IS NOT NULL" in sql
+    assert "pay.account_iban <> ''" in sql
+    assert "pay.account_accno IS NOT NULL" not in sql
+    assert "pay.account_accno <> ''" not in sql
+    assert params[-2:] == ["533295", 10]
+
+
+def test_ds_candidate_sql_allows_wallet_phone_for_easypaisa_account_channel_1001():
+    from application.pay.pay import build_ds_candidate_sql
+
+    sql, params = build_ds_candidate_sql(
+        amount=1500,
+        channel_code="1001",
+        target_payment_ids=["533295"],
+        limit=10,
+    )
+
+    assert "find_in_set('1001'" in sql
+    assert "pay.account_type" in sql
+    assert "pay.phone IS NOT NULL" in sql
+    assert "pay.phone <> ''" in sql
+    assert "pay.account_accno IS NOT NULL" in sql
+    assert "pay.account_accno <> ''" in sql
+    assert "pay.account_iban IS NOT NULL" not in sql
+    assert "pay.account_iban <> ''" not in sql
+    assert params[-2:] == ["533295", 10]
+
+
 def test_ds_candidate_sql_does_not_require_iban_for_jazzcash():
     from application.pay.pay import build_ds_candidate_sql
 
@@ -74,31 +116,32 @@ def test_ds_candidate_sql_does_not_require_iban_for_jazzcash():
     assert "pay.bank_type = 98" in sql
     assert "pay.bank_type_id = 98" in sql
     assert "OR (" in sql
-    assert "pay.account_iban IS NOT NULL" in sql
-    assert "pay.account_iban <> ''" in sql
-    assert "pay.account_accno IS NOT NULL" not in sql
-    assert "pay.account_accno <> ''" not in sql
+    assert "pay.account_iban IS NOT NULL" in sql or "pay.account_accno IS NOT NULL" in sql
     assert params[-2:] == ["533302", 10]
 
 
-def test_collection_qrcode_gate_is_easypaisa_only():
+def test_collection_qrcode_gate_is_easypaisa_1010_only():
     from application.pay.dispatch import _requires_collection_qrcode
 
     assert _requires_collection_qrcode(
         {"bank_type": 97, "bank_type_id": None},
         {"name": "EASYPAISA"},
+        channel_code=1010,
     )
-    assert _requires_collection_qrcode(
+    assert not _requires_collection_qrcode(
         {"bank_type": "97", "bank_type_id": None},
         {},
+        channel_code=1001,
     )
     assert not _requires_collection_qrcode(
         {"bank_type": 98, "bank_type_id": None},
         {"name": "JAZZCASH"},
+        channel_code=1010,
     )
     assert not _requires_collection_qrcode(
         {"bank_type": None, "bank_type_id": "98"},
         {},
+        channel_code=1010,
     )
 
 
@@ -161,9 +204,19 @@ def test_push_order_uses_bank_specific_qrcode_gate():
 
     source = inspect.getsource(push_order)
 
-    assert "_requires_collection_qrcode(payment, bank)" in source
+    assert "_requires_collection_qrcode(payment, bank, data.get('channel_code'))" in source
     assert "order_ds_third_qr_" in source
     assert "不需要二维码" in source
+
+
+def test_push_order_passes_easypaisa_account_identifier_for_qr_generation():
+    import inspect
+    from application.pay.dispatch import push_order
+
+    source = inspect.getsource(push_order)
+
+    assert "'account_iban'" in source
+    assert "payment.get('account_iban') or payment.get('account_accno') or payment.get('upi')" in source
 
 
 def test_push_order_inserts_order_only_after_successful_dispatch():

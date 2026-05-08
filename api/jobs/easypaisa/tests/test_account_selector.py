@@ -112,25 +112,25 @@ class TestCheckAccountReleaseTime:
 class TestAccountLock:
     @pytest.mark.asyncio
     async def test_acquire_lock_success(self, selector, redis_mock):
-        redis_mock.setnx.return_value = True
+        redis_mock.set.return_value = True
         result = await selector.acquire_account_lock('acc_001', 'ORD_001')
         assert result is not None
         assert 'ORD_001' in result
-        redis_mock.expire.assert_called_once()
+        redis_mock.set.assert_called_once()
+        assert redis_mock.set.call_args.kwargs == {'nx': True, 'ex': 300}
+        redis_mock.expire.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_acquire_lock_failure(self, selector, redis_mock):
-        redis_mock.setnx.return_value = False
+        redis_mock.set.return_value = False
         result = await selector.acquire_account_lock('acc_001', 'ORD_001')
         assert result is None
 
     def test_release_lock_matching_value(self, selector, redis_mock):
-        redis_mock.get.return_value = b'ORD_001_abc123'
         selector.release_account_lock('acc_001', 'ORD_001_abc123')
-        redis_mock.delete.assert_called_once()
+        redis_mock.eval.assert_called_once()
 
     def test_release_lock_mismatched_value(self, selector, redis_mock):
-        redis_mock.get.return_value = b'OTHER_VALUE'
         selector.release_account_lock('acc_001', 'ORD_001_abc123')
         redis_mock.delete.assert_not_called()
 
@@ -213,13 +213,15 @@ class TestUpdateAccountBalance:
 
 class TestPaymentIdLock:
     def test_get_lock_success(self, selector, redis_mock):
-        redis_mock.setnx.return_value = True
+        redis_mock.set.return_value = True
         result = selector.get_payment_id_lock('pay_001')
         assert result is not False
-        redis_mock.expire.assert_called()
+        redis_mock.set.assert_called_once()
+        assert redis_mock.set.call_args.kwargs == {'nx': True, 'ex': 300}
+        redis_mock.expire.assert_not_called()
 
     def test_get_lock_already_locked(self, selector, redis_mock):
-        redis_mock.setnx.return_value = False
+        redis_mock.set.return_value = False
         redis_mock.ttl.return_value = 200
         result = selector.get_payment_id_lock('pay_001')
         assert result is False
@@ -229,7 +231,57 @@ class TestPaymentIdLock:
         assert result is False
 
     def test_del_lock_matching(self, selector, redis_mock):
-        redis_mock.get.return_value = b'abc123'
         result = selector.del_payment_id_lock('pay_001', 'abc123')
         assert result is True
-        redis_mock.delete.assert_called_once()
+        redis_mock.eval.assert_called_once()
+
+
+class TestOrderLock:
+    def test_get_order_lock_uses_atomic_set(self, selector, redis_mock):
+        redis_mock.set.return_value = True
+
+        result = selector.get_lock('ORD_001')
+
+        assert result is not False
+        redis_mock.set.assert_called_once()
+        assert redis_mock.set.call_args.kwargs == {'nx': True, 'ex': selector.lock_time}
+        redis_mock.expire.assert_not_called()
+
+    def test_del_order_lock_uses_compare_and_delete_lua(self, selector, redis_mock):
+        result = selector.del_lock('ORD_001', 'lock-value')
+
+        assert result is True
+        redis_mock.eval.assert_called_once()
+
+
+class TestDispatchOrdersToAccounts:
+    def test_dispatch_assigns_only_one_order_per_account(self, selector):
+        accounts = [{
+            'payment_id': 'pay_001',
+            'balance': Decimal('10000'),
+            'balance_limit': Decimal('0'),
+            'amount_top': Decimal('0'),
+        }]
+        orders = [
+            {'code': 'ORD_BIG', 'amount': Decimal('5000')},
+            {'code': 'ORD_SMALL', 'amount': Decimal('100')},
+        ]
+
+        result = selector.dispatch_orders_to_accounts(orders, accounts)
+
+        assert len(result) == 1
+        assert len(result[0][1]) == 1
+        assert result[0][1][0]['code'] == 'ORD_BIG'
+
+    def test_dispatch_checks_actual_order_amount_against_balance_limit(self, selector):
+        accounts = [{
+            'payment_id': 'pay_001',
+            'balance': Decimal('10000'),
+            'balance_limit': Decimal('1000'),
+            'amount_top': Decimal('0'),
+        }]
+        orders = [{'code': 'ORD_TOO_LARGE', 'amount': Decimal('5000')}]
+
+        result = selector.dispatch_orders_to_accounts(orders, accounts)
+
+        assert result == []

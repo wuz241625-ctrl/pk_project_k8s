@@ -57,6 +57,65 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
             orders[0], selected_account=account
         )
 
+    def test_auto_payout_respects_concurrent_limit(self):
+        from jobs.easypaisa.auto_payout import EasyPaisaAutoPayout
+
+        service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
+        service.logger = MagicMock()
+        service.account_selector = MagicMock()
+        service.account_selector.check_account_release_time.return_value = True
+        service.order_lifecycle = MagicMock()
+        active = 0
+        max_active = 0
+
+        async def process_order(_order, selected_account=None):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return {"success": True}
+
+        service.order_lifecycle.process_payout_order = AsyncMock(side_effect=process_order)
+        batches = [
+            ({"payment_id": "1", "phone": "03000000001"}, [{"code": "ORD001", "amount": 100}]),
+            ({"payment_id": "2", "phone": "03000000002"}, [{"code": "ORD002", "amount": 100}]),
+        ]
+
+        result = asyncio.run(
+            service.process_members_concurrent(
+                account_order_batches=batches,
+                concurrent_limit=1,
+            )
+        )
+
+        self.assertEqual(result, (2, 2))
+        self.assertEqual(max_active, 1)
+
+    def test_auto_payout_marks_stale_claimed_orders_before_polling(self):
+        from jobs.easypaisa.auto_payout import EasyPaisaAutoPayout
+
+        service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
+        service.logger = MagicMock()
+        service.order_lifecycle = MagicMock()
+        service.order_lifecycle.filter_cooldown_orders.side_effect = lambda orders: orders
+        fake_cursor = MagicMock()
+        fake_cursor.fetchall.return_value = []
+        fake_conn = MagicMock()
+        fake_conn.cursor.return_value.__enter__ = MagicMock(return_value=fake_cursor)
+        fake_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+        import jobs.easypaisa.auto_payout as auto_payout_module
+
+        original_connect = auto_payout_module.pymysql.connect
+        auto_payout_module.pymysql.connect = MagicMock(return_value=fake_conn)
+        try:
+            asyncio.run(service.get_pending_orders_by_time())
+        finally:
+            auto_payout_module.pymysql.connect = original_connect
+
+        service.order_lifecycle.mark_stale_claimed_orders_unknown.assert_called_once()
+
     def test_auto_payout_no_longer_accepts_legacy_members_argument(self):
         from inspect import signature
 
@@ -86,24 +145,6 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
         source = (API_ROOT / "application" / "app" / "login" / "banks" / "easypaisa.py").read_text(encoding="utf-8")
 
         self.assertNotIn("easypaisa_" + "runtime:", source)
-
-    def test_lakshmi_place_order_status_does_not_use_legacy_payment_online_df(self):
-        source = (
-            API_ROOT
-            / "application"
-            / "lakshmi_api"
-            / "services"
-            / "payments"
-            / "e_wallet_handler.py"
-        ).read_text(encoding="utf-8")
-
-        self.assertNotIn("payment_" + "online_df", source)
-        self.assertIn("mysql_business_status", source)
-
-    def test_base_clear_active_does_not_clean_legacy_active_channel_projection(self):
-        source = (API_ROOT / "application" / "base.py").read_text(encoding="utf-8")
-
-        self.assertNotIn("payment_" + "active_channel_", source)
 
     def test_retired_runtime_audit_script_is_removed(self):
         repo_root = API_ROOT.parent

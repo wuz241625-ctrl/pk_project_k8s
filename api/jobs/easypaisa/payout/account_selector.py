@@ -42,6 +42,20 @@ class AccountSelector:
             return self.db_provider()
         return self.db.connection
 
+    def _acquire_redis_lock(self, lock_key: str, lock_value: str, ttl: int) -> bool:
+        return bool(self.redis.set(lock_key, lock_value, nx=True, ex=ttl))
+
+    def _release_redis_lock(self, lock_key: str, lock_value: str) -> bool:
+        script = """
+        if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+        else
+            return 0
+        end
+        """
+        self.redis.eval(script, 1, lock_key, lock_value)
+        return True
+
     # ========== Online Status ==========
 
     async def check_account_online_status(self, payment_id: str) -> bool:
@@ -534,7 +548,9 @@ class AccountSelector:
             with connection.cursor() as cur:
                 sql = """
                     SELECT id AS payment_id, phone, account, name, bank_type, bank_type_id,
-                           partner_id, account_accno, COALESCE(balance, 0) AS balance
+                           partner_id, account_accno, COALESCE(balance, 0) AS balance,
+                           COALESCE(amount_top, 0) AS amount_top,
+                           COALESCE(balance_limit, 0) AS balance_limit
                     FROM payment
                     WHERE {condition}
                       AND (bank_type = 97 OR bank_type_id = 97)
@@ -556,6 +572,8 @@ class AccountSelector:
                     'name': row.get('name'),
                     'account_accno': row.get('account_accno'),
                     'balance': balance,
+                    'amount_top': Decimal(str(row.get('amount_top') or 0)),
+                    'balance_limit': Decimal(str(row.get('balance_limit') or 0)),
                     'priority': int(balance),
                 })
             self.logger.info(f"从 MySQL payment.balance 获取 {len(accounts)} 个 EasyPaisa 代付候选")
@@ -761,8 +779,7 @@ class AccountSelector:
             lock_key = f"{self.REDIS_KEYS['easypaisa_account_lock_prefix']}{account_id}"
             lock_value = f"{order_code}_{secrets.token_hex(8)}"
 
-            if self.redis.setnx(lock_key, lock_value):
-                self.redis.expire(lock_key, 300)  # 5分钟
+            if self._acquire_redis_lock(lock_key, lock_value, 300):
                 self.logger.info(f"账号{account_id}锁获取成功: {lock_value}")
                 return lock_value
             else:
@@ -777,10 +794,8 @@ class AccountSelector:
         """释放账号锁"""
         try:
             lock_key = f"{self.REDIS_KEYS['easypaisa_account_lock_prefix']}{account_id}"
-            current_value = self.redis.get(lock_key)
-            if current_value and current_value.decode() == lock_value:
-                self.redis.delete(lock_key)
-                self.logger.info(f"账号{account_id}锁释放成功")
+            self._release_redis_lock(lock_key, lock_value)
+            self.logger.info(f"账号{account_id}锁释放成功")
         except Exception as e:
             self.logger.error(f"释放账号{account_id}锁失败: {e}")
 
@@ -795,19 +810,15 @@ class AccountSelector:
             # 获取payment_id处理锁
             lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
             _value = secrets.token_hex(8)
-            _lock = self.redis.setnx(lock_key, _value)
+            _lock = self._acquire_redis_lock(lock_key, _value, 300)
 
             if not _lock:
-                # 防止死锁
                 _ttl = self.redis.ttl(lock_key)
                 self.logger.info(f"Payment ID {payment_id} 锁剩余时间 {_ttl}s")
-                if _ttl and int(_ttl) > 300:  # 5分钟超时
-                    self.redis.delete(lock_key)
-                    self.logger.error(f"Payment ID {payment_id} 死锁并删除")
+                if _ttl == -1:
+                    self.logger.error(f"Payment ID {payment_id} 锁缺少TTL，需要人工清理")
                 return False
 
-            # 设置5分钟超时
-            self.redis.expire(lock_key, 300)
             self.logger.info(f"Payment ID {payment_id} 获取锁成功，value: {_value}")
             return _value
 
@@ -819,10 +830,8 @@ class AccountSelector:
         """删除payment_id锁"""
         try:
             lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
-            _lock = self.redis.get(lock_key)
-            if _lock and _lock.decode() == value:
-                result = self.redis.delete(lock_key)
-                self.logger.info(f"删除Payment ID锁 {lock_key}, result: {result}")
+            self._release_redis_lock(lock_key, value)
+            self.logger.info(f"删除Payment ID锁 {lock_key}")
             return True
         except Exception as e:
             self.logger.error(f'删除payment_id锁失败: {e}')
@@ -833,15 +842,13 @@ class AccountSelector:
         try:
             busy_key = f'{self.REDIS_KEYS["grab_df_prefix"]}{order_code}'
             _value = secrets.token_hex(8)
-            _lock = self.redis.setnx(busy_key, _value)
+            _lock = self._acquire_redis_lock(busy_key, _value, self.lock_time)
             if not _lock:
                 _ttl = self.redis.ttl(busy_key)
                 self.logger.info(f"{order_code}, {busy_key} 剩余生存时间 {_ttl} s")
-                if _ttl and int(_ttl) > self.lock_time:
-                    self.redis.delete(busy_key)
-                    self.logger.error(f"{order_code}, 死锁并删除 {_value}")
+                if _ttl == -1:
+                    self.logger.error(f"{order_code}, {busy_key} 锁缺少TTL，需要人工清理")
                 return False
-            self.redis.expire(busy_key, self.lock_time)
             self.logger.info(f"{order_code},{busy_key} 加锁时间 {self.lock_time} s, _value: {_value}")
             return _value
         except Exception as e:
@@ -853,16 +860,8 @@ class AccountSelector:
         try:
             busy_key = f'{self.REDIS_KEYS["grab_df_prefix"]}{order_code}'
             self.logger.info(f"准备删除Lock {busy_key}, 期望value: {value}")
-            _lock = self.redis.get(busy_key)
-            if _lock:
-                current_value = _lock.decode()
-                if current_value == value:
-                    result = self.redis.delete(busy_key)
-                    self.logger.info(f"删除Lock成功 {busy_key}, result: {result}")
-                else:
-                    self.logger.warning(f"Lock值不匹配！订单{order_code} 期望value: {value}, 实际value: {current_value}, 订单可能被其他进程处理")
-            else:
-                self.logger.warning(f"Lock已不存在: {busy_key}, 订单{order_code}的锁可能提前过期或被清理")
+            self._release_redis_lock(busy_key, value)
+            self.logger.info(f"删除Lock完成 {busy_key}")
             return True
         except Exception as e:
             self.logger.error(f'del_lock 脚本运行错误{order_code}\n{e}')
@@ -934,7 +933,13 @@ class AccountSelector:
         orders_sorted = sorted(orders, key=lambda o: Decimal(str(o['amount'])), reverse=True)
         accounts_sorted = sorted(accounts, key=lambda a: a.get('balance', 0), reverse=True)
         virtual_balances = {a['payment_id']: Decimal(str(a.get('balance', 0))) for a in accounts_sorted}
+        virtual_daily_remaining = {}
+        for account in accounts_sorted:
+            pid = account['payment_id']
+            amount_top = Decimal(str(account.get('amount_top') or 0))
+            virtual_daily_remaining[pid] = amount_top if amount_top > 0 else None
         buckets = {a['payment_id']: {'account': a, 'orders': []} for a in accounts_sorted}
+        assigned_pids = set()
         unassigned = []
 
         for order in orders_sorted:
@@ -943,6 +948,14 @@ class AccountSelector:
             best_remaining = Decimal('-1')
             for a in accounts_sorted:
                 pid = a['payment_id']
+                if pid in assigned_pids:
+                    continue
+                balance_limit = Decimal(str(a.get('balance_limit') or 0))
+                if balance_limit > 0 and amount > balance_limit:
+                    continue
+                daily_remaining = virtual_daily_remaining.get(pid)
+                if daily_remaining is not None and amount > daily_remaining:
+                    continue
                 remaining = virtual_balances[pid]
                 if remaining >= amount and remaining > best_remaining:
                     best_pid = pid
@@ -950,6 +963,9 @@ class AccountSelector:
             if best_pid:
                 buckets[best_pid]['orders'].append(order)
                 virtual_balances[best_pid] -= amount
+                if virtual_daily_remaining[best_pid] is not None:
+                    virtual_daily_remaining[best_pid] -= amount
+                assigned_pids.add(best_pid)
             else:
                 unassigned.append(order)
 

@@ -348,6 +348,28 @@ class TestProcessPayoutOrderStateMachine:
         lifecycle.redis.publish.assert_called_with('order_df_notify', 'ORD001')
 
     @pytest.mark.asyncio
+    async def test_balance_deduction_failure_marks_unknown_and_skips_settlement(self, lifecycle):
+        _wire_locks(lifecycle)
+        fake_conn = FakeConnection(claim_rowcount=1)
+        lifecycle.transfer_executor._execute_easypaisa_transfer = AsyncMock(return_value={
+            'success': True,
+            'transaction_id': 'TXN001',
+            'payer_phone': '03325009516',
+        })
+        lifecycle.account_selector.update_account_balance_after_transfer.return_value = False
+
+        with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
+            result = await lifecycle.process_payout_order(
+                {'code': 'ORD001', 'amount': '100.00', 'retry_count': 0},
+                selected_account=_selected_account(),
+            )
+
+        assert result['success'] is False
+        assert result['unknown'] is True
+        lifecycle.settlement.handle_payout_success.assert_not_called()
+        assert any("SET status = 2" in sql for sql, _ in fake_conn.cursor_obj.executed)
+
+    @pytest.mark.asyncio
     async def test_first_402_returns_order_to_retry_pool(self, lifecycle):
         _wire_locks(lifecycle)
         fake_conn = FakeConnection(claim_rowcount=1, retry_count=0)

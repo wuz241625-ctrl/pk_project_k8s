@@ -20,9 +20,9 @@ from jobs.auto_payout_state import is_auto_payout_enabled
 
 logger, trace_id_filter, file_handler = setup_high_performance_logging("easypaisa_auto_payout")
 conf = get_config()
-EASYPAISA_API_URL = getattr(conf, 'easypaisa_api_url', 'http://34.150.42.92:83')
-EASYPAISA_USER_ID = getattr(conf, 'easypaisa_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
-EASYPAISA_SECRET_KEY = getattr(conf, 'easypaisa_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
+EASYPAISA_API_URL = conf.get('easypaisa_api_url', 'http://34.150.42.92:83')
+EASYPAISA_USER_ID = conf.get('easypaisa_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
+EASYPAISA_SECRET_KEY = conf.get('easypaisa_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
 class EasyPaisaAutoPayout:
     def __init__(self, name):
         self.name = name
@@ -191,6 +191,7 @@ class EasyPaisaAutoPayout:
                 host=conf['mysql_host'], user=conf['mysql_user'],
                 password=conf['mysql_password'], database=conf['mysql_database'],
                 charset='utf8mb4', autocommit=False)
+            self.order_lifecycle.mark_stale_claimed_orders_unknown(connection)
             with connection.cursor() as cur:
                 cur.execute("""
                     SELECT code, amount, payment_id, payment_account,
@@ -241,7 +242,13 @@ class EasyPaisaAutoPayout:
                 self.logger.error(f"账号{pid}批量处理异常: {e}")
             return success
 
-        tasks = [_process_batch(acct, ords) for acct, ords in account_order_batches]
+        sem = asyncio.Semaphore(concurrent_limit)
+
+        async def _guarded_process_batch(account, orders):
+            async with sem:
+                return await _process_batch(account, orders)
+
+        tasks = [_guarded_process_batch(acct, ords) for acct, ords in account_order_batches]
         total_count = sum(len(ords) for _, ords in account_order_batches)
         t0 = time.time()
         results = await asyncio.gather(*tasks, return_exceptions=True)

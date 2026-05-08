@@ -26,7 +26,7 @@ def _normalize_bank_type(value):
         return None
 
 
-def _requires_collection_qrcode(payment, bank=None) -> bool:
+def _requires_collection_qrcode(payment, bank=None, channel_code=None) -> bool:
     bank = bank or {}
     bank_name = str(bank.get('name') or '').upper()
     bank_type = _normalize_bank_type((payment or {}).get('bank_type'))
@@ -35,7 +35,7 @@ def _requires_collection_qrcode(payment, bank=None) -> bool:
     if bank_name == 'JAZZCASH' or bank_type == 98 or bank_type_id == 98:
         return False
     if bank_name == 'EASYPAISA' or bank_type == 97 or bank_type_id == 97:
-        return True
+        return str(channel_code) == '1010'
     return False
 
 
@@ -67,7 +67,25 @@ def build_ds_candidate_sql(
     dedicated_payment_ids = _parse_payment_id_list(dedicated_payment_ids)
     limit = max(1, int(limit or 20))
     collection_dispatch_condition = _collection_dispatch_extra_sql_condition("pay", channel_code)
-    account_identifier_condition = """
+    if str(channel_code) == '1001':
+        account_identifier_condition = """
+          AND (
+              pay.bank_type = 98
+              OR pay.bank_type_id = 98
+              OR (
+                  CAST(pay.account_type AS CHAR) = '10'
+                  AND pay.phone IS NOT NULL
+                  AND pay.phone <> ''
+              )
+              OR (
+                  (pay.account_type IS NULL OR CAST(pay.account_type AS CHAR) <> '10')
+                  AND pay.account_accno IS NOT NULL
+                  AND pay.account_accno <> ''
+              )
+          )
+    """
+    else:
+        account_identifier_condition = """
           AND (
               pay.bank_type = 98
               OR pay.bank_type_id = 98
@@ -109,6 +127,8 @@ def build_ds_candidate_sql(
             pay.bank_type_id,
             pay.wallet_status,
             pay.account_accno,
+            pay.account_type,
+            pay.phone,
             pay.collection_status,
             pay.status AS payment_status,
             pay.certified AS payment_certified,
@@ -328,7 +348,7 @@ async def push_order(handler, data, target_payment):
     payment_key = [
         'id', 'partner_id', 'amount_top', 'upi', 'bank_type', 'manual_status',
         'bank_type_id', 'wallet_status', 'account_accno', 'collection_status',
-        'payment_status', 'payment_certified'
+        'payment_status', 'payment_certified', 'account_iban', 'account_type', 'phone'
     ]
     partner_key = ['pid', 'balance', 'status', 'vip', 'type', 'ds_min', 'ds_max']
     for i in _list:
@@ -411,8 +431,12 @@ async def push_order(handler, data, target_payment):
         handler.logger.info(f"Step 10: bank_id {bank_id}, {bank}")
 
         payment_qrcode = ''
-        if _requires_collection_qrcode(payment, bank):
-            payment_qrcode = await handler.generate_qr_code(payment['id'], payment['upi'], data['amount'])
+        if _requires_collection_qrcode(payment, bank, data.get('channel_code')):
+            payment_qrcode = await handler.generate_qr_code(
+                payment['id'],
+                payment.get('account_iban') or payment.get('account_accno') or payment.get('upi'),
+                data['amount'],
+            )
             if not payment_qrcode:
                 handler.logger.warn(f"码 {payment_id} 生成二维码失败，已跳过, code: {code}")
                 continue

@@ -117,7 +117,19 @@ class JazzCashMysqlStatementSchedulerTests(unittest.TestCase):
         self.assertIn("JOIN orders_df", executed_sql)
         self.assertIn("wallet_status = 1", executed_sql)
         self.assertIn("bank_type_id = 98", executed_sql)
+        self.assertIn("od.utr IS NOT NULL", executed_sql)
+        self.assertIn("od.utr <> ''", executed_sql)
         self.assertIn("LIMIT 200", executed_sql)
+
+    def test_due_statement_context_uses_only_ds_orders_with_payer_phone(self):
+        bank = self._bank()
+
+        bank.fetch_due_statement_scan_context("533302")
+
+        executed_sql = "\n".join(sql for sql, _ in bank.db_connection.executed)
+        self.assertIn("FROM orders_ds", executed_sql)
+        self.assertIn("utr IS NOT NULL", executed_sql)
+        self.assertIn("utr <> ''", executed_sql)
 
     def test_statement_account_context_is_mysql_wallet_context_without_account_accno(self):
         bank = self._bank(payment_rows=[{

@@ -397,6 +397,8 @@ class BankLogin:
             FROM orders_ds
             WHERE payment_id = %s
               AND status IN (1, 2)
+              AND utr IS NOT NULL
+              AND utr <> ''
               AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
             ORDER BY id DESC
             LIMIT 20
@@ -428,6 +430,8 @@ class BankLogin:
                 WHERE p.wallet_status = 1
                   AND (p.bank_type = 97 OR p.bank_type = '97' OR p.bank_type_id = 97)
                   AND od.status IN (1, 2)
+                  AND od.utr IS NOT NULL
+                  AND od.utr <> ''
                   AND od.time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
                 UNION
                 SELECT p.id

@@ -240,6 +240,40 @@ class TestExecuteEasypaisaTransfer:
         assert result['order_status'] == 'P'
 
     @pytest.mark.asyncio
+    async def test_code_200_unknown_order_status_is_not_success(self, executor):
+        """code=200 但 orderStatus 不是明确 S 时不能按成功结算。"""
+        order_data = {
+            'code': 'ORD002X',
+            'amount': 500,
+            'payment_account': '03001234567',
+            'payment_name': 'Test',
+            'ifsc': 'easypaisa',
+        }
+        account_info = {
+            'payment_id': 'PAY002X',
+            'phone': '03009876543',
+            'account_accno': 'ACC123',
+        }
+
+        executor._call_easypaisa_api = AsyncMock(return_value={
+            'code': 200,
+            'msg': 'Unknown state',
+            'data': {
+                'body': {
+                    'data': {'extOrderNo': 'TXN_UNKNOWN'}
+                }
+            }
+        })
+
+        result = await executor._execute_easypaisa_transfer(order_data, account_info)
+
+        assert result is not None
+        assert result['success'] is False
+        assert result['code'] == 200
+        assert result['order_status'] is None
+        assert result['can_retry'] is False
+
+    @pytest.mark.asyncio
     async def test_transfer_402_returns_retryable_failure_without_msgcd_branch(self, executor):
         """所有 code=402 都是通用可重试失败，msgCd 只记录不分支。"""
         order_data = {

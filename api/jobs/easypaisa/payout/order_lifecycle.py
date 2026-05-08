@@ -484,6 +484,31 @@ class OrderLifecycle:
         except Exception as e:
             self.logger.error(f"关闭 EasyPaisa payment_id={payment_id} 三最终态失败: {e}")
 
+    def mark_stale_claimed_orders_unknown(self, connection, stale_minutes: int = 15) -> int:
+        """把长时间停在执行中的订单转人工确认，避免 worker 崩溃后永久卡单。"""
+        try:
+            with connection.cursor() as cur:
+                sql = """
+                    UPDATE orders_df od
+                    JOIN payment p ON p.id = od.payment_id
+                    SET od.status = 2,
+                        od.sys_remark = %s
+                    WHERE od.status = 1
+                      AND od.time_accept IS NOT NULL
+                      AND od.time_accept < DATE_SUB(NOW(), INTERVAL %s MINUTE)
+                      AND (p.bank_type = 97 OR p.bank_type_id = 97)
+                """
+                remark = f"EasyPaisa执行中超过{stale_minutes}分钟，转人工确认"
+                affected = cur.execute(sql, (remark, stale_minutes))
+            connection.commit()
+            if affected:
+                self.logger.warning(f"EasyPaisa执行中超时订单已转人工确认: affected={affected}")
+            return affected
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"EasyPaisa执行中超时巡检失败: {e}\n{traceback.format_exc()}")
+            return 0
+
     def _reject_order(self, connection, order_data: Dict, selected_account: Dict, reason: str,
                       retry_count: Optional[int] = None) -> Dict:
         result = self.settlement.reject_order_with_refund(order_data, connection, reason, selected_account)
@@ -625,10 +650,13 @@ class OrderLifecycle:
                     self.account_selector.record_account_usage(selected_account['payment_id'])
 
                     # 转账成功后立即扣减Redis余额
-                    self.account_selector.update_account_balance_after_transfer(
+                    balance_updated = self.account_selector.update_account_balance_after_transfer(
                         payment_id=selected_account['payment_id'],
                         transfer_amount=amount
                     )
+                    if not balance_updated:
+                        self.account_selector.set_account_release_time(selected_account['payment_id'])
+                        return self._mark_unknown(connection, order_code, 'payment.balance扣减失败，人工核对')
 
                     # 转账成功，设置账号释放时间（从配置读取）
                     self.account_selector.set_account_release_time(selected_account['payment_id'])

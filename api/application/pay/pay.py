@@ -554,7 +554,7 @@ class Pay(BaseHandler):
                 result['decimal_callback_enabled'] = True
             # 关联查询直接获取 account
             sql = """
-                SELECT p.account_accno, p.account_iban, p.bank_type 
+                SELECT p.account_accno, p.account_iban, p.bank_type, p.account_type, p.phone
                 FROM orders_ds o 
                 JOIN payment p ON o.payment_id = p.id 
                 WHERE o.code = %s 
@@ -564,14 +564,14 @@ class Pay(BaseHandler):
 
             if payment_info:
                 info = payment_info[0]
-                # 判断是否为 EasyPaisa (id 97 对应 EASYPAISA)
-                if info.get('bank_type') == 97:
-                    # 如果是 EP，取 account_iban 后面的 8 位
+                # EasyPaisa 1010 是二维码通道；1001 的钱包户展示手机号，银行户展示 accno。
+                if str(info.get('bank_type')) == '97' and str(gateway) == '1010':
                     iban = info.get('account_iban') or ""
                     result['account'] = iban[-8:] if len(iban) >= 8 else iban
+                elif str(info.get('bank_type')) == '97' and str(gateway) == '1001' and str(info.get('account_type')) == '10':
+                    result['account'] = info.get('phone') or ''
                 else:
-                    # 其他情况取 account_accno
-                    result['account'] = info.get('account_accno') or ""
+                    result['account'] = info.get('account_accno') or ''
             else:
                 result['account'] = ""
 

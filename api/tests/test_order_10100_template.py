@@ -5,6 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "api/template/order_india.10100.html"
+ORDER_HANDLER = ROOT / "api/application/pay/order.py"
 
 
 class OrderIndia10100TemplateTests(unittest.TestCase):
@@ -203,6 +204,41 @@ class OrderIndia10100TemplateTests(unittest.TestCase):
             match.group("body"),
             r"const qrRendered = renderQr\(\);\s+if \(qrRendered\) \{\s+openQrGuide\(\);\s+\}",
         )
+
+    def test_cashier_submit_checks_pakistan_wallet_phone_conflict_before_utr_write(self):
+        source = ORDER_HANDLER.read_text()
+        card_num_source = source[source.index("class card_num"):source.index("    async def order_success_ds")]
+
+        for marker in [
+            "def _normalize_pakistan_wallet_msisdn",
+            "normalized_utr = self._normalize_pakistan_wallet_msisdn(utr)",
+            "SELECT code, payment_id, amount, status",
+            "payment_id = %s",
+            "AND amount = %s",
+            "AND utr = %s",
+            "AND status IN (1, 2)",
+            "AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)",
+            "AND code <> %s",
+            "UPDATE orders_ds SET utr=%s,time_payed=now()",
+            "WHERE code=%s AND status IN (1,2)",
+        ]:
+            self.assertIn(marker, card_num_source)
+
+        self.assertLess(
+            card_num_source.index("AND code <> %s"),
+            card_num_source.index("UPDATE orders_ds SET utr=%s,time_payed=now()"),
+        )
+
+    def test_order_get_uses_phone_or_accno_for_1001_and_qr_payload_for_1010(self):
+        source = ORDER_HANDLER.read_text()
+        get_source = source[source.index("    async def get(self, token=None):"):source.index("    @staticmethod")]
+
+        self.assertIn("str(order_info['channel_code']) == '1001' and account_type == '10'", get_source)
+        self.assertIn("account_iban = phone", get_source)
+        self.assertIn("str(order_info['channel_code']) == '1001' and account_type == '20'", get_source)
+        self.assertIn("account_iban = account_accno", get_source)
+        self.assertIn("elif channel_code == 1010:", get_source)
+        self.assertIn("order_info['ep_qr_payload'] = order_info.get('upi') or ''", get_source)
 
 
 if __name__ == "__main__":

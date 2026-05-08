@@ -126,7 +126,22 @@ class Order(BaseHandler):
             self.logger.info(f'--- 逻辑开始 --- 收到 account_type: {account_type}')
             # 逻辑判断：优先判断明确的 account_type
             if str(upi.get('bank_type')) == '97':
-                if account_type == '10':
+                if str(order_info['channel_code']) == '1001' and account_type == '10':
+                    account_iban = phone
+                    self.logger.info(f"5. 订单号 {code}: EasyPaisa 1001 钱包户按手机号展示")
+                    self.logger.info(f"6. 订单号 {code}: [1001钱包模式] 最终显示: '{account_iban}' (来源: phone)")
+
+                elif str(order_info['channel_code']) == '1001' and account_type == '20':
+                    account_iban = account_accno
+                    self.logger.info(f"5. 订单号 {code}: EasyPaisa 1001 银行户按账号页展示 accno")
+                    self.logger.info(f"6. 订单号 {code}: [1001银行账号模式] 最终显示: '{account_iban}' (来源: accno)")
+
+                elif str(order_info['channel_code']) == '1001':
+                    account_iban = account_accno or phone
+                    self.logger.info(f"5. 订单号 {code}: EasyPaisa 1001 未知 account_type={account_type}，按 accno/phone 兜底展示")
+                    self.logger.info(f"6. 订单号 {code}: [1001兜底模式] 最终显示: '{account_iban}'")
+
+                elif account_type == '10':
                     self.logger.info(f"5. 订单号 {code}: 检测到类型为 10 (Wallet/钱包)")
                     account_iban = phone
                     self.logger.info(f"6. 订单号 {code}: [钱包模式] 最终显示: '{account_iban}' (来源: phone)")
@@ -462,6 +477,15 @@ class download_count_submit(BaseHandler):
             return await self.json_response(msg_en[10000]) 
         
 class card_num(BaseHandler):
+    @staticmethod
+    def _normalize_pakistan_wallet_msisdn(value):
+        number = re.sub(r'\D+', '', str(value or ''))
+        while number.startswith('92'):
+            number = number[2:]
+        while number.startswith('0'):
+            number = number[1:]
+        return number
+
     async def post(self, token=None):
         try:
             if not token:
@@ -479,6 +503,11 @@ class card_num(BaseHandler):
                 return await self.json_response(msg_en[10000])
             if 'script' in utr or len(utr) < 10:
                 return await self.json_response(msg_en[10000])
+            if type in ['jazz', 'easypaisa']:
+                normalized_utr = self._normalize_pakistan_wallet_msisdn(utr)
+                if not normalized_utr or len(normalized_utr) < 9:
+                    return await self.json_response(msg_en[10000])
+                utr = normalized_utr
             
             order_info_temp = await self.get_result_by_condition('orders_ds', ['channel_code'], {'code': code})
             if not order_info_temp:
@@ -517,6 +546,42 @@ class card_num(BaseHandler):
             code = await self.token_decode(token, max_age=max_age)
             if isinstance(code, int):
                 return await self.json_response(msg[code])
+            order_rows = await self.query(
+                """
+                SELECT code, payment_id, amount, status
+                FROM orders_ds
+                WHERE code=%s
+                LIMIT 1
+                """,
+                code,
+            )
+            if not order_rows:
+                return await self.json_response(msg_en[10000])
+            current_order = order_rows[0]
+            if type in ['jazz', 'easypaisa']:
+                conflict_orders = await self.query(
+                    """
+                    SELECT code
+                    FROM orders_ds
+                    WHERE payment_id = %s
+                      AND amount = %s
+                      AND utr = %s
+                      AND status IN (1, 2)
+                      AND time_create >= DATE_SUB(NOW(), INTERVAL 7 MINUTE)
+                      AND code <> %s
+                    LIMIT 1
+                    """,
+                    current_order['payment_id'],
+                    current_order['amount'],
+                    normalized_utr,
+                    code,
+                )
+                if conflict_orders:
+                    self.logger.warning(
+                        f"订单 {code} 付款手机号冲突，payment_id={current_order['payment_id']}, "
+                        f"amount={current_order['amount']}, utr={normalized_utr}, conflict={conflict_orders[0]['code']}"
+                    )
+                    return await self.json_response({'code': 10003, 'msg': 'Duplicate payer phone and amount'})
             # 1. 网关配置：从 conf 中读取
             import config
             conf = config.get_config()
@@ -766,7 +831,10 @@ class card_num(BaseHandler):
                 # 删除操作的key，防止回调占用
                 busy_key = 'order_success_busy_{code}'.format(code=code)
                 await self.redis.delete(busy_key)
-                sql = " update orders_ds set utr=%s,time_payed=now() where code=%s and utr is null"
+                sql = """
+                    UPDATE orders_ds SET utr=%s,time_payed=now()
+                    WHERE code=%s AND status IN (1,2) AND (utr IS NULL OR utr='')
+                """
                 if not await self.execute(sql, utr, code):
                     return await self.json_response(msg_en[10010])
                 self.logger.info("订单：{code}，{sql} 付款标识(utr字段)：{utr}".format(code=code, sql=sql, utr=utr))

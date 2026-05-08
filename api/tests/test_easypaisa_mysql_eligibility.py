@@ -1,4 +1,9 @@
 import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+EASYPAISA_WORKER_SOURCE = REPO_ROOT / "api" / "jobs" / "pakistanpay_v2.py"
 
 
 class EasyPaisaMysqlEligibilityTests(unittest.TestCase):
@@ -82,6 +87,23 @@ class EasyPaisaMysqlEligibilityTests(unittest.TestCase):
         self.assertNotIn(" OR ", sql)
         self.assertNotIn("account_accno IS NOT NULL", sql)
         self.assertNotIn("account_accno <> ''", sql)
+
+    def test_easypaisa_statement_scheduler_requires_payer_phone_for_ds_orders(self):
+        source = EASYPAISA_WORKER_SOURCE.read_text()
+
+        due_source = source[
+            source.index("    def fetch_due_statement_payment_ids"):
+            source.index("    def fetch_statement_account_context")
+        ]
+        scan_source = source[
+            source.index("    def fetch_due_statement_scan_context"):
+            source.index("    def fetch_due_statement_payment_ids")
+        ]
+
+        self.assertIn("od.utr IS NOT NULL", due_source)
+        self.assertIn("od.utr <> ''", due_source)
+        self.assertIn("utr IS NOT NULL", scan_source)
+        self.assertIn("utr <> ''", scan_source)
 
 
 if __name__ == "__main__":
