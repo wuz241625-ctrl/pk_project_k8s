@@ -929,40 +929,11 @@ class getPayment(BaseHandler):
                 self.logger.warning(f"获取账号 {i['id']} JazzCash 限额数据失败: {e}")
                 # 失败时保持 None，不影响返回
             
-            # 🔥 查询实时余额数据 - 只使用Redis余额，无数据时设为None
-            # 策略：先查 EasyPaisa，再查 JazzCash，哪个有数据就用哪个
-            try:
-                payment_id = i['id']
-                redis_balance = None
-                
-                # 先尝试从 EasyPaisa Redis 获取余额
-                easypaisa_balance = await self.redis.zscore('easypaisa_balance_sorted', payment_id)
-                if easypaisa_balance is not None:
-                    redis_balance = easypaisa_balance
-                    self.logger.info(f"[余额查询] 账号 {payment_id} 从EasyPaisa Redis获取余额: {redis_balance}")
-                
-                # 如果 EasyPaisa 没有，再尝试从 JazzCash Redis 获取余额
-                if redis_balance is None:
-                    jazzcash_balance = await self.redis.zscore('jazzcash_balance_sorted', payment_id)
-                    if jazzcash_balance is not None:
-                        redis_balance = jazzcash_balance
-                        self.logger.info(f"[余额查询] 账号 {payment_id} 从JazzCash Redis获取余额: {redis_balance}")
-                
-                # 🔥 只使用Redis余额，无数据时设为None
-                if redis_balance is not None:
-                    i['balance'] = float(redis_balance)
-                    i['sys_balance'] = float(redis_balance)
-                else:
-                    # Redis无数据，设为None（前端显示为空或"--"）
-                    i['balance'] = None
-                    i['sys_balance'] = None
-                    self.logger.debug(f"[余额查询] 账号 {payment_id} Redis无余额数据，设置为None")
-                    
-            except Exception as e:
-                self.logger.warning(f"获取账号 {i['id']} Redis余额失败: {e}")
-                # 异常时也设为None
-                i['balance'] = None
-                i['sys_balance'] = None
+            if is_mysql_final_state_payment(i):
+                self.logger.debug(
+                    "[余额查询] 账号 %s 使用 MySQL payment.balance/sys_balance，不再用 Redis 覆盖",
+                    i['id'],
+                )
         
         result = dict(code=20000, data=data_r, total=total, count=count_r, msg='获取成功')
         return await self.json_response(result)

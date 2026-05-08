@@ -460,6 +460,32 @@ class AutoPayoutOrdersHandler(BaseHandler):
 
 class AutoPayoutToggleHandler(BaseHandler):
     """自动代付开关控制API"""
+
+    async def _set_auto_payout_enabled(self, enabled):
+        system_status = "running" if enabled else "stopped"
+        return await self.execute(
+            """
+            INSERT INTO auto_payout_system_status (id, system_status, last_update_time)
+            VALUES (1, %s, NOW())
+            ON DUPLICATE KEY UPDATE
+                system_status = VALUES(system_status),
+                last_update_time = NOW()
+            """,
+            system_status,
+        )
+
+    async def _is_auto_payout_enabled(self):
+        rows = await self.query(
+            """
+            SELECT system_status
+            FROM auto_payout_system_status
+            WHERE id = 1
+            LIMIT 1
+            """
+        )
+        if not rows:
+            return True
+        return rows[0].get("system_status") == "running"
     
     async def post(self):
         """切换自动代付开关状态"""
@@ -467,13 +493,15 @@ class AutoPayoutToggleHandler(BaseHandler):
             data = json.loads(self.request.body)
             enabled = data.get('enabled', False)
             
-            # 设置紧急停止状态
-            # 开启时：取消紧急停止(设为0)
-            # 关闭时：启动紧急停止(设为1)
-            await self.application.redis.set("easypaisa_emergency_stop", "0" if enabled else "1")
+            if not await self._set_auto_payout_enabled(enabled):
+                return self.write({
+                    "code": 500,
+                    "message": "更新自动代付MySQL开关失败",
+                    "data": None
+                })
             
             # 记录操作日志
-            action = "开启自动代付(停止紧急停机)" if enabled else "关闭自动代付(启动紧急停机)"
+            action = "开启自动代付" if enabled else "关闭自动代付"
             self.logger.info(f"自动代付开关操作: {action}")
             
             self.write({
@@ -481,7 +509,7 @@ class AutoPayoutToggleHandler(BaseHandler):
                 "message": "操作成功",
                 "data": {
                     "enabled": enabled,
-                    "emergency_stop": not enabled  # 开启时emergency_stop为False，关闭时为True
+                    "emergency_stop": not enabled
                 }
             })
             
@@ -497,9 +525,7 @@ class AutoPayoutToggleHandler(BaseHandler):
     async def get(self):
         """获取自动代付开关状态"""
         try:
-            emergency_stop = await self.redis.get("easypaisa_emergency_stop")
-            # emergency_stop为"0"或None时表示开启，为"1"时表示关闭
-            enabled = emergency_stop != "1"
+            enabled = await self._is_auto_payout_enabled()
             
             self.write({
                 "code": 20000,
@@ -525,7 +551,6 @@ class AutoPayoutToggleHandler(BaseHandler):
 #         """紧急停止自动代付"""
 #         try:
 #             # 设置紧急停止标志
-#             await self.application.redis.set("easypaisa_emergency_stop", "1")
 #             await self.application.redis.set("auto_payout_enabled", "0")
 #             
 #             # 记录紧急停止日志
@@ -551,12 +576,24 @@ class AutoPayoutToggleHandler(BaseHandler):
 
 class AutoPayoutMonitorHandler(BaseHandler):
     """自动代付系统监控API"""
+
+    async def _is_auto_payout_enabled(self):
+        rows = await self.query(
+            """
+            SELECT system_status
+            FROM auto_payout_system_status
+            WHERE id = 1
+            LIMIT 1
+            """
+        )
+        if not rows:
+            return True
+        return rows[0].get("system_status") == "running"
     
     async def get(self):
         """获取自动代付系统监控信息"""
         try:
-            # 获取系统状态
-            emergency_stop = await self.redis.get("easypaisa_emergency_stop")
+            auto_payout_enabled = await self._is_auto_payout_enabled()
             
             counts = await load_easypaisa_monitor_counts(self)
             online_accounts = counts["online_accounts"]
@@ -595,8 +632,8 @@ class AutoPayoutMonitorHandler(BaseHandler):
                 "message": "success",
                 "data": {
                     "system_status": {
-                        "enabled": emergency_stop != "1",  # emergency_stop为"0"或None时表示开启
-                        "emergency_stop": emergency_stop == "1"
+                        "enabled": auto_payout_enabled,
+                        "emergency_stop": not auto_payout_enabled
                     },
                     "account_status": {
                         "online_count": online_accounts or 0,

@@ -7,7 +7,6 @@ import json
 import uuid
 import asyncio
 import secrets
-import pymysql
 import aiohttp
 import logging
 from decimal import Decimal
@@ -15,6 +14,8 @@ from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 
 from config import get_config
+from jobs.common.db import DBConnection
+from application.payment_eligibility import payout_sql_condition
 from application.jazzcash_gateway import build_form_body
 
 conf = get_config()
@@ -28,13 +29,19 @@ class AccountSelector:
         self.logger = logger
         self.config = config
         self.REDIS_KEYS = config.get('redis_keys', {})
+        self.db = config.get('db') or DBConnection(conf)
+        self.db_provider = config.get('db_provider')
         self.lock_time = config.get('lock_time', 120)
         self.api_url = config.get('jazzcash_api_url', 'http://34.150.42.92:84')
         self.user_id = config.get('jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
         self.secret_key = config.get('jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
-        self._mysql_payout_account_cursor = []
         # Cross-module reference (set by orchestrator after construction)
         self.transfer_executor = None
+
+    def _get_db_connection(self):
+        if callable(self.db_provider):
+            return self.db_provider()
+        return self.db.connection
 
     async def check_account_online_status(self, payment_id: str) -> bool:
         """
@@ -145,15 +152,7 @@ class AccountSelector:
         self.logger.info(f"[AutoPayout] 开始查询payment_id: {payment_id} 的详细信息")
 
         try:
-            self.logger.info(f"[AutoPayout] 连接数据库: {conf['mysql_host']}:{conf.get('mysql_port', 3306)}")
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -205,9 +204,7 @@ class AccountSelector:
                             self.logger.warning(f"[AutoPayout] payment_id {payment_id} 在数据库中不存在")
                         return None
             finally:
-                connection.close()
-                total_time = time.time() - start_time
-                self.logger.info(f"[AutoPayout] 数据库连接已关闭, 总耗时: {total_time:.3f}s")
+                connection.commit()
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -220,14 +217,7 @@ class AccountSelector:
     def get_payout_final_state_accounts(self, limit=20) -> List[Dict]:
         """从 MySQL payout_status=1 读取 JazzCash 代付候选账号。"""
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     sql = """
@@ -254,35 +244,16 @@ class AccountSelector:
                         if row.get('phone')
                     ]
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"从 MySQL payout_status 获取JazzCash代付账号失败: {e}")
             return []
 
-
-    def get_account_from_active_list(self) -> Optional[Dict]:
-        """兼容旧调用名：实际从 MySQL payout_status=1 候选池取账号。"""
-        if not self._mysql_payout_account_cursor:
-            self._mysql_payout_account_cursor = self.get_payout_final_state_accounts(limit=20)
-        if not self._mysql_payout_account_cursor:
-            return None
-        return self._mysql_payout_account_cursor.pop(0)
-
-
-    def return_account_to_active_list(self, account_info):
-        """兼容旧调用名：MySQL final state 下不再回写旧活跃队列。"""
-        try:
-            if isinstance(account_info, dict):
-                payment_id = account_info['payment_id']
-                phone = account_info.get('phone', 'UNKNOWN')
-            else:
-                payment_id = str(account_info)
-                phone = 'UNKNOWN'
-            self.logger.debug(
-                f"账号payment_id:{payment_id} phone:{phone} 不回写旧活跃队列，代付资格继续由 MySQL payout_status 控制"
-            )
-        except Exception as e:
-            self.logger.error(f"账号兼容回队处理失败: {e}, account_info: {account_info}")
+    def release_selected_account(self, account_info):
+        """保留给订单生命周期调用的释放钩子；MySQL 调度不维护 Redis 账号队列。"""
+        if account_info:
+            self.logger.debug(f"账号{account_info.get('payment_id')} 使用 MySQL 调度，无需回写 Redis 队列")
+        return True
 
     async def check_account_amount_limits(self, payment_id: str, amount: Decimal) -> Dict:
         """
@@ -291,14 +262,7 @@ class AccountSelector:
         balance_limit：单笔最高金额限制
         """
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -384,7 +348,7 @@ class AccountSelector:
                     return {'passed': True}
 
             finally:
-                connection.close()
+                connection.commit()
 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}金额限制失败: {e}")
@@ -504,132 +468,65 @@ class AccountSelector:
             self.logger.error(f"获取账号{payment_id}使用时间失败: {e}")
             return None
 
-    # ========== 有序集合余额相关方法 ==========
+    # ========== MySQL 余额相关方法 ==========
 
-
-    def get_top_balance_accounts(self, min_balance: Decimal = Decimal('1000'), count: int = 50) -> List[Dict]:
-        """
-        从有序集合获取余额最高的账号列表
-
-        Args:
-            min_balance: 最低余额要求
-            count: 获取账号数量
-
-        Returns:
-            List[Dict]: 包含payment_id、partner_id、手机号、账号、姓名和余额的账号列表
-        """
+    def get_mysql_payout_candidates(self, min_balance: Decimal = Decimal('1000'), count: int = 50) -> List[Dict]:
+        """从 MySQL payment.balance 获取 JazzCash 代付候选。"""
         try:
-            balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-
-            # 🔥 添加详细调试日志
-            self.logger.info(f"开始从有序集合获取高余额账号")
-            self.logger.info(f"查询参数: 集合={balance_sorted_set}, 最小余额={min_balance}, 数量={count}")
-
-            # 先检查集合是否存在
-            exists = self.redis.exists(balance_sorted_set)
-            card = self.redis.zcard(balance_sorted_set) if exists else 0
-            self.logger.info(f"有序集合状态: 存在={exists}, 大小={card}")
-
-            if not exists:
-                self.logger.error(f"❌ 有序集合 {balance_sorted_set} 不存在")
-                return []
-
-            # 获取余额大于min_balance的前count个账号（按余额降序）
-            self.logger.info(f"执行Redis查询: ZREVRANGEBYSCORE {balance_sorted_set} +inf {float(min_balance)} LIMIT 0 {count}")
-            accounts_with_balance = self.redis.zrevrangebyscore(
-                balance_sorted_set,
-                "+inf",
-                float(min_balance),
-                start=0,
-                num=count,
-                withscores=True
-            )
-
-            self.logger.info(f"Redis查询返回原始结果数量: {len(accounts_with_balance)}")
-
-            # 显示前几个原始结果
-            for i, (payment_id_bytes, balance) in enumerate(accounts_with_balance[:5]):
-                payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
-                self.logger.info(f"原始结果[{i+1}]: payment_id={payment_id}, balance={balance}")
-
-            if not accounts_with_balance:
-                self.logger.info(f"有序集合中无余额>{min_balance}的账号")
-                # 🔥 添加更多调试信息
-                self.logger.info(f"尝试查询余额>={float(min_balance)-10}的账号进行对比")
-                test_accounts = self.redis.zrevrangebyscore(balance_sorted_set, "+inf", float(min_balance)-10, start=0, num=5, withscores=True)
-                self.logger.info(f"更低阈值查询结果: {len(test_accounts)}个账号")
-                for payment_id_bytes, balance in test_accounts:
-                    payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
-                    self.logger.info(f"更低阈值结果: payment_id={payment_id}, balance={balance}")
-                return []
-
-            # 转换为标准格式并获取手机号
-            result_accounts = []
-            self.logger.info(f"开始处理{len(accounts_with_balance)}个账号的详细信息")
-
-            for i, (payment_id_bytes, balance) in enumerate(accounts_with_balance):
-                payment_id = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
-
-                self.logger.info(f"处理账号[{i+1}/{len(accounts_with_balance)}]: payment_id={payment_id}, balance={balance}")
-
-                # 通过payment_id查询手机号和partner_id
-                payment_info = self.get_phone_by_payment_id(payment_id)
-                if payment_info and payment_info.get('phone'):
-                    account_info = {
-                        'payment_id': payment_id,
-                        'phone': payment_info['phone'],
-                        'partner_id': payment_info.get('partner_id'),  # 🔥 添加partner_id
-                        'account': payment_info.get('account'),  # 🔥 添加account账号
-                        'name': payment_info.get('name'),  # 🔥 添加姓名
-                        'balance': Decimal(str(balance)),
-                        'priority': int(balance)
-                    }
-                    result_accounts.append(account_info)
-                    self.logger.info(f"账号{payment_id}信息完整: partner_id={payment_info.get('partner_id')}, phone={payment_info['phone'][:4]}****")
-                else:
-                    self.logger.warning(f"payment_id {payment_id} 无法获取手机号，跳过（payment_info={payment_info}）")
-
-            self.logger.info(f"最终结果: 从{len(accounts_with_balance)}个原始账号中筛选出{len(result_accounts)}个有效账号")
-            self.logger.info(f"从有序集合获取到 {len(result_accounts)} 个高余额账号")
-            return result_accounts
-
+            connection = self._get_db_connection()
+            try:
+                with connection.cursor() as cur:
+                    sql = """
+                        SELECT id AS payment_id, phone, account, name, bank_type, bank_type_id,
+                               partner_id, COALESCE(balance, 0) AS balance
+                        FROM payment
+                        WHERE {condition}
+                          AND (bank_type = 98 OR bank_type_id = 98)
+                          AND COALESCE(balance, 0) >= %s
+                        ORDER BY balance DESC, id ASC
+                        LIMIT %s
+                    """.format(condition=payout_sql_condition("payment"))
+                    cur.execute(sql, (min_balance, int(count)))
+                    rows = cur.fetchall() or []
+                    accounts = []
+                    for row in rows:
+                        balance = Decimal(str(row.get('balance') or 0))
+                        accounts.append({
+                            'payment_id': str(row.get('payment_id')),
+                            'phone': row.get('phone'),
+                            'partner_id': row.get('partner_id'),
+                            'account': row.get('account'),
+                            'name': row.get('name'),
+                            'bank_type': row.get('bank_type'),
+                            'balance': balance,
+                            'priority': int(balance),
+                        })
+                    self.logger.info(f"从 MySQL payment.balance 获取 {len(accounts)} 个 JazzCash 代付候选")
+                    return accounts
+            finally:
+                connection.commit()
         except Exception as e:
-            self.logger.error(f"从有序集合获取高余额账号失败: {e}")
-            self.logger.error(f"调试信息: min_balance={min_balance}, count={count}")
-            import traceback
-            self.logger.error(f"完整异常堆栈: {traceback.format_exc()}")
+            self.logger.error(f"从 MySQL 获取 JazzCash 代付候选失败: {e}")
             return []
 
-
-    def get_account_balance_from_sorted_set(self, payment_id: str) -> Optional[Decimal]:
-        """从有序集合获取账号余额"""
-        try:
-            balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-            balance = self.redis.zscore(balance_sorted_set, payment_id)
-            return Decimal(str(balance)) if balance is not None else None
-        except Exception as e:
-            self.logger.error(f"从有序集合获取账号{payment_id}余额失败: {e}")
-            return None
+    def get_top_balance_accounts(self, min_balance: Decimal = Decimal('1000'), count: int = 50) -> List[Dict]:
+        """从 MySQL payment.balance 获取余额最高的账号列表。"""
+        return self.get_mysql_payout_candidates(min_balance=min_balance, count=count)
 
 
     async def get_available_accounts(self, amount: Decimal, target_account: str = None) -> List[Dict]:
         """
-        账号获取：双策略方案，加入20分钟使用间隔筛选
-
-        策略1: 优先从有序集合获取高余额账号（按余额降序）
-        策略2: 如果策略1未找到，fallback到活跃列表逐个检查
+        账号获取：从 MySQL payment.balance 获取候选，加入20分钟使用间隔筛选。
 
         Args:
             amount: 转账金额
             target_account: 目标收款账号，用于过滤相同账号
         """
         available_accounts = []
-        back_key = []  # 需要重新加入活跃列表的账号
 
         # 统计各种检查结果
         check_stats = {
-            'sorted_set_attempts': 0,
-            'active_list_attempts': 0,
+            'mysql_candidate_attempts': 0,
             'total_attempted': 0,
             'offline_count': 0,
             'release_time_count': 0,
@@ -646,15 +543,14 @@ class AccountSelector:
         }
 
         try:
-            self.logger.info(f"======== 开始JazzCash账号筛选（双策略+使用间隔） ========")
+            self.logger.info(f"======== 开始JazzCash账号筛选（MySQL余额+使用间隔） ========")
             self.logger.info(f"筛选条件: 金额要求 >= {amount}")
 
-            # 🔥 策略1: 优先从有序集合获取高余额账号
-            self.logger.info(f"策略1: 从有序集合获取高余额账号（余额>={amount}）")
+            self.logger.info(f"从 MySQL payment.balance 获取高余额账号（余额>={amount}）")
             high_balance_accounts = self.get_top_balance_accounts(min_balance=amount, count=20)
 
             if high_balance_accounts:
-                self.logger.info(f"从有序集合获取到 {len(high_balance_accounts)} 个高余额账号")
+                self.logger.info(f"从 MySQL 获取到 {len(high_balance_accounts)} 个高余额账号")
 
                 # 对高余额账号进行防护检查（跳过余额检查）
                 passed_accounts = []
@@ -664,7 +560,7 @@ class AccountSelector:
                     phone = account_info['phone']
                     balance = account_info['balance']
 
-                    check_stats['sorted_set_attempts'] += 1
+                    check_stats['mysql_candidate_attempts'] += 1
                     check_stats['total_attempted'] += 1
 
                     self.logger.info(f"检查高余额账号: payment_id:{payment_id} phone:{phone} 余额:{balance}")
@@ -738,7 +634,7 @@ class AccountSelector:
                             self.logger.info(f"账号{payment_id} - 金额限制: {amount_check['reason']}，跳过")
                         continue
 
-                    # 🔥 余额检查已通过（从有序集合获取时已确保余额足够）
+                    # 余额检查已通过（从 MySQL payment.balance 获取时已确保余额足够）
                     # 通过基础检查的账号
                     passed_accounts.append(account_info)
                     self.logger.info(f"✅ 账号{payment_id}通过基础检查")
@@ -784,156 +680,16 @@ class AccountSelector:
                             check_stats['available_count'] += 1
                             self.logger.info(f"🎯 最终选择账号: payment_id={selected_account['payment_id']} phone={selected_account['phone']}, 余额={selected_account['balance']} (虽然20分钟内使用过，但无其他选择)")
 
-            # 🔥 策略2: fallback到活跃列表（如果策略1未找到）
             if not available_accounts:
-                self.logger.info(f"策略2: 有序集合未找到可用账号，fallback到活跃列表方式")
-
-                # 保持原有逻辑，但优化余额检查
-                for attempt in range(10):  # 减少尝试次数，因为前面已经尝试过高余额账号
-                    account_info = self.get_account_from_active_list()
-
-                    if not account_info:
-                        self.logger.info(f"活跃列表为空，停止查找")
-                        break
-
-                    check_stats['active_list_attempts'] += 1
-                    check_stats['total_attempted'] += 1
-
-                    payment_id = account_info['payment_id']
-                    phone = account_info['phone']
-
-                    self.logger.info(f"第{attempt + 1}次尝试: 检查账号 payment_id:{payment_id} phone:{phone}")
-
-                    # 🔥 新增：检查收付款账号是否相同
-                    if target_account and phone == target_account:
-                        self.logger.warning(f"账号{payment_id} - 付款账号与收款账号相同 [{phone}]，跳过")
-                        check_stats['same_account_count'] = check_stats.get('same_account_count', 0) + 1
-                        continue
-
-                    # 执行完整的防护检查
-                    # 检查1: 在线状态
-                    if not await self.check_account_online_status(payment_id):
-                        check_stats['offline_count'] += 1
-                        self.logger.info(f"账号{payment_id} - 不在线，跳过")
-                        continue
-
-                    # 检查2: 释放时间
-                    if not self.check_account_release_time(payment_id):
-                        check_stats['release_time_count'] += 1
-                        self.logger.info(f"账号{payment_id} - 在释放期内，重新入队")
-                        back_key.append(account_info)
-                        continue
-
-                    # 🔥 检查3: 重复订单检测（直接查询Hash表）
-                    self.logger.error(f"准备检查重复订单: payment_id={payment_id}, target_account={target_account}, amount={amount}")
-                    if target_account:
-                        # 有收款账号，执行精确的重复检测
-                        duplicate_check = self.check_duplicate_failure(
-                            payment_id=payment_id,
-                            amount=amount,
-                            to_account=target_account,
-                            time_window=1200  # 20分钟
-                        )
-
-                        if duplicate_check['has_duplicate']:
-                            # ❌ 检测到重复，重新入队
-                            check_stats['duplicate_failure_count'] += 1
-                            self.logger.error(
-                                f"⚠️ 账号{payment_id}重复订单检测: "
-                                f"20分钟内已失败{duplicate_check['duplicate_count']}次 "
-                                f"(金额:{amount}, 收款:{target_account})，重新入队"
-                            )
-                            back_key.append(account_info)
-                            continue
-                        else:
-                            # ✅ 没有重复，继续使用
-                            self.logger.error(f"账号{payment_id}未检测到重复订单，继续使用")
-                    else:
-                        # 收款账号为空，无法做重复检测
-                        self.logger.error(f"账号{payment_id}收款账号为空，跳过重复检测")
-
-                    # 检查4: 并发订单 (已注释，由payment_id_lock机制处理)
-                    # if not await self.check_account_concurrent_orders(payment_id):
-                    #     check_stats['concurrent_orders_count'] += 1
-                    #     self.logger.info(f"账号{payment_id} - 并发订单超限，重新入队")
-                    #     back_key.append(account_info)
-                    #     continue
-
-                    # 新增：payment_id 锁检查（防止选中已被其他进程占用的账号）
-                    lock_key = f'{self.REDIS_KEYS["payment_id_lock_prefix"]}{payment_id}'
-                    if self.redis.exists(lock_key):
-                        check_stats['payment_id_locked_count'] += 1
-                        self.logger.info(f"账号{payment_id} - payment_id已被锁定，重新入队")
-                        back_key.append(account_info)
-                        continue
-
-                    # 检查5: 金额限制
-                    amount_check = await self.check_account_amount_limits(payment_id, amount)
-                    if not amount_check['passed']:
-                        check_stats['amount_limit_count'] += 1
-                        self.logger.info(f"账号{payment_id} - 金额限制: {amount_check['reason']}，重新入队")
-                        back_key.append(account_info)
-                        continue
-
-                    # 🔥 余额检查：优先从有序集合获取
-                    balance = self.get_account_balance_from_sorted_set(payment_id)
-                    if balance is None:
-                        # 有序集合没有，尝试原有缓存
-                        balance_key = f"{self.REDIS_KEYS['jazzcash_balance_prefix']}{payment_id}"
-                        cached_balance = self.redis.get(balance_key)
-                        if cached_balance:
-                            balance = Decimal(cached_balance.decode())
-                        else:
-                            # 重新获取余额
-                            self.logger.info(f"账号{payment_id} - 余额缓存不存在，尝试重新获取")
-                            balance_result = await self.fetch_balance_from_api(account_info)
-
-                            if balance_result and balance_result.get('success'):
-                                balance = Decimal(str(balance_result['balance']))
-                                # 同时更新传统缓存和有序集合
-                                self.redis.setex(balance_key, 300, str(balance))
-                                balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-                                self.redis.zadd(balance_sorted_set, {payment_id: float(balance)})
-                                # self.redis.expire(balance_sorted_set, 300)  # 已注释：不设置过期，数据永久保存
-                                self.logger.info(f"✅ 账号{payment_id} - 重新获取余额成功: {balance}")
-                            else:
-                                check_stats['no_balance_cache_count'] += 1
-                                error_msg = balance_result.get('error', '获取余额失败') if balance_result else '获取余额失败'
-                                self.logger.warning(f"账号{payment_id} - 重新获取余额失败: {error_msg}，重新入队")
-                                back_key.append(account_info)
-                                continue
-
-                    if balance >= amount:
-                        # 检查20分钟使用间隔
-                        if self.is_account_recently_used(payment_id):
-                            check_stats['recently_used_count'] += 1
-                            self.logger.info(f"账号{payment_id} - 20分钟内使用过，重新入队")
-                            back_key.append(account_info)
-                            continue
-
-                        check_stats['available_count'] += 1
-                        account_info.update({
-                            'balance': balance,
-                            'priority': int(balance)
-                        })
-                        available_accounts.append(account_info)
-                        self.logger.info(f"✅ 找到可用账号: payment_id={payment_id} phone={phone}, 余额: {balance}")
-                        break
-                    else:
-                        check_stats['insufficient_balance_count'] += 1
-                        self.logger.info(f"账号{payment_id} - 余额不足（{balance} < {amount}），重新入队")
-                        back_key.append(account_info)
+                self.logger.info("MySQL 候选未筛出可用 JazzCash 代付账号，不再回退旧 Redis 队列")
 
             # 如果两个策略都未找到可用账号，记录详细原因
             if not available_accounts:
                 self.logger.warning(f"❌ 两个策略都未找到可用账号")
                 if not high_balance_accounts:
-                    self.logger.error(f"🚨 有序集合中无余额>={amount}的账号，可能原因:")
-                    self.logger.error(f"   1. Monitor系统未运行或数据同步延迟")
-                    self.logger.error(f"   2. 所有账号余额都低于要求金额{amount}")
-                    self.logger.error(f"   3. 有序集合key '{self.REDIS_KEYS['jazzcash_balance_sorted_set']}' 不存在或已过期")
+                    self.logger.error(f"🚨 MySQL 中无 payment.balance>={amount} 的 JazzCash 账号")
                 else:
-                    self.logger.error(f"🚨 有序集合有{len(high_balance_accounts)}个高余额账号，但都不满足其他条件:")
+                    self.logger.error(f"🚨 MySQL 有{len(high_balance_accounts)}个高余额账号，但都不满足其他条件:")
                     self.logger.error(f"   - 离线账号: {check_stats['offline_count']}")
                     self.logger.error(f"   - 释放期账号: {check_stats['release_time_count']}")
                     self.logger.error(f"   - 重复失败账号: {check_stats['duplicate_failure_count']}")
@@ -946,22 +702,10 @@ class AccountSelector:
                     self.logger.error(f"   - 余额不足账号: {check_stats['insufficient_balance_count']}")
                     self.logger.error(f"   - 无缓存账号: {check_stats['no_balance_cache_count']}")
 
-                self.logger.error(f"活跃列表尝试情况: {check_stats['active_list_attempts']}次尝试")
-
-            # 将不符合条件的账号重新加入活跃列表
-            if back_key:
-                self.logger.info(f"重新入队账号处理: 共{len(back_key)}个账号")
-                for account_info in back_key:
-                    self.return_account_to_active_list(account_info)
-                    payment_id = account_info['payment_id']
-                    phone = account_info.get('phone', 'UNKNOWN')
-                    self.logger.info(f"账号payment_id:{payment_id} phone:{phone} 已重新入队到活跃列表")
-
             # 输出详细统计
             self.logger.info(f"======== JazzCash账号筛选完成 ========")
             self.logger.info(f"筛选统计:")
-            self.logger.info(f"  📊 有序集合尝试: {check_stats['sorted_set_attempts']}")
-            self.logger.info(f"  📊 活跃列表尝试: {check_stats['active_list_attempts']}")
+            self.logger.info(f"  📊 MySQL候选尝试: {check_stats['mysql_candidate_attempts']}")
             self.logger.info(f"  📊 总尝试账号数: {check_stats['total_attempted']}")
             self.logger.info(f"  ❌ 离线账号数: {check_stats['offline_count']}")
             self.logger.info(f"  ⏰ 释放期账号数: {check_stats['release_time_count']}")
@@ -975,7 +719,6 @@ class AccountSelector:
             self.logger.info(f"  💾 无缓存账号数: {check_stats['no_balance_cache_count']}")
             self.logger.info(f"  🕐 20分钟内使用过: {check_stats['recently_used_count']}")
             self.logger.info(f"  ✅ 可用账号数: {check_stats['available_count']}")
-            self.logger.info(f"  🔄 重新入队数: {len(back_key)}")
 
             if available_accounts:
                 self.logger.info(f"🎯 筛选结果: 成功找到{len(available_accounts)}个可用账号")
@@ -989,18 +732,7 @@ class AccountSelector:
             self.logger.error(f"异常详情: {e}")
             self.logger.error(f"异常时统计:")
             self.logger.error(f"  已检查账号数: {check_stats['total_attempted']}")
-            self.logger.error(f"  有序集合尝试: {check_stats['sorted_set_attempts']}")
-            self.logger.error(f"  活跃列表尝试: {check_stats['active_list_attempts']}")
-            self.logger.error(f"  待重新入队数: {len(back_key)}")
-
-            # 异常时也要将账号重新入队
-            if back_key:
-                self.logger.info(f"异常处理: 重新入队{len(back_key)}个账号")
-                for account_info in back_key:
-                    self.return_account_to_active_list(account_info)
-                    payment_id = account_info['payment_id']
-                    phone = account_info.get('phone', 'UNKNOWN')
-                    self.logger.info(f"异常处理: 账号payment_id:{payment_id} phone:{phone}已重新入队")
+            self.logger.error(f"  MySQL候选尝试: {check_stats['mysql_candidate_attempts']}")
 
             self.logger.error(f"🚨 筛选结果: 因异常返回空列表")
             return []

@@ -11,21 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 class FakeRedis:
     def __init__(self):
         self.values = {}
-        self.zsets = {}
-        self.zadd_calls = []
 
     def get(self, key):
         return self.values.get(key)
 
     def ttl(self, key):
         return 120 if key in self.values else -2
-
-    def zadd(self, key, mapping):
-        self.zadd_calls.append((key, dict(mapping)))
-        bucket = self.zsets.setdefault(key, {})
-        for member, score in mapping.items():
-            bucket[str(member)] = score
-        return 1
 
 
 class EasyPaisaMonitorIdempotencyTests(unittest.IsolatedAsyncioTestCase):
@@ -37,7 +28,6 @@ class EasyPaisaMonitorIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         monitor.redis = FakeRedis()
         monitor.logger = MagicMock()
         monitor.REDIS_KEYS = {
-            "easypaisa_balance_sorted_set": "easypaisa_balance_sorted",
             "easypaisa_monitor_report": "easypaisa_monitor_report",
             "easypaisa_limits_hash": "easypaisa_limits_hash",
             "easypaisa_account_lock_prefix": "easypaisa_account_lock:",
@@ -46,6 +36,7 @@ class EasyPaisaMonitorIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         monitor.restore_payment_dispatch_after_health_success = MagicMock(return_value=1)
         monitor.pause_payment_dispatch_for_health_error = MagicMock(return_value=1)
         monitor.remove_account_completely = MagicMock(return_value=True)
+        monitor.update_payment_balance_snapshot = MagicMock(return_value=1)
         return monitor
 
     def _online_status(self):
@@ -66,19 +57,16 @@ class EasyPaisaMonitorIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         result = await monitor.update_redis_cache(self._online_status())
 
         self.assertFalse(result)
-        self.assertEqual(monitor.redis.zadd_calls, [])
+        monitor.update_payment_balance_snapshot.assert_not_called()
         monitor.restore_payment_dispatch_after_health_success.assert_not_called()
 
-    async def test_update_redis_cache_writes_balance_when_no_payout_lock(self):
+    async def test_update_redis_cache_writes_mysql_balance_when_no_payout_lock(self):
         monitor = self._monitor()
 
         result = await monitor.update_redis_cache(self._online_status())
 
         self.assertFalse(result)
-        self.assertEqual(
-            monitor.redis.zadd_calls,
-            [("easypaisa_balance_sorted", {"533295": 1000.0})],
-        )
+        monitor.update_payment_balance_snapshot.assert_called_once_with("533295", Decimal("1000.00"))
         monitor.restore_payment_dispatch_after_health_success.assert_called_once_with("533295")
 
     async def test_run_monitor_check_processes_only_allocated_payment_ids(self):

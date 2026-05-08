@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from config import get_config
+from jobs.auto_payout_state import is_auto_payout_enabled
 
 conf = get_config()
 
@@ -27,6 +28,55 @@ class OrderLifecycle:
         self.transaction_logger = transaction_logger
         self.REDIS_KEYS = config.get('redis_keys', {})
         self.lock_time = config.get('lock_time', 120)
+
+    @staticmethod
+    def _parse_payment_id_list(value) -> List[str]:
+        if not value:
+            return []
+        raw_items = str(value).replace(' ', '').strip(',').split(',')
+        payment_ids = []
+        seen = set()
+        for item in raw_items:
+            payment_id = str(item).strip()
+            if payment_id.isdigit() and payment_id not in seen:
+                seen.add(payment_id)
+                payment_ids.append(payment_id)
+        return payment_ids
+
+    def _fetch_mysql_dedicated_payment_ids(self) -> List[str]:
+        connection = None
+        try:
+            connection = pymysql.connect(
+                host=conf['mysql_host'],
+                user=conf['mysql_user'],
+                password=conf['mysql_password'],
+                database=conf['mysql_database'],
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor,
+                autocommit=True,
+            )
+            with connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT target_payment
+                    FROM merchant
+                    WHERE target_payment IS NOT NULL
+                      AND target_payment != ''
+                    """
+                )
+                rows = cur.fetchall()
+            dedicated_payment_ids = []
+            for row in rows or []:
+                dedicated_payment_ids.extend(
+                    self._parse_payment_id_list(row.get('target_payment'))
+                )
+            return self._parse_payment_id_list(','.join(dedicated_payment_ids))
+        except Exception as exc:
+            self.logger.warning(f"读取MySQL专卡专户配置失败，按无全局独占码处理: {exc}")
+            return []
+        finally:
+            if connection:
+                connection.close()
 
     async def get_pending_orders_by_time(self) -> List[Dict]:
         """获取按时间排序的待处理订单 (保持现有业务逻辑)"""
@@ -80,7 +130,7 @@ class OrderLifecycle:
                         min_order_amount = min(order['amount'] for order in filtered_orders)
                         self.logger.info(f"当前待处理订单最小金额: {min_order_amount}")
 
-                        # 从有序集合获取高余额账号（余额 >= 最小订单金额）
+                        # 从 MySQL payment.balance 获取高余额账号（余额 >= 最小订单金额）
                         available_accounts = self.account_selector.get_top_balance_accounts(min_balance=min_order_amount, count=20)
 
                         if not available_accounts:
@@ -155,10 +205,11 @@ class OrderLifecycle:
             # 如果订单有指定需要用的出款账户，则从accounts中只挑选指定的专户。如果不指定则从广泛匹配号列表移除全局专卡专户登记的银行卡
             target_payment_filtered_accounts = []
             if order_data['target_payment']:
-                target_payment_filtered_accounts = [account for account in accounts if account['payment_id'] in order_data['target_payment'].split(',')]
+                target_payment_ids = self._parse_payment_id_list(order_data['target_payment'])
+                target_payment_filtered_accounts = [account for account in accounts if str(account['payment_id']) in target_payment_ids]
             else:
-                target_payment_key: str = (self.redis.get("target_payment_key") or b"").decode()
-                target_payment_filtered_accounts = [account for account in accounts if account['payment_id'] not in target_payment_key.split(',')]
+                dedicated_payment_ids = set(self._fetch_mysql_dedicated_payment_ids())
+                target_payment_filtered_accounts = [account for account in accounts if str(account['payment_id']) not in dedicated_payment_ids]
             accounts = target_payment_filtered_accounts
             # ===================== 新增代付专卡专户过滤结束 =====================
 
@@ -181,7 +232,7 @@ class OrderLifecycle:
             # 🔥 3. 获取订单锁（有可用账号后才获取）
             order_lock_value = self.account_selector.get_lock(order_code)
             if not order_lock_value:
-                self.account_selector.return_account_to_active_list(selected_account)
+                self.account_selector.release_selected_account(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 未抢到订单锁'
@@ -194,7 +245,7 @@ class OrderLifecycle:
             if not account_lock:
                 # 账号锁失败，释放订单锁
                 self.account_selector.del_lock(order_code, order_lock_value)
-                self.account_selector.return_account_to_active_list(selected_account)
+                self.account_selector.release_selected_account(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} 账号{account_id}被锁定'
@@ -208,7 +259,7 @@ class OrderLifecycle:
                 # payment_id 锁定失败，释放订单锁和账号锁
                 self.account_selector.release_account_lock(account_id, account_lock)
                 self.account_selector.del_lock(order_code, order_lock_value)
-                self.account_selector.return_account_to_active_list(selected_account)
+                self.account_selector.release_selected_account(selected_account)
                 return {
                     'success': False,
                     'message': f'订单{order_code} Payment ID {payment_id} 锁定失败'
@@ -252,7 +303,7 @@ class OrderLifecycle:
 
             if selected_account:
                 try:
-                    self.account_selector.return_account_to_active_list(selected_account)
+                    self.account_selector.release_selected_account(selected_account)
                 except:
                     pass
 
@@ -266,9 +317,7 @@ class OrderLifecycle:
     async def check_payout_risk(self, order_data: Dict) -> Dict:
         """风控检查"""
         try:
-            # 检查紧急停机（使用 EasyPaisa 的配置，全局控制）
-            emergency_stop = self.redis.get('easypaisa_emergency_stop')
-            if emergency_stop == b"1" or emergency_stop == "1":
+            if not is_auto_payout_enabled(conf, self.logger):
                 return {'passed': False, 'reason': 'emergency_stop', 'message': '系统紧急停机'}
 
             amount = Decimal(str(order_data['amount']))
@@ -436,7 +485,7 @@ class OrderLifecycle:
                     transfer_amount=amount
                 )
                 self.account_selector.set_account_release_time(selected_account['payment_id'])
-                self.account_selector.return_account_to_active_list(selected_account)
+                self.account_selector.release_selected_account(selected_account)
 
                 return {
                     'success': True,
@@ -450,7 +499,7 @@ class OrderLifecycle:
                 }
 
             self.account_selector.set_account_release_time(selected_account['payment_id'])
-            self.account_selector.return_account_to_active_list(selected_account)
+            self.account_selector.release_selected_account(selected_account)
 
             if transfer_result is None:
                 return {
@@ -551,10 +600,8 @@ class OrderLifecycle:
             order_code = parts[0]
             amount = parts[1]
 
-            # 🚨 处理前再次检查紧急停机状态（使用 EasyPaisa 的配置，全局控制）
-            emergency_stop = self.redis.get("easypaisa_emergency_stop")
-            if emergency_stop == b"1" or emergency_stop == "1":
-                self.logger.warning(f"⚠️ 订单{order_code}处理前检测到全局紧急停机状态，停止处理")
+            if not is_auto_payout_enabled(conf, self.logger):
+                self.logger.warning(f"订单{order_code}处理前检测到MySQL自动代付开关关闭，停止处理")
                 return False
 
             # 🔥 订单锁已移到 prepare_account_and_locks 中获取（有可用账号后才获取）

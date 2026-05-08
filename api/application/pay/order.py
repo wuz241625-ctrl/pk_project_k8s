@@ -540,10 +540,10 @@ class card_num(BaseHandler):
             
             if got_utr_lock: # 只有当成功获取锁时，才设置过期时间
                 await self.redis.expire(utr_lock_key, UTR_LOCK_EXPIRY_SECONDS)
-                self.logger.info(f'订单：{code}，上传的卡密信息：{utr} 提交频率锁获取成功并设置过期时间。')
+                self.logger.info(f'订单：{code}，付款标识(utr字段)：{utr} 提交频率锁获取成功并设置过期时间。')
             else: # 未能获取锁 (键已存在且未过期)
                 self.logger.warning(f'UTR {utr} 提交过于频繁或正在被其他请求处理，放弃操作。')
-                self.logger.info(f"订单：{code}，上传的卡密信息：{utr} UTR submitted too frequently or already processing.")
+                self.logger.info(f"订单：{code}，付款标识(utr字段)：{utr} submitted too frequently or already processing.")
                 return await self.json_response(msg_en[10012]) # UTR 提交频率过高/处理中
             # ==================== 变更结束 ====================
 
@@ -769,7 +769,7 @@ class card_num(BaseHandler):
                 sql = " update orders_ds set utr=%s,time_payed=now() where code=%s and utr is null"
                 if not await self.execute(sql, utr, code):
                     return await self.json_response(msg_en[10010])
-                self.logger.info("订单：{code}，{sql} 上传的卡密信息：{utr}".format(code=code, sql=sql, utr=utr))
+                self.logger.info("订单：{code}，{sql} 付款标识(utr字段)：{utr}".format(code=code, sql=sql, utr=utr))
             # 20240828
             # 开始处理订单，记录订单的唯一标识 code
             self.logger.info(f"开始处理订单，订单号：{code}")

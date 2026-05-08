@@ -15,6 +15,10 @@ WORKER_SOURCES = [
 ]
 UTR_CALLBACK = REPO_ROOT / "api" / "application" / "pay" / "utr_callback.py"
 ORDER_CALLBACK = REPO_ROOT / "api" / "application" / "pay" / "order.py"
+WEBSOCKET_CALLBACK = REPO_ROOT / "api" / "application" / "websocket" / "callback.py"
+EASYPAISA_PAYOUT_SETTLEMENT = REPO_ROOT / "api" / "jobs" / "easypaisa" / "payout" / "settlement.py"
+JAZZCASH_PAYOUT_SETTLEMENT = REPO_ROOT / "api" / "jobs" / "jazzcash" / "payout" / "settlement.py"
+JAZZCASH_TRANSFER_EXECUTOR = REPO_ROOT / "api" / "jobs" / "jazzcash" / "payout" / "transfer_executor.py"
 
 
 class StatementCallbackMysqlIdempotencySourceTests(unittest.TestCase):
@@ -61,6 +65,24 @@ class StatementCallbackMysqlIdempotencySourceTests(unittest.TestCase):
         self.assertIn("bank_record.callback=0 只允许补单链路处理", order_callback)
         self.assertNotIn("发现重复的代收订单: UTR={data['utr']}, 金额={data['amount']}\")\n                            return await self.json_response(msg[10019])", order_callback)
         self.assertNotIn("发现重复的代付订单: trans_id={data['trans_id']}\")\n                            return await self.json_response(msg[10019])", order_callback)
+
+    def test_pakistan_callback_names_separate_payer_phone_and_statement_ref(self):
+        callback_source = WEBSOCKET_CALLBACK.read_text()
+
+        self.assertIn("付款手机号(utr字段)", callback_source)
+        self.assertIn("statement_ref = data['trans_id']", callback_source)
+        self.assertIn("payout_match_account = data['account']", callback_source)
+        self.assertIn("orders_df.utr 成功后写官方交易号", callback_source)
+        self.assertNotIn("source_utr = data['trans_id']", callback_source)
+        self.assertNotIn("final_utr = data['utr']", callback_source)
+        self.assertNotIn("需要将account作为收款手机号→作为utr的数据处理", callback_source)
+
+    def test_payout_settlement_does_not_claim_payer_phone_updates_order_utr(self):
+        for source_path in [EASYPAISA_PAYOUT_SETTLEMENT, JAZZCASH_PAYOUT_SETTLEMENT, JAZZCASH_TRANSFER_EXECUTOR]:
+            with self.subTest(source=source_path.name):
+                source = source_path.read_text()
+                self.assertNotIn("付款手机号用于更新utr字段", source)
+                self.assertNotIn("未获取到付款手机号，utr字段保持原值", source)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ sys.path.insert(0, parent2_dir)
 
 import config
 from application.payment_eligibility import can_collect_statement, can_dispatch_df, can_dispatch_ds
+from jobs.common.db import DBConnection
 from jobs.easypaisa.wallet_status_service import WorkerWalletStatusService
 from jobs.easypaisa.common import ProgramLogger, TraceIDFilter
 from jobs.easypaisa.common.logging_setup import setup_high_performance_logging
@@ -61,6 +62,7 @@ class AutoPayoutMonitor:
         self.logger = logger
         self.log_handler = file_handler
         self.loop_interval = get_monitor_loop_interval(conf)
+        self.db = DBConnection(conf)
 
         # 默认检查间隔配置（5分钟）
         self.check_interval = 300
@@ -88,7 +90,6 @@ class AutoPayoutMonitor:
 
         # Redis键名配置
         self.REDIS_KEYS = {
-            'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',
             'easypaisa_monitor_report': 'easypaisa_monitor_report',
             'easypaisa_limits_hash': 'easypaisa_limits_hash',
             'easypaisa_account_lock_prefix': 'easypaisa_account_lock:',
@@ -137,16 +138,13 @@ class AutoPayoutMonitor:
 
     # ==================== DB queries ====================
 
+    def _get_db_connection(self):
+        return self.db.connection
+
     async def get_online_payments_from_db(self):
         """从数据库获取在线状态的payment账号"""
-        import pymysql
-
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     sql = """
@@ -163,21 +161,15 @@ class AutoPayoutMonitor:
                     self.logger.info(f"从数据库获取到 {len(results)} 个在线payment账号")
                     return results
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"从数据库获取payment账号失败: {e}")
             return []
 
     def get_phone_by_payment_id(self, payment_id):
         """通过payment_id查询手机号和相关信息"""
-        import pymysql
-
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     sql = """
@@ -194,7 +186,7 @@ class AutoPayoutMonitor:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return None
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"查询payment_id {payment_id} 失败: {e}")
             return None
@@ -224,14 +216,8 @@ class AutoPayoutMonitor:
 
     def check_payment_status_in_db(self, payment_id):
         """检查 payment 是否存在且可保留采集。"""
-        import pymysql
-
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     cur.execute("SELECT wallet_status, account_accno FROM payment WHERE id = %s", payment_id)
@@ -242,7 +228,7 @@ class AutoPayoutMonitor:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return False
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"检查payment_id {payment_id} 数据库状态失败: {e}")
             return False
@@ -257,13 +243,8 @@ class AutoPayoutMonitor:
 
     def check_payment_ds_order_in_db(self, payment_id):
         """检查 payment 是否仍允许代收派单。"""
-        import pymysql
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     cur.execute(
@@ -275,7 +256,7 @@ class AutoPayoutMonitor:
                         return False
                     return can_dispatch_ds(result)
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"检查payment_id {payment_id} 代收派单资格失败: {e}")
             return False
@@ -292,13 +273,8 @@ class AutoPayoutMonitor:
 
     def check_payment_df_order_in_db(self, payment_id):
         """检查 payment 是否仍允许代付派单。"""
-        import pymysql
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 with connection.cursor() as cur:
                     cur.execute(
@@ -310,7 +286,7 @@ class AutoPayoutMonitor:
                         return False
                     return can_dispatch_df(result)
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"检查payment_id {payment_id} 代付派单资格失败: {e}")
             return False
@@ -652,15 +628,39 @@ class AutoPayoutMonitor:
                 await asyncio.sleep(0.5)
         return None
 
-    # ==================== Redis cache ====================
+    # ==================== Balance snapshot ====================
+
+    def update_payment_balance_snapshot(self, payment_id, balance):
+        """健康余额查询成功后写入 MySQL payment.balance。"""
+        connection = None
+        try:
+            connection = self.db.connection
+            with connection.cursor() as cur:
+                affected = cur.execute(
+                    """
+                    UPDATE payment
+                    SET balance = %s,
+                        time_update = NOW()
+                    WHERE id = %s
+                      AND (bank_type = 97 OR bank_type = '97' OR bank_type_id = 97)
+                    """,
+                    (balance, payment_id),
+                )
+            connection.commit()
+            self.logger.info("EasyPaisa 健康余额写入 MySQL: payment_id=%s balance=%s affected=%s", payment_id, balance, affected)
+            return affected
+        except Exception as e:
+            if connection:
+                connection.rollback()
+            self.logger.error(f"EasyPaisa 健康余额写入 MySQL 失败 payment_id={payment_id}: {e}", exc_info=True)
+            return 0
 
     async def update_redis_cache(self, status_info):
-        """更新Redis缓存 - 只写 easypaisa_balance_sorted"""
+        """更新健康结果：业务余额写 MySQL，Redis 只保留锁/临时信号。"""
         try:
             account_id = status_info['account_id']
             payment_id = str(status_info.get('payment_id') or account_id)
             account_lock_id = str(status_info.get('phone') or account_id)
-            balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
 
             if status_info['is_online'] and status_info['status'] == 'online':
                 lock_info = self.check_auto_payout_locks(account_lock_id, payment_id)
@@ -672,9 +672,9 @@ class AutoPayoutMonitor:
                         lock_info,
                     )
                     return False
-                balance = float(status_info['balance'])
+                balance = Decimal(str(status_info['balance']))
                 self.restore_payment_dispatch_after_health_success(account_id)
-                self.redis.zadd(balance_sorted_set, {account_id: balance})
+                self.update_payment_balance_snapshot(payment_id, balance)
             else:
                 if status_info.get('force_offline'):
                     error_msg = status_info.get('error_message', '501账号无效')
@@ -688,7 +688,7 @@ class AutoPayoutMonitor:
 
             return False
         except Exception as e:
-            self.logger.error(f"更新账号 {status_info.get('account_id')} Redis缓存失败: {e}")
+            self.logger.error(f"更新账号 {status_info.get('account_id')} 健康结果失败: {e}")
             return False
 
     async def save_limits_to_redis(self, payment_id, limits_data):
@@ -753,24 +753,18 @@ class AutoPayoutMonitor:
     # ==================== Account management ====================
 
     def remove_account_completely(self, payment_id, reason=""):
-        """501 处理：标记钱包无效 + 从余额缓存移除"""
+        """501 处理：标记钱包无效并删除限额缓存。"""
         self.logger.warning(f"payment_id {payment_id} 账号无效，执行完全移除: {reason}")
         try:
             self.update_payment_status_to_offline(payment_id, reason)
         except Exception as e:
             self.logger.error(f"更新数据库payment表状态失败: {e}")
-        self.redis.zrem(self.REDIS_KEYS['easypaisa_balance_sorted_set'], str(payment_id))
         self.redis.hdel(self.REDIS_KEYS['easypaisa_limits_hash'], str(payment_id))
 
     def update_payment_status_to_offline(self, account_id, reason="下线"):
         """更新payment表中账号状态为下线"""
-        import pymysql
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'], user=conf['mysql_user'],
-                password=conf['mysql_password'], db=conf['mysql_database'],
-                charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
             try:
                 service = WorkerWalletStatusService(connection, self.logger, redis_client=self.redis)
                 affected_rows = service.mark_offline(account_id, reason)
@@ -778,7 +772,7 @@ class AutoPayoutMonitor:
                     self.logger.info(f"已将payment表中账号 {account_id} 状态更新为下线，原因: {reason}")
                 return affected_rows > 0
             finally:
-                connection.close()
+                connection.commit()
         except Exception as e:
             self.logger.error(f"更新payment表账号 {account_id} 状态失败: {e}")
             return False

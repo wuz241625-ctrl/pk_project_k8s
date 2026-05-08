@@ -87,7 +87,8 @@ class JazzCashAutoPayoutV16SourceTests(unittest.TestCase):
         expected_methods = {
             AccountSelector: [
                 "get_available_accounts",
-                "get_account_from_active_list",
+                "get_mysql_payout_candidates",
+                "release_selected_account",
                 "get_lock",
                 "fetch_balance_from_api",
                 "filter_cooldown_orders",

@@ -41,8 +41,10 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
 
         service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
         service.logger = MagicMock()
-        service.check_account_release_time = MagicMock(return_value=True)
-        service.process_single_order_async = AsyncMock(return_value=True)
+        service.account_selector = MagicMock()
+        service.account_selector.check_account_release_time.return_value = True
+        service.order_lifecycle = MagicMock()
+        service.order_lifecycle.process_payout_order = AsyncMock(return_value={"success": True})
         account = {"payment_id": "533280", "phone": "03000000000"}
         orders = [{"code": "ORD001", "amount": 100}]
 
@@ -51,26 +53,24 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
         )
 
         self.assertEqual(result, (1, 1))
-        service.process_single_order_async.assert_awaited_once_with(
-            "ORD001_100", pre_selected_account=account
+        service.order_lifecycle.process_payout_order.assert_awaited_once_with(
+            orders[0], selected_account=account
         )
 
-    def test_auto_payout_rejects_legacy_members_mode_without_processing(self):
+    def test_auto_payout_no_longer_accepts_legacy_members_argument(self):
+        from inspect import signature
+
         from jobs.easypaisa.auto_payout import EasyPaisaAutoPayout
 
-        service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
-        service.logger = MagicMock()
-        service.process_single_order_async = AsyncMock(return_value=True)
+        parameters = signature(EasyPaisaAutoPayout.process_members_concurrent).parameters
 
-        result = asyncio.run(service.process_members_concurrent(members=[b"ORD001_100"], concurrent_limit=1))
-
-        self.assertEqual(result, (0, 0))
-        service.process_single_order_async.assert_not_called()
+        self.assertIn("account_order_batches", parameters)
+        self.assertNotIn("members", parameters)
 
     def test_auto_payout_online_check_uses_mysql_payout_status_not_snapshot_gate(self):
-        from jobs.easypaisa.auto_payout import EasyPaisaAutoPayout
+        from jobs.easypaisa.payout.account_selector import AccountSelector
 
-        service = EasyPaisaAutoPayout.__new__(EasyPaisaAutoPayout)
+        service = AccountSelector.__new__(AccountSelector)
         service.logger = MagicMock()
         service.get_phone_by_payment_id = MagicMock(return_value={"phone": "03000000000", "payout_status": 1})
         service._check_account_online_via_api = AsyncMock(return_value=True)
@@ -110,6 +110,36 @@ class EasyPaisaRedisCompatRetirementTests(unittest.TestCase):
 
         self.assertFalse((repo_root / "scripts" / "ep_state_audit.py").exists())
         self.assertFalse((repo_root / "scripts" / "ep_dispatch_trace.py").exists())
+
+    def test_auto_payout_business_switch_no_longer_uses_redis_key(self):
+        files = [
+            API_ROOT / "application" / "pay" / "payout.py",
+            API_ROOT / "jobs" / "easypaisa" / "auto_payout.py",
+            API_ROOT / "jobs" / "easypaisa" / "payout" / "order_lifecycle.py",
+            API_ROOT / "jobs" / "jazzcash" / "jazzcash_auto_payout.py",
+            API_ROOT / "jobs" / "jazzcash" / "payout" / "order_lifecycle.py",
+            API_ROOT.parent / "admin" / "application" / "order" / "auto_payout.py",
+        ]
+
+        for path in files:
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("easypaisa_" + "emergency_stop", source, str(path))
+            self.assertTrue(
+                "auto_payout_system_status" in source or "is_auto_payout_enabled" in source,
+                str(path),
+            )
+
+    def test_target_payment_cache_is_not_used_as_business_state(self):
+        files = [
+            API_ROOT / "main.py",
+            API_ROOT / "application" / "pay" / "dispatch.py",
+            API_ROOT / "jobs" / "jazzcash" / "payout" / "order_lifecycle.py",
+            API_ROOT.parent / "admin" / "application" / "merchant" / "merchant.py",
+        ]
+
+        for path in files:
+            source = path.read_text(encoding="utf-8")
+            self.assertNotIn("target_" + "payment_key", source, str(path))
 
 
 if __name__ == "__main__":

@@ -50,24 +50,9 @@ class Application(tornado.web.Application):
         super(Application, self).__init__(handlers, **settings)
 
     async def _init_business(self):
-        # 启动时一些redis之类易失缓存的初始化工作
-        # 注意多进程时这个函数会被多次执行，因此需要兼容可反复执行的初始化操作
-        target_payment_key = 'target_payment_key'
-        async with self.db.acquire() as conn:
-            async with conn.cursor(aiomysql.DictCursor) as cur:
-                await cur.execute(
-                    "SELECT target_payment FROM merchant "
-                    "WHERE target_payment IS NOT NULL AND target_payment != '';"
-                )
-                target_payment_list = await cur.fetchall()
-        target_payment_set = set()
-        for row in target_payment_list:
-            for single_id in row['target_payment'].split(','):
-                if single_id.strip():
-                    target_payment_set.add(single_id)
-        target_payment_str = ','.join(target_payment_set)
-        await self.redis.set(target_payment_key, target_payment_str)
-        self.logger.info('API启动初始化工作：商户指定码已更新缓存：{}'.format(target_payment_str))
+        # 业务最终态不再在启动时写入 Redis。
+        # 专卡专户由派单链路直接读取 MySQL merchant.target_payment。
+        self.logger.info('API启动初始化工作：专卡专户使用 MySQL merchant.target_payment')
 
 
 

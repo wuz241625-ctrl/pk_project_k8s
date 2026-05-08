@@ -52,7 +52,6 @@ from application.pay.collection import (
 from application.pay.dispatch import (
     build_ds_candidate_sql, _parse_payment_id_list,
     push_order, fetch_ds_candidate_rows, fetch_mysql_dedicated_payment_ids,
-    update_target_in_redis,
 )
 from application.pay.decimal_amount import (
     generate_unique_decimal_amount, cleanup_decimal_callback_on_success,

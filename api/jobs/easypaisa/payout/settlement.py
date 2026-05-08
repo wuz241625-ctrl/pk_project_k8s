@@ -342,13 +342,11 @@ class Settlement:
             self.logger.info(f"更新支付账户{self.qr_id}系统余额: {self._format_sql(cur, sql_update_payment, (-amount, self.qr_id))}")
 
             # 8. 更新订单信息，成功结算必须只从执行中(status=1)推进到待通知(status=3)。
-            payer_phone = result.get('payer_phone', '')
-            if not payer_phone:
-                self.logger.warning(f"订单{order_code}未获取到付款手机号，utr字段保持原值")
-            else:
-                self.logger.info(f"订单{order_code}付款手机号: {payer_phone}")
-
             transaction_id = result.get('transaction_id') or result.get('utr') or ''
+            if not transaction_id:
+                self.logger.warning(f"订单{order_code}未获取到官方交易号，orders_df.utr字段保持原值")
+            else:
+                self.logger.info(f"订单{order_code}官方交易号: {transaction_id}")
             sql_update = """
                 UPDATE orders_df
                 SET earn_merchant=%s,

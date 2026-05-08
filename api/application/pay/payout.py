@@ -12,6 +12,25 @@ from application.sign import SignatureAndVerification
 from application.pay.payout_channel_guard import is_jazzcash_payout_request
 
 
+async def is_auto_payout_enabled(handler, default=True):
+    """从 MySQL 读取自动代付 worker 开关。未配置时沿用历史默认开启。"""
+    try:
+        rows = await handler.query(
+            """
+            SELECT system_status
+            FROM auto_payout_system_status
+            WHERE id = 1
+            LIMIT 1
+            """
+        )
+        if not rows:
+            return default
+        return rows[0].get('system_status') == 'running'
+    except Exception as exc:
+        handler.logger.warning(f"读取自动代付MySQL开关失败，使用默认值 {default}: {exc}")
+        return default
+
+
 # 代付订单
 class Pay_df(BaseHandler):
     async def post(self):
@@ -190,16 +209,9 @@ class Pay_df(BaseHandler):
             order_data['notify'] = data['notify']  # 通知地址
             order_data['target_payment'] = merchant['target_payment']  # 专卡专户
 
-            # 检查自动代付开关状态并设置payout_type字段
-            try:
-                emergency_stop = await self.redis.get("easypaisa_emergency_stop")
-                # 如果紧急停止为"0"或未设置，启用自动代付(payout_type=1)，否则设为0(手动代付)
-                order_data['payout_type'] = 1 if (emergency_stop is None or emergency_stop == b"0" or emergency_stop == "0") else 0
-                self.logger.info(f"紧急停止状态: {emergency_stop}, payout_type: {order_data['payout_type']}")
-            except Exception as e:
-                # 如果Redis查询失败，默认设为0(手动代付)
-                order_data['payout_type'] = 0
-                self.logger.warning(f"获取紧急停止状态失败，默认设置为手动代付: {e}")
+            auto_payout_enabled = await is_auto_payout_enabled(self)
+            order_data['payout_type'] = 1 if auto_payout_enabled else 0
+            self.logger.info(f"MySQL自动代付开关: {auto_payout_enabled}, payout_type: {order_data['payout_type']}")
 
             # 扣除商户余额并创建订单
             async with self.application.db.acquire() as conn:

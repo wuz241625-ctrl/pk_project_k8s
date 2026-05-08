@@ -7,6 +7,7 @@ root_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 sys.path.append(root_dir)
 
 from config import get_config
+from jobs.common.db import DBConnection
 from jobs.easypaisa.scheduling_state import (
     EMERGENCY_STOP, NO_AVAILABLE_ACCOUNTS, NO_ORDERS, classify_round_state)
 from jobs.easypaisa.common.logging_setup import setup_high_performance_logging, TraceIDFilter
@@ -15,6 +16,7 @@ from jobs.easypaisa.payout.settlement import Settlement
 from jobs.easypaisa.payout.account_selector import AccountSelector
 from jobs.easypaisa.payout.transfer_executor import TransferExecutor
 from jobs.easypaisa.payout.order_lifecycle import OrderLifecycle
+from jobs.auto_payout_state import is_auto_payout_enabled
 
 logger, trace_id_filter, file_handler = setup_high_performance_logging("easypaisa_auto_payout")
 conf = get_config()
@@ -30,12 +32,9 @@ class EasyPaisaAutoPayout:
         self.concurrent_limit = 20
         self.redis = redis.Redis(host=conf['redis_host'], port=6379, db=0, encoding='utf-8')
         self.REDIS_KEYS = {
-            'easypaisa_balance_sorted_set': 'easypaisa_balance_sorted',
-            'easypaisa_balance_prefix': 'easypaisa_balance:',
             'easypaisa_account_used_prefix': 'easypaisa_account_used:',
             'easypaisa_release_time': 'easypaisa_release_time',
             'easypaisa_failures': 'easypaisa_failures',
-            'easypaisa_emergency_stop': 'easypaisa_emergency_stop',
             'grab_df_prefix': 'grab_df_',
             'easypaisa_account_lock_prefix': 'easypaisa_account_lock:',
             'payment_id_lock_prefix': 'payment_id_lock:',
@@ -44,12 +43,14 @@ class EasyPaisaAutoPayout:
             'easypaisa_order_cooldown_config': 'easypaisa_order_cooldown_config'
         }
         self._invalid_payment_cache = {}
+        self.db = DBConnection(conf)
         # 构造子模块
         self.transaction_logger = TransactionLogger(self.redis, self.logger, trace_id_filter, conf)
         self.settlement = Settlement(self.redis, self.logger, conf)
         self.account_selector = AccountSelector(
             self.redis, self.logger, conf, self.REDIS_KEYS,
-            EASYPAISA_API_URL, EASYPAISA_USER_ID, EASYPAISA_SECRET_KEY)
+            EASYPAISA_API_URL, EASYPAISA_USER_ID, EASYPAISA_SECRET_KEY,
+            db=self.db)
         self.transfer_executor = TransferExecutor(
             self.redis, self.logger, conf, self.REDIS_KEYS,
             EASYPAISA_API_URL, EASYPAISA_USER_ID, EASYPAISA_SECRET_KEY,
@@ -142,9 +143,8 @@ class EasyPaisaAutoPayout:
         """主处理循环——预分配调度模式"""
         try:
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
-            emergency_stop = self.redis.get("easypaisa_emergency_stop")
-            if emergency_stop is not None and emergency_stop != b"0" and emergency_stop != "0":
-                self.logger.warning(f"检测到紧急停机状态（值：{emergency_stop}）")
+            if not is_auto_payout_enabled(conf, self.logger):
+                self.logger.warning("检测到MySQL自动代付开关关闭")
                 return (0, EMERGENCY_STOP)
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -218,28 +218,9 @@ class EasyPaisaAutoPayout:
             if connection:
                 connection.close()
 
-    def check_account_release_time(self, payment_id):
-        if hasattr(self, 'account_selector') and hasattr(self.account_selector, 'check_account_release_time'):
-            return self.account_selector.check_account_release_time(payment_id)
-        return True
-
-    async def check_account_online_status(self, payment_id):
-        if hasattr(self, 'account_selector') and hasattr(self.account_selector, 'check_account_online_status'):
-            return await self.account_selector.check_account_online_status(payment_id)
-
-        payment = self.get_phone_by_payment_id(payment_id) if hasattr(self, 'get_phone_by_payment_id') else None
-        if not payment or int(payment.get('payout_status') or 0) != 1:
-            return False
-        phone = payment.get('phone')
-        if hasattr(self, '_check_account_online_via_api'):
-            return bool(await self._check_account_online_via_api(phone))
-        return False
-
-    async def process_members_concurrent(self, account_order_batches=None, members=None, concurrent_limit=20):
+    async def process_members_concurrent(self, account_order_batches=None, concurrent_limit=20):
         """并发处理订单（预分配模式）"""
         if not account_order_batches:
-            if members:
-                self.logger.warning("EasyPaisa legacy members 模式已退役，跳过 %s 个旧消息", len(members))
             return (0, 0)
 
         async def _process_batch(account, orders):
@@ -247,20 +228,12 @@ class EasyPaisaAutoPayout:
             pid = account['payment_id']
             try:
                 for i, order in enumerate(orders):
-                    if i > 0 and not self.check_account_release_time(pid):
+                    if i > 0 and not self.account_selector.check_account_release_time(pid):
                         self.logger.info(f"账号{pid}已进入冷却期，剩余{len(orders)-i}个订单留给下轮")
                         break
                     try:
-                        if hasattr(self, 'process_single_order_async'):
-                            result = await self.process_single_order_async(
-                                f"{order['code']}_{order['amount']}",
-                                pre_selected_account=account,
-                            )
-                        else:
-                            result = await self.order_lifecycle.process_payout_order(order, selected_account=account)
-                        if result is True:
-                            success += 1
-                        elif result and result.get('success'):
+                        result = await self.order_lifecycle.process_payout_order(order, selected_account=account)
+                        if result and result.get('success'):
                             success += 1
                     except Exception as e:
                         self.logger.error(f"订单{order['code']}处理异常: {e}")

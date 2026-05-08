@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Dict, Optional
 
-import pymysql
 import aiohttp
 
+from jobs.common.db import DBConnection
 from application.payment_eligibility import payout_sql_condition
 
 
@@ -22,7 +22,8 @@ class AccountSelector:
     """Handles account selection, limits, balance queries, and locks."""
 
     def __init__(self, redis_client, logger, conf: dict, REDIS_KEYS: dict,
-                 api_url: str, user_id: str, secret_key: str):
+                 api_url: str, user_id: str, secret_key: str,
+                 db: DBConnection = None, db_provider=None):
         self.redis = redis_client
         self.logger = logger
         self.conf = conf
@@ -30,9 +31,16 @@ class AccountSelector:
         self.api_url = api_url
         self.user_id = user_id
         self.secret_key = secret_key
+        self.db = db or DBConnection(conf)
+        self.db_provider = db_provider
         self._invalid_payment_cache = {}
         # lock_time used by get_lock/del_lock (order lock)
         self.lock_time = 300
+
+    def _get_db_connection(self):
+        if callable(self.db_provider):
+            return self.db_provider()
+        return self.db.connection
 
     # ========== Online Status ==========
 
@@ -167,18 +175,9 @@ class AccountSelector:
         """通过payment_id查询手机号和相关信息"""
         start_time = time.time()
 
-        own_connection = False
         try:
             if connection is None:
-                own_connection = True
-                connection = pymysql.connect(
-                    host=self.conf['mysql_host'],
-                    user=self.conf['mysql_user'],
-                    password=self.conf['mysql_password'],
-                    db=self.conf['mysql_database'],
-                    charset='utf8mb4',
-                    cursorclass=pymysql.cursors.DictCursor
-                )
+                connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -208,8 +207,7 @@ class AccountSelector:
                             self.logger.warning(f"[AutoPayout] payment_id={payment_id} 不存在, 耗时: {query_time:.3f}s")
                         return None
             finally:
-                if own_connection:
-                    connection.close()
+                connection.commit()
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -225,14 +223,7 @@ class AccountSelector:
         balance_limit：单笔最高金额限制
         """
         try:
-            connection = pymysql.connect(
-                host=self.conf['mysql_host'],
-                user=self.conf['mysql_user'],
-                password=self.conf['mysql_password'],
-                db=self.conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -285,7 +276,7 @@ class AccountSelector:
                     return {'passed': True}
 
             finally:
-                connection.close()
+                connection.commit()
 
         except Exception as e:
             self.logger.error(f"检查账号payment_id:{payment_id}金额限制失败: {e}")
@@ -534,29 +525,19 @@ class AccountSelector:
         except Exception as e:
             self.logger.error(f"获取账号{payment_id}使用时间失败: {e}")
             return None
-    # ========== Balance from Sorted Set ==========
+    # ========== Balance from MySQL ==========
 
     def get_mysql_payout_candidates(self, min_balance: Decimal = Decimal('1000'), count: int = 50, connection=None) -> List[Dict]:
-        """Redis 余额缓存丢失时，从 MySQL 资格源恢复代付候选。"""
-        own_conn = False
+        """从 MySQL 余额真相源获取 EasyPaisa 代付候选。"""
+        connection = connection or self._get_db_connection()
         try:
-            if connection is None:
-                own_conn = True
-                connection = pymysql.connect(
-                    host=self.conf['mysql_host'],
-                    user=self.conf['mysql_user'],
-                    password=self.conf['mysql_password'],
-                    db=self.conf['mysql_database'],
-                    charset='utf8mb4',
-                    cursorclass=pymysql.cursors.DictCursor,
-                )
-
             with connection.cursor() as cur:
                 sql = """
                     SELECT id AS payment_id, phone, account, name, bank_type, bank_type_id,
                            partner_id, account_accno, COALESCE(balance, 0) AS balance
                     FROM payment
                     WHERE {condition}
+                      AND (bank_type = 97 OR bank_type_id = 97)
                       AND COALESCE(balance, 0) >= %s
                     ORDER BY balance DESC, id ASC
                     LIMIT %s
@@ -577,112 +558,24 @@ class AccountSelector:
                     'balance': balance,
                     'priority': int(balance),
                 })
-            self.logger.info(f"从 MySQL eligibility 获取 {len(accounts)} 个代付候选")
+            self.logger.info(f"从 MySQL payment.balance 获取 {len(accounts)} 个 EasyPaisa 代付候选")
             return accounts
         except Exception as e:
             self.logger.error(f"从 MySQL 获取 EasyPaisa 代付候选失败: {e}")
             return []
         finally:
-            if own_conn and connection:
-                connection.close()
+            if connection:
+                connection.commit()
 
     def get_top_balance_accounts(self, min_balance: Decimal = Decimal('1000'), count: int = 50, connection=None) -> List[Dict]:
-        """从有序集合获取余额最高的账号列表，带幽灵缓存过滤"""
-        try:
-            balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
+        """从 MySQL payment.balance 获取余额最高的账号列表。"""
+        return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
 
-            if not self.redis.exists(balance_sorted_set):
-                self.logger.warning(f"有序集合 {balance_sorted_set} 不存在")
-                return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
-
-            # 多取一些补偿幽灵账号
-            fetch_count = count * 2
-            accounts_with_balance = self.redis.zrevrangebyscore(
-                balance_sorted_set, "+inf", float(min_balance),
-                start=0, num=fetch_count, withscores=True
-            )
-
-            if not accounts_with_balance:
-                self.logger.info(f"有序集合中无余额>={min_balance}的账号")
-                return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
-
-            # 清理过期缓存
-            now = time.time()
-            expired = [k for k, v in self._invalid_payment_cache.items() if v < now]
-            for k in expired:
-                del self._invalid_payment_cache[k]
-
-            # 过滤幽灵缓存
-            filtered = []
-            cached_skip = 0
-            for payment_id_bytes, balance in accounts_with_balance:
-                pid = payment_id_bytes.decode() if isinstance(payment_id_bytes, bytes) else str(payment_id_bytes)
-                if pid in self._invalid_payment_cache:
-                    cached_skip += 1
-                    continue
-                filtered.append((pid, balance))
-                if len(filtered) >= count:
-                    break
-
-            if cached_skip > 0:
-                self.logger.info(f"幽灵缓存过滤: 跳过{cached_skip}个已知无效账号")
-
-            # 创建或复用 MySQL 连接验证账号
-            own_conn = False
-            if connection is None:
-                own_conn = True
-                connection = pymysql.connect(
-                    host=self.conf['mysql_host'], user=self.conf['mysql_user'],
-                    password=self.conf['mysql_password'], db=self.conf['mysql_database'],
-                    charset='utf8mb4', cursorclass=pymysql.cursors.DictCursor
-                )
-
-            try:
-                result_accounts = []
-                invalid_count = 0
-
-                for pid, balance in filtered:
-                    payment_info = self.get_phone_by_payment_id(pid, connection=connection)
-                    if payment_info and payment_info.get('phone'):
-                        result_accounts.append({
-                            'payment_id': pid,
-                            'phone': payment_info['phone'],
-                            'partner_id': payment_info.get('partner_id'),
-                            'account': payment_info.get('account'),
-                            'name': payment_info.get('name'),
-                            'account_accno': payment_info.get('account_accno'),
-                            'balance': Decimal(str(balance)),
-                            'priority': int(balance)
-                        })
-                    else:
-                        # 加入幽灵缓存，5分钟后重试
-                        self._invalid_payment_cache[pid] = time.time() + 300
-                        invalid_count += 1
-
-                self.logger.info(f"从有序集合获取 {len(result_accounts)} 个有效账号（检查{len(filtered)}个，无效{invalid_count}个，缓存跳过{cached_skip}个）")
-                return result_accounts
-            finally:
-                if own_conn:
-                    connection.close()
-
-        except Exception as e:
-            self.logger.error(f"从有序集合获取高余额账号失败: {e}")
-            return []
-
-    def get_account_balance_from_sorted_set(self, payment_id: str) -> Optional[Decimal]:
-        """从有序集合获取账号余额"""
-        try:
-            balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
-            balance = self.redis.zscore(balance_sorted_set, payment_id)
-            return Decimal(str(balance)) if balance is not None else None
-        except Exception as e:
-            self.logger.error(f"从有序集合获取账号{payment_id}余额失败: {e}")
-            return None
     # ========== Balance Update & API Fetch ==========
 
     def update_account_balance_after_transfer(self, payment_id: str, transfer_amount: Decimal):
         """
-        转账成功后更新Redis中的账号余额（仅扣减金额）
+        转账成功后扣减 MySQL payment.balance，避免代付选号依赖旧 Redis 余额。
 
         Args:
             payment_id: 账号ID
@@ -691,36 +584,30 @@ class AccountSelector:
         Returns:
             bool: 更新成功返回True，失败返回False
         """
+        connection = None
         try:
-            # 1. 更新有序集合中的余额（使用 ZINCRBY 原子操作扣减）
-            balance_sorted_set = self.REDIS_KEYS['easypaisa_balance_sorted_set']
-            new_balance = self.redis.zincrby(balance_sorted_set, -float(transfer_amount), payment_id)
-
-            # 如果余额变为负数，设置为0（但不移除）
-            if new_balance is not None and float(new_balance) < 0:
-                self.redis.zadd(balance_sorted_set, {payment_id: 0})
-                self.logger.info(f"账号{payment_id}余额扣减后为负({new_balance})，已设置为0")
-                new_balance = 0
-
-            # 2. 更新普通缓存的余额（不设置过期时间，由monitor负责）
-            balance_key = f"{self.REDIS_KEYS['easypaisa_balance_prefix']}{payment_id}"
-            cached_balance = self.redis.get(balance_key)
-
-            if cached_balance:
-                old_balance = Decimal(cached_balance.decode())
-                new_balance_value = old_balance - transfer_amount
-                # 如果扣减后为负数，设置为0
-                if new_balance_value < 0:
-                    new_balance_value = Decimal('0')
-                # 直接SET，不设置过期时间
-                self.redis.set(balance_key, str(new_balance_value))
-                self.logger.info(f"账号{payment_id}余额已扣减: -{transfer_amount}, 新余额: {new_balance_value}")
-            else:
-                self.logger.info(f"账号{payment_id}普通缓存无余额记录，仅更新有序集合")
-
-            return True
+            connection = self._get_db_connection()
+            with connection.cursor() as cur:
+                affected = cur.execute(
+                    """
+                    UPDATE payment
+                    SET balance = GREATEST(COALESCE(balance, 0) - %s, 0),
+                        time_update = NOW()
+                    WHERE id = %s
+                      AND (bank_type = 97 OR bank_type_id = 97)
+                    """,
+                    (transfer_amount, payment_id),
+                )
+                connection.commit()
+            self.logger.info(f"EasyPaisa账号{payment_id} MySQL余额已扣减: -{transfer_amount}, affected={affected}")
+            return affected > 0
 
         except Exception as e:
+            if connection:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
             self.logger.error(f"更新账号{payment_id}余额失败: {e}")
             import traceback
             self.logger.error(f"异常堆栈: {traceback.format_exc()}")

@@ -4,13 +4,13 @@ Extracted from jazzcash_auto_payout.py Phase 3 refactoring.
 """
 import json
 import traceback
-import pymysql
 import aiohttp
 import simplejson
 from decimal import Decimal
 from typing import Dict
 
 from config import get_config
+from jobs.common.db import DBConnection
 from application.jazzcash_gateway import build_form_body
 
 conf = get_config()
@@ -26,8 +26,15 @@ class Settlement:
         self.api_url = config.get('jazzcash_api_url', 'http://34.150.42.92:84')
         self.user_id = config.get('jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36')
         self.secret_key = config.get('jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de')
+        self.db = config.get('db') or DBConnection(conf)
+        self.db_provider = config.get('db_provider')
         # Needed by handle_payout_success for payment sys_balance update
         self.qr_id = None
+
+    def _get_db_connection(self):
+        if callable(self.db_provider):
+            return self.db_provider()
+        return self.db.connection
 
     def _format_sql(self, cur, sql, params=None):
         """格式化SQL用于日志显示（兼容PyMySQL版本）"""
@@ -295,14 +302,12 @@ class Settlement:
             self.logger.info(f"更新支付账户{self.qr_id}系统余额: {self._format_sql(cur, sql_update_payment, (-amount, self.qr_id))}")
 
             # 8. 更新订单信息。成功结算必须只从执行中(status=1)推进到待通知(status=3)。
-            # 获取付款手机号用于更新utr字段（如果之前未更新）
-            payer_phone = result.get('payer_phone', '')
-            if not payer_phone:
-                self.logger.warning(f"订单{order_code}未获取到付款手机号，utr字段保持原值")
-            else:
-                self.logger.info(f"订单{order_code}付款手机号: {payer_phone}")
-
+            # orders_df.utr 在代付成功后保存官方交易号；付款手机号只用于日志和执行账号定位。
             transaction_id = result.get('transaction_id') or result.get('utr') or ''
+            if not transaction_id:
+                self.logger.warning(f"订单{order_code}未获取到官方交易号，orders_df.utr字段保持原值")
+            else:
+                self.logger.info(f"订单{order_code}官方交易号: {transaction_id}")
             sql_update = """
                 UPDATE orders_df
                 SET earn_merchant=%s,
@@ -349,7 +354,7 @@ class Settlement:
 
         ⚠️ 重要说明：
         1. 此函数不会提交或回滚事务，由调用方统一管理事务
-        2. 此函数不会放回账号到活跃列表，由调用方在commit成功后执行
+        2. 此函数不会释放账号，由调用方在commit成功后执行释放钩子
 
         前置条件（由调用方保证）：
         - status 一定是 1（刚从0更新为1）
@@ -437,7 +442,7 @@ class Settlement:
 
     def update_account_balance_after_transfer(self, payment_id: str, transfer_amount: Decimal):
         """
-        转账成功后更新Redis中的账号余额（仅扣减金额）
+        转账成功后扣减 MySQL payment.balance，避免代付选号依赖旧 Redis 余额。
 
         Args:
             payment_id: 账号ID
@@ -446,37 +451,31 @@ class Settlement:
         Returns:
             bool: 更新成功返回True，失败返回False
         """
+        connection = None
         try:
-            # 1. 更新有序集合中的余额（使用 ZINCRBY 原子操作扣减）
-            balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-            new_balance = self.redis.zincrby(balance_sorted_set, -float(transfer_amount), payment_id)
-
-            # 如果余额变为负数，设置为0（但不移除）
-            if new_balance is not None and float(new_balance) < 0:
-                self.redis.zadd(balance_sorted_set, {payment_id: 0})
-                self.logger.info(f"账号{payment_id}余额扣减后为负({new_balance})，已设置为0")
-                new_balance = 0
-
-            # 2. 更新普通缓存的余额（不设置过期时间，由monitor负责）
-            balance_key = f"{self.REDIS_KEYS['jazzcash_balance_prefix']}{payment_id}"
-            cached_balance = self.redis.get(balance_key)
-
-            if cached_balance:
-                old_balance = Decimal(cached_balance.decode())
-                new_balance_value = old_balance - transfer_amount
-                # 如果扣减后为负数，设置为0
-                if new_balance_value < 0:
-                    new_balance_value = Decimal('0')
-                # 直接SET，不设置过期时间
-                self.redis.set(balance_key, str(new_balance_value))
-                self.logger.info(f"账号{payment_id}余额已扣减: -{transfer_amount}, 新余额: {new_balance_value}")
-            else:
-                self.logger.info(f"账号{payment_id}普通缓存无余额记录，仅更新有序集合")
-
-            return True
+            connection = self._get_db_connection()
+            with connection.cursor() as cur:
+                affected = cur.execute(
+                    """
+                    UPDATE payment
+                    SET balance = GREATEST(COALESCE(balance, 0) - %s, 0),
+                        time_update = NOW()
+                    WHERE id = %s
+                      AND (bank_type = 98 OR bank_type_id = 98)
+                    """,
+                    (transfer_amount, payment_id),
+                )
+                connection.commit()
+            self.logger.info(f"JazzCash账号{payment_id} MySQL余额已扣减: -{transfer_amount}, affected={affected}")
+            return affected > 0
 
         except Exception as e:
-            self.logger.error(f"更新账号{payment_id}余额失败: {e}")
+            if connection:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            self.logger.error(f"更新账号{payment_id} MySQL余额失败: {e}")
             import traceback
             self.logger.error(f"异常堆栈: {traceback.format_exc()}")
             return False
@@ -692,14 +691,7 @@ class Settlement:
             else:
                 data_info = {}
                 try:
-                    connection = pymysql.connect(
-                        host=conf['mysql_host'],
-                        user=conf['mysql_user'],
-                        password=conf['mysql_password'],
-                        db=conf['mysql_database'],
-                        charset='utf8mb4',
-                        cursorclass=pymysql.cursors.DictCursor
-                    )
+                    connection = self._get_db_connection()
                     try:
                         where_conditions = []
                         where_values = []
@@ -716,7 +708,7 @@ class Settlement:
                                 self.redis.set(redis_key, simplejson.dumps(data_info))
                                 self.logger.info(f"缓存数据已更新： {table} {condition}")
                     finally:
-                        connection.close()
+                        connection.commit()
                 except Exception as e:
                     self.logger.error(f"查询缓存数据失败: table={table}, condition={condition}, error={e}")
                     data_info = {}

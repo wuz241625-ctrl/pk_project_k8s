@@ -27,6 +27,7 @@ parent2_dir = os.path.dirname(parent_dir)
 sys.path.insert(0, parent2_dir)
 
 import config
+from jobs.common.db import DBConnection
 from jobs.common.logging_setup import ProgramLogger, TraceIDFilter, setup_high_performance_logging
 
 # JazzCash自动代付监控系统
@@ -54,6 +55,7 @@ class AutoPayoutMonitor:
         self.logger = logger
         # 如果使用异步日志处理器，可以定期检查状态
         self.log_handler = file_handler
+        self.db = DBConnection(conf)
 
 
         # 默认检查间隔配置（5分钟）
@@ -82,7 +84,6 @@ class AutoPayoutMonitor:
 
         # Redis键名配置
         self.REDIS_KEYS = {
-            'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',  # 余额有序集合（auto_payout.py使用）
             'jazzcash_status_prefix': 'jazzcash_status:',         # 状态缓存前缀（仅自动代付监控系统使用）
             'jazzcash_monitor_report': 'jazzcash_monitor_report', # 监控报告（仅自动代付监控系统使用）
             'jazzcash_limits_hash': 'jazzcash_limits_hash',       # 限额数据Hash（仅自动代付监控系统使用）
@@ -181,19 +182,13 @@ class AutoPayoutMonitor:
             self.logger.error(f"测试锁机制失败: {e}")
             return False
 
+    def _get_db_connection(self):
+        return self.db.connection
+
     async def get_online_payments_from_db(self):
         """从数据库获取在线状态的payment账号"""
-        import pymysql
-
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -213,7 +208,7 @@ class AutoPayoutMonitor:
                     return results
 
             finally:
-                connection.close()
+                connection.commit()
 
         except Exception as e:
             self.logger.error(f"从数据库获取payment账号失败: {e}")
@@ -221,22 +216,13 @@ class AutoPayoutMonitor:
 
     def get_phone_by_payment_id(self, payment_id):
         """通过payment_id查询手机号和相关信息"""
-        import pymysql
         import time
 
         start_time = time.time()
         self.logger.info(f"开始查询payment_id: {payment_id} 的详细信息")
 
         try:
-            self.logger.info(f"连接数据库: {conf['mysql_host']}:{conf.get('mysql_port', 3306)}")
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -274,9 +260,9 @@ class AutoPayoutMonitor:
                         self.logger.warning(f"payment_id {payment_id} 在数据库中不存在")
                         return None
             finally:
-                connection.close()
+                connection.commit()
                 total_time = time.time() - start_time
-                self.logger.info(f"数据库连接已关闭, 总耗时: {total_time:.3f}s")
+                self.logger.info(f"数据库查询总耗时: {total_time:.3f}s")
 
         except Exception as e:
             total_time = time.time() - start_time
@@ -347,21 +333,13 @@ class AutoPayoutMonitor:
 
     def check_payment_status_in_db(self, payment_id):
         """检查payment在数据库中的状态是否仍然在线"""
-        import pymysql
         import time
 
         start_time = time.time()
         self.logger.debug(f"检查payment_id: {payment_id} 的数据库状态")
 
         try:
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -383,7 +361,7 @@ class AutoPayoutMonitor:
                         return False
 
             finally:
-                connection.close()
+                connection.commit()
                 query_time = time.time() - start_time
                 self.logger.debug(f"payment_id {payment_id} 状态检查耗时: {query_time:.3f}s")
 
@@ -969,20 +947,41 @@ class AutoPayoutMonitor:
             self.logger.error(f"从Redis获取限额数据失败: payment_id={payment_id}, error={e}")
             return None
 
+    def update_payment_balance_snapshot(self, payment_id, balance):
+        """健康余额查询成功后写入 MySQL payment.balance。"""
+        connection = None
+        try:
+            connection = self.db.connection
+            with connection.cursor() as cur:
+                affected_rows = cur.execute(
+                    """
+                    UPDATE payment
+                    SET balance = %s,
+                        time_update = NOW()
+                    WHERE id = %s
+                      AND (bank_type = 98 OR bank_type = '98' OR bank_type_id = 98)
+                    """,
+                    (balance, payment_id),
+                )
+            connection.commit()
+            self.logger.info(f"JazzCash 健康余额写入 MySQL: payment_id={payment_id}, balance={balance}, affected={affected_rows}")
+            return affected_rows
+        except Exception as e:
+            if connection:
+                connection.rollback()
+            self.logger.error(f"JazzCash 健康余额写入 MySQL 失败 payment_id={payment_id}: {e}")
+            return 0
+
     async def update_redis_cache(self, status_info):
-        """更新Redis缓存"""
+        """更新健康结果：业务余额写 MySQL，Redis 只保留短期状态缓存。"""
         try:
             account_id = status_info['account_id']
-            balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
 
             # 先判断是否正常
             if status_info['is_online'] and status_info['status'] == 'online':
-                # 200成功：更新余额到有序集合和状态缓存，上线处理
-                balance = float(status_info['balance'])
-
-                # 🔥 使用有序集合存储余额（账号ID作为member，余额作为score）
-                # 不设置过期时间，数据永久保存，离线时手动删除
-                self.redis.zadd(balance_sorted_set, {account_id: balance})
+                # 200成功：余额落 MySQL，状态只做短期缓存。
+                balance = status_info['balance']
+                self.update_payment_balance_snapshot(account_id, balance)
 
                 # 更新状态缓存（包含余额）
                 status_key = f"{self.REDIS_KEYS['jazzcash_status_prefix']}{account_id}"
@@ -995,7 +994,7 @@ class AutoPayoutMonitor:
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
 
-                # MySQL 三最终态是资格源；在线成功只更新余额和状态缓存。
+                # MySQL 三最终态和 payment.balance 是资格源；Redis 只保留短期状态缓存。
 
             else:
                 # API错误：只更新状态缓存（不包含余额），下线处理
@@ -1009,8 +1008,6 @@ class AutoPayoutMonitor:
                 }
                 self.redis.setex(status_key, self.balance_cache_ttl, json.dumps(status_data))
 
-                # 下线处理：保留余额数据在有序集合中，不删除（以便Admin后台查看最后余额）
-                # self.redis.zrem(balance_sorted_set, account_id)  # 已注释：不删除余额
                 # 根据错误类型记录日志和特殊处理
                 if status_info.get('force_offline'):
                     # 501错误：完全删除账号数据
@@ -1248,10 +1245,7 @@ class AutoPayoutMonitor:
             hash_deleted = self.redis.hdel(self.hash_key, account_id)
             zset_deleted = self.redis.zrem(self.set_key, account_id)
 
-            # 2. 删除JazzCash特定缓存
-            # 🔥 保留余额数据，不删除（即使501错误也保留最后余额记录）
-            # balance_sorted_set = self.REDIS_KEYS['jazzcash_balance_sorted_set']
-            # balance_deleted = self.redis.zrem(balance_sorted_set, account_id)
+            # 2. 删除JazzCash短期状态缓存；余额最终记录保留在 MySQL payment.balance。
             self.redis.delete(f'jazzcash_status:{account_id}')
 
             # 3. 删除登录状态键
@@ -1264,7 +1258,7 @@ class AutoPayoutMonitor:
                 self.logger.error(f"更新数据库payment表状态失败: {db_e}")
 
             self.logger.warning(f"🗑️ 已完全删除账号 {account_id} 的所有数据，原因: {reason}")
-            self.logger.info(f"删除详情: hash删除{hash_deleted}项, zset删除{zset_deleted}项, balance删除{balance_deleted}项")
+            self.logger.info(f"删除详情: hash删除{hash_deleted}项, zset删除{zset_deleted}项")
 
             return True
 
@@ -1275,16 +1269,7 @@ class AutoPayoutMonitor:
     def update_payment_status_to_offline(self, account_id, reason="下线"):
         """更新payment表中账号状态为下线"""
         try:
-            import pymysql
-
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor
-            )
+            connection = self._get_db_connection()
 
             try:
                 with connection.cursor() as cur:
@@ -1310,7 +1295,7 @@ class AutoPayoutMonitor:
                     return affected_rows > 0
 
             finally:
-                connection.close()
+                connection.commit()
 
         except Exception as e:
             self.logger.error(f"❌ 更新payment表账号 {account_id} 状态失败: {e}")
@@ -1395,10 +1380,8 @@ class AutoPayoutMonitor:
             error_message = ''.join(tb_str)
             self.logger.error('read_cache 脚本运行错误{}\n{}\n{}'.format(e, error_message, simplejson.dumps(login_data)))
 
-    # 打印集合中所有的元素,生产环境可注释掉
+    # 打印 Redis 集合中的所有元素，生产环境可注释掉
     def read_zset(self, key):
-        # 获取有序集合中的所有元素及其分数
-        # withscores=True 表示返回元素及其分数
         elements_with_scores = self.redis.zrange(key, 0, -1, withscores=True)
         # 将元素和分数存储到字典中
         result_dict = {element.decode(): score for element, score in elements_with_scores}

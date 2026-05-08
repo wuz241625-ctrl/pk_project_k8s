@@ -72,23 +72,6 @@ class getMerchant(BaseHandler):
 
 # 更新
 class updateMerchant(BaseHandler):
-    async def update_target_in_redis(self):
-        target_payment_key = 'target_payment_key'
-        if await self.redis.exists(target_payment_key):
-            await self.redis.delete(target_payment_key)
-
-        target_payment_list = await self.query(
-            "SELECT target_payment FROM merchant WHERE target_payment IS NOT NULL AND target_payment != '';")
-
-        target_payment_set = set()
-        for target_payment in target_payment_list:
-            for single_id in target_payment['target_payment'].split(','):
-                if single_id.strip():
-                    target_payment_set.add(single_id)
-        target_payment_str = ','.join(target_payment_set)
-        await self.redis.set(target_payment_key, target_payment_str)
-        self.logger.info('商户指定码已更新缓存：{}'.format(target_payment_str))
-
     @tornado.web.authenticated
     async def post(self):
         data = json.loads(self.request.body)
@@ -125,7 +108,7 @@ class updateMerchant(BaseHandler):
 
         # 更严谨的非空判断
         if data['target_payment'] != old_target_payment:
-            await self.update_target_in_redis()
+            self.logger.info('商户指定码已更新，派单链路将直接读取 MySQL merchant.target_payment')
         result = dict(code=20000, msg='修改成功')
         return await self.json_response(result)
 

@@ -12,6 +12,8 @@ from decimal import Decimal
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from jobs.auto_payout_state import is_auto_payout_enabled
+
 
 class OrderLifecycle:
     def __init__(self, redis_client, logger, conf: dict, REDIS_KEYS: dict,
@@ -362,9 +364,7 @@ class OrderLifecycle:
     async def check_payout_risk(self, order_data: Dict) -> Dict:
         """风控检查"""
         try:
-            # 检查紧急停机
-            emergency_stop = self.redis.get(self.REDIS_KEYS['easypaisa_emergency_stop'])
-            if emergency_stop == b"1" or emergency_stop == "1":
+            if not is_auto_payout_enabled(self.conf, self.logger):
                 return {'passed': False, 'reason': 'emergency_stop', 'message': '系统紧急停机'}
 
             amount = Decimal(str(order_data['amount']))

@@ -246,28 +246,6 @@ async def _insert_order_ds_in_tx(handler, cur, order_data):
     return await cur.execute(sql, (*values,))
 
 
-async def update_target_in_redis(handler):
-    """更新商户指定码的缓存"""
-    target_payment_key = 'target_payment_key'
-
-    target_payment_list = await handler.query(
-        "SELECT target_payment FROM merchant WHERE target_payment IS NOT NULL AND target_payment != '';")
-
-    target_payment_set = set()
-    for target_payment in target_payment_list:
-        for single_id in target_payment['target_payment'].split(','):
-            if single_id.strip():
-                target_payment_set.add(single_id)
-
-    if target_payment_set:
-        target_payment_str = ','.join(target_payment_set)
-        await handler.redis.set(target_payment_key, target_payment_str)
-        handler.logger.info('商户指定码已更新缓存：{}'.format(target_payment_str))
-    else:
-        handler.logger.info('未查询到商户指定码内容')
-    return target_payment_set
-
-
 async def fetch_mysql_dedicated_payment_ids(handler):
     target_payment_rows = await handler.query(
         "SELECT target_payment FROM merchant WHERE target_payment IS NOT NULL AND target_payment != '';"

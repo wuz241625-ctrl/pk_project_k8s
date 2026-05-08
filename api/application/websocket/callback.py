@@ -8,6 +8,7 @@ from aiomysql import DictCursor
 # 代收确认
 async def success_ds(self, data):
     amount = Decimal(data['amount'])
+    # Pakistan CREDIT: data['utr'] 承载付款手机号；data['trans_id'] 承载官方流水号。
     original_amount = amount  # 保存原始小数金额用于清理
     has_decimal = amount % 1 != 0  # 判断金额是否为小数
     
@@ -61,7 +62,7 @@ async def success_ds(self, data):
     # 根据收款资料id查询
     sql_select_payment = """select * from payment where id=%s order by id limit 1"""
 
-    self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + utr）")
+    self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + amount + 付款手机号(utr字段)）")
     input_trans_id = data.get('trans_id')
     sql_select_order = """
         SELECT * FROM orders_ds
@@ -102,7 +103,7 @@ async def success_ds(self, data):
             try:
                 amount = Decimal(data['amount'])
                 partner_id = int(self.partner_id)
-                self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + utr）")
+                self.logger.info(f"[订单匹配] 金额 {amount} 使用 Pakistan 严格规则匹配订单（按 payment_id + amount + 付款手机号(utr字段)）")
                 input_trans_id = data.get('trans_id')
                 sql_select_order = """
                     SELECT * FROM orders_ds
@@ -269,8 +270,10 @@ async def success_ds(self, data):
 async def success_df(self, data):
     self.logger.info(f'data:{data}')
     amount = abs(Decimal(data['amount']))
-    source_utr = data['trans_id']
-    final_utr = data['utr']
+    # 代付语义：trans_id 是官方交易号，订单 orders_df.utr 成功后写官方交易号。
+    # Pakistan 钱包的订单匹配账号取 data['account']，不是最终写入 orders_df.utr 的值。
+    statement_ref = data['trans_id']
+    payout_match_account = data['utr']
     if data['bank_name'] == 'AU C':
         condition = ' and ifsc=%s and right(payment_account,4)=%s and partner_id=%s'
         value = (amount, data['ifsc'], data['code'][-4:], data['partner_id'])
@@ -282,9 +285,9 @@ async def success_df(self, data):
         value = (amount, data['ifsc'], data['payment_id'])
     # 对于 pakistan 银行：使用回调金额和 payment_account、partner_id 进行比对 。
     elif data['bank_name'] in ['easypaisa', 'jazzcash']:
-        final_utr = data['account']   # 需要将account作为收款手机号→作为utr的数据处理
+        payout_match_account = data['account']
         condition = ' and payment_account=%s and payment_id=%s'
-        value = (amount, final_utr, data['payment_id'])
+        value = (amount, payout_match_account, data['payment_id'])
     else:
         condition = ' and left(ifsc,4)=%s and right(payment_account,4)=%s' if data['ifsc'] else ''
         value = (amount, data['ifsc'][:4], data['code'][-4:]) if data['ifsc'] else (amount, data['code'][-4:])
@@ -299,9 +302,9 @@ async def success_df(self, data):
     # 更新系统余额
     sql_update_payment = """update payment set sys_balance=sys_balance+%s where id=%s"""
     sql_update = """update orders_df set earn_merchant=%s,time_success=%s,status=3,utr=%s where code=%s and status in (-1,1,2) limit 1"""
-    self.logger.info('UTR:{} - 执行查询订单操作。SQL: {}, 参数: {}'.format(final_utr, sql_select_order, value))
+    self.logger.info('代付匹配账号:{} - 执行查询订单操作。SQL: {}, 参数: {}'.format(payout_match_account, sql_select_order, value))
     _order = await self.query(sql_select_order, *value)
-    self.logger.info('UTR:{} - 查询订单完成。返回结果: {}'.format(final_utr, _order))
+    self.logger.info('代付匹配账号:{} - 查询订单完成。返回结果: {}'.format(payout_match_account, _order))
     if not _order:
         return dict(code=99, msg='Order not found')
     # 使用锁，5s使用自旋锁, 防止取消的同时回调
@@ -324,7 +327,7 @@ async def success_df(self, data):
                 if not await cur.execute(sql_select_order, value):
                     return dict(code=99, msg='Order not found')
                 order = (await cur.fetchall())[0]
-                self.logger.info('UTR:{} - 获取订单状态码。订单ID: {}'.format(final_utr, order['code']))
+                self.logger.info('代付匹配账号:{} - 获取订单状态码。订单ID: {}'.format(payout_match_account, order['code']))
                 code = order['code']
                 
                 # 先给-1， 1=常规订单，2=拆单主单，3=拆单子单
@@ -336,7 +339,7 @@ async def success_df(self, data):
                 if order.get('parent_id'):
                     order_type = 3
                 
-                self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, {order_type}, {order['status']}')
+                self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, {order_type}, {order['status']}')
                 # #328 & 382, 主单不会走这个逻辑，子单不会直接影响商户金额
                 earn_merchant = Decimal(0)
                 if order_type in [1]:
@@ -350,7 +353,7 @@ async def success_df(self, data):
                     # earn_merchant = Decimal(0)
                     if order['earn_merchant'] > Decimal(0):
                         if not await cur.execute(sql_select_rates, order['merchant_id']):
-                            self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Not found merchant agent')
+                            self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Not found merchant agent')
                             await conn.rollback()
                             return dict(code=99, msg='Not found merchant agent')
                         merchant_prates = (await cur.fetchall())
@@ -363,11 +366,11 @@ async def success_df(self, data):
                                     continue
                                 if _amount < 0:
                                     await conn.rollback()
-                                    self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Merchant agent rate error')
+                                    self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Merchant agent rate error')
                                     return dict(code=99, msg='Merchant agent rate error')
                                 self.logger.info(f"[{code}] 准备为商户代理 {v['id']} 增加佣金 {_amount}。")
                                 if not await self.change_balance(conn, cur, 'merchant', v['id'], _amount, code, 3):
-                                    self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Failed to add merchant agent balance')
+                                    self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Failed to add merchant agent balance')
                                     return dict(code=99, msg='Failed to add merchant agent balance')
                                 earn_merchant += _amount
                 
@@ -378,7 +381,7 @@ async def success_df(self, data):
                     self.logger.info(f"[{code}] 准备为码商 {partner_id} 增加代付金额 {amount}。")
                     if not await self.change_balance(conn, cur, 'partner', partner_id, amount, code, 1):
                         await conn.rollback()
-                        self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Failed to add partner balance')
+                        self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Failed to add partner balance')
                         return dict(code=99, msg='Failed to add partner balance')
                 
                 # #328 & 382, 主单 & 子单 不会走这个逻辑
@@ -387,7 +390,7 @@ async def success_df(self, data):
                     self.logger.info(f"[{code}] 准备为码商 {partner_id} 增加佣金 {order['earn_partner_self']}。")
                     if not await self.change_balance(conn, cur, 'partner', partner_id, order['earn_partner_self'], code, 3):
                         await conn.rollback()
-                        self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Failed to add parter balacne')
+                        self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Failed to add parter balacne')
                         return dict(code=99, msg='Failed to add parter balacne')
                     
                     # 代付优惠
@@ -411,20 +414,20 @@ async def success_df(self, data):
                         self.logger.info(f"[{code}] 准备为码商 {partner_id} 增加代付优惠 {disprice}。")
                         if not await self.change_balance(conn, cur, 'partner', partner_id, disprice, code, 10):
                             await conn.rollback()
-                            self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Failed to add partner balance')
+                            self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Failed to add partner balance')
                             return dict(code=99, msg='Failed to add partner balance')
 
                 # 修改卡系统余额
                 if not await cur.execute(sql_update_payment, (-amount, self.qr_id)):
                     await conn.rollback()
-                    self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Update payment system balance error')
+                    self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Update payment system balance error')
                     return dict(code=99, msg='Update payment system balance error')
                 # 修改订单状态
                 time_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                if not await cur.execute(sql_update, (earn_merchant, time_now, source_utr, order['code'])):
+                if not await cur.execute(sql_update, (earn_merchant, time_now, statement_ref, order['code'])):
                     await conn.rollback()
                     self.logger.warning(cur._last_executed)
-                    self.logger.info(f'UTR:{final_utr} - 获取订单状态码。订单ID: {order['code']}, Update order error')
+                    self.logger.info(f'代付匹配账号:{payout_match_account} - 获取订单状态码。订单ID: {order['code']}, Update order error')
                     return dict(code=99, msg='Update order error')
                 self.logger.info('更新订单状态%s' % cur._last_executed)
             except Exception as e:

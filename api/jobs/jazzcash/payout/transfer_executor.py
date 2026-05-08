@@ -498,7 +498,7 @@ class TransferExecutor:
                         'success': True,
                         'transaction_id': transaction_id,
                         'message': f'JazzCash转账成功: {msg}',
-                        'payer_phone': phone_number  # 新增：付款手机号，用于更新orders_df.utr字段
+                        'payer_phone': phone_number
                     }
                 elif code == 402:
                     # PaymentFail 是明确失败：外层统一按 402 次数处理，不再按 msgCd 分叉。

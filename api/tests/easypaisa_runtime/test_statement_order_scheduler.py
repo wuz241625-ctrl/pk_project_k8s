@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -77,12 +78,29 @@ class FakeRedis:
         self.kv[key] = value
         return True
 
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.kv:
+            return False
+        self.kv[key] = value
+        return True
+
     def expire(self, key, ttl):
         return True
 
     def setex(self, key, ttl, value):
         self.kv[key] = value
         return True
+
+    def incr(self, key):
+        value = int(self.kv.get(key, 0)) + 1
+        self.kv[key] = value
+        return value
+
+    def eval(self, script, numkeys, key, value):
+        if self.kv.get(key) == value:
+            self.kv.pop(key, None)
+            return 1
+        return 0
 
     def delete(self, key):
         self.kv.pop(key, None)
@@ -155,13 +173,19 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
 
         bank = BankLogin.__new__(BankLogin)
         bank.name = "easypaisa"
-        bank.if_callback_key = "if_callback_easypaisa"
         bank.lock_time = 30
         bank.statement_ds_window_seconds = 7 * 60
         bank.statement_df_window_seconds = 10 * 60
         bank.statement_df_probe_interval = 2 * 60
+        bank.enable_payout_observation = True
+        bank.statement_scan_lock_ttl = 55
+        bank.query_bill_fail_threshold = 3
+        bank.query_bill_fail_ttl = 300
+        bank.query_bill_timeout = 30
+        bank.callback_lock_ttl = 5 * 60
         bank.redis = FakeRedis()
         bank.logger = MagicMock()
+        bank._db_lock = threading.RLock()
         bank.db_connection = FakeConnection(ds_rows, df_rows, payment_rows)
         bank.check_db_connection = MagicMock(return_value=bank.db_connection)
         return bank
@@ -185,13 +209,12 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         bank.reconcile_wallet_status_from_mysql = MagicMock(return_value={"confirm": 0, "offline": 0, "noop": 0})
         bank.fetch_due_statement_payment_ids = MagicMock(return_value=[])
         bank.run_health_balance_check_once = MagicMock(return_value=True)
-        bank.clean_if_callback_key = MagicMock()
 
         with patch("jobs.pakistanpay_v2.time.sleep") as sleep_mock:
             bank.main()
 
         bank.run_health_balance_check_once.assert_called_once()
-        bank.clean_if_callback_key.assert_called_once()
+        self.assertFalse(hasattr(bank, "clean_if_callback_key"))
         sleep_mock.assert_called_once_with(2)
 
     def test_main_still_runs_health_balance_when_statement_orders_are_due(self):
@@ -298,6 +321,153 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         info_logs = "\n".join(str(call.args[0]) for call in bank.logger.info.call_args_list if call.args)
         self.assertIn("代付账单观测匹配", info_logs)
         self.assertIn("不回调", info_logs)
+
+    def test_collection_credit_does_not_filter_by_local_order_window(self):
+        ds_order = {
+            "code": "DS001",
+            "payment_id": 533295,
+            "partner_id": 33056,
+            "amount": "999.00",
+            "time_create": "2026-05-08 12:00:00",
+        }
+        bank = self._bank(ds_rows=[ds_order])
+        bank.send = AsyncMock(return_value={"is_success": True})
+        bank.getBills = AsyncMock(return_value={
+            "is_success": True,
+            "transaction_history_list": [
+                {
+                    "orderNo": "REALUTR001",
+                    "amount": 100.0,
+                    "tradeTime": "2026-05-08 12:03:00",
+                    "appTransaction": True,
+                    "busTypeName": "Cash In",
+                    "historyDetailRspDTO": {
+                        "fromFri": "FRI:03001234567/MSISDN",
+                        "gatherNo": "AC98525348",
+                        "accountNo": "03001234567",
+                        "fee": 5,
+                        "extOrderNo": "EXT001",
+                    },
+                }
+            ],
+        })
+
+        result = asyncio.run(bank.grabstatement(
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516", "account_accno": "98525348"},
+            statement_context={"df_orders": [], "ds_orders": [ds_order], "has_due": True},
+        ))
+
+        self.assertTrue(result)
+        bank.send.assert_awaited_once()
+        sent_payload = bank.send.await_args.args[0]
+        self.assertEqual(sent_payload["utr"], "3001234567")
+        self.assertEqual(sent_payload["amount"], "100.00")
+        self.assertEqual(sent_payload["trans_id"], "REALUTR001")
+
+    def test_collection_credit_callback_uses_payer_phone_and_amount_without_fee(self):
+        ds_order = {
+            "code": "DS001",
+            "payment_id": 533295,
+            "partner_id": 33056,
+            "amount": "100.00",
+            "time_create": "2026-05-08 12:00:00",
+        }
+        bank = self._bank(ds_rows=[ds_order])
+        bank.send = AsyncMock(return_value={"is_success": True})
+        bank.getBills = AsyncMock(return_value={
+            "is_success": True,
+            "transaction_history_list": [
+                {
+                    "orderNo": "REALUTR001",
+                    "amount": 100.0,
+                    "tradeTime": "2026-05-08 12:03:00",
+                    "appTransaction": True,
+                    "busTypeName": "Cash In",
+                    "historyDetailRspDTO": {
+                        "fromFri": "FRI:03001234567/MSISDN",
+                        "gatherNo": "AC98525348",
+                        "accountNo": "03001234567",
+                        "fee": 5,
+                        "extOrderNo": "EXT001",
+                    },
+                }
+            ],
+        })
+
+        result = asyncio.run(bank.grabstatement(
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516", "account_accno": "98525348"},
+            statement_context={"df_orders": [], "ds_orders": [ds_order], "has_due": True},
+        ))
+
+        self.assertTrue(result)
+        sent_payload = bank.send.await_args.args[0]
+        self.assertEqual(sent_payload["utr"], "3001234567")
+        self.assertEqual(sent_payload["amount"], "100.00")
+        self.assertEqual(sent_payload["fee"], "5.00")
+        self.assertEqual(sent_payload["trans_id"], "REALUTR001")
+
+    def test_collection_callback_lock_includes_amount_and_statement_ref(self):
+        bank = self._bank()
+
+        first_key, first_value = bank.acquire_collection_callback_lock(
+            533295,
+            "3001234567",
+            amount="100.00",
+            trans_id="REALUTR001",
+        )
+        second_key, second_value = bank.acquire_collection_callback_lock(
+            533295,
+            "3001234567",
+            amount="100.00",
+            trans_id="REALUTR002",
+        )
+        duplicate_key, duplicate_value = bank.acquire_collection_callback_lock(
+            533295,
+            "3001234567",
+            amount="100.00",
+            trans_id="REALUTR001",
+        )
+
+        self.assertIsNotNone(first_value)
+        self.assertIsNotNone(second_value)
+        self.assertNotEqual(first_key, second_key)
+        self.assertIsNone(duplicate_key)
+        self.assertIsNone(duplicate_value)
+
+    def test_query_bill_failures_pause_collection_only_after_threshold(self):
+        bank = self._bank()
+        bank.getBills = AsyncMock(return_value={
+            "is_success": False,
+            "error_code": 500,
+            "error_message": "official error",
+        })
+        account_context = {"id": 533295, "partner_id": 33056}
+
+        asyncio.run(bank.grabstatement(account_context))
+        asyncio.run(bank.grabstatement(account_context))
+
+        update_sql = "\n".join(sql for sql, _ in bank.db_connection.executed if "UPDATE payment SET collection_status=0" in sql)
+        self.assertEqual(update_sql, "")
+
+        asyncio.run(bank.grabstatement(account_context))
+
+        update_sql = "\n".join(sql for sql, _ in bank.db_connection.executed if "UPDATE payment SET collection_status=0" in sql)
+        self.assertIn("UPDATE payment SET collection_status=0", update_sql)
+
+    def test_query_bill_423_never_pauses_collection_status(self):
+        bank = self._bank()
+        bank.getBills = AsyncMock(return_value={
+            "is_success": False,
+            "error_code": 423,
+            "error_message": "ServerBusy",
+        })
+        account_context = {"id": 533295, "partner_id": 33056}
+
+        for _ in range(4):
+            asyncio.run(bank.grabstatement(account_context))
+
+        update_sql = "\n".join(sql for sql, _ in bank.db_connection.executed if "UPDATE payment SET collection_status=0" in sql)
+        self.assertEqual(update_sql, "")
 
     def test_query_bill_423_fast_retries_once_then_uses_success_response(self):
         bank = self._bank()

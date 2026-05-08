@@ -28,6 +28,8 @@ sys.path.append(root_dir)
 
 from config import get_config
 from jobs.common.logging_setup import ProgramLogger, TraceIDFilter, setup_high_performance_logging
+from jobs.common.db import DBConnection
+from jobs.auto_payout_state import is_auto_payout_enabled
 
 # Payout modules
 from jobs.jazzcash.payout import Settlement, TransactionLogger, AccountSelector, TransferExecutor, OrderLifecycle
@@ -66,8 +68,6 @@ class JazzCashAutoPayout:
 
         # Redis键名配置
         self.REDIS_KEYS = {
-            'jazzcash_balance_sorted_set': 'jazzcash_balance_sorted',
-            'jazzcash_balance_prefix': 'jazzcash_balance:',
             'jazzcash_account_used_prefix': 'jazzcash_account_used:',
             'jazzcash_release_time': 'jazzcash_release_time',
             'jazzcash_failures': 'jazzcash_failures',
@@ -77,8 +77,6 @@ class JazzCashAutoPayout:
             'payment_id_failed_prefix': 'payment_id_failed_jazzcash:',
         }
 
-        # 兼容属性
-        self._mysql_payout_account_cursor = []
         self.qr_id = None
 
         # Module config dict passed to all modules
@@ -88,6 +86,7 @@ class JazzCashAutoPayout:
             'jazzcash_api_url': conf.get('jazzcash_api_url', 'http://34.150.42.92:84'),
             'jazzcash_user_id': conf.get('jazzcash_user_id', 'ba08c3c0e4f546ad92dd2c2e8542ca36'),
             'jazzcash_secret_key': conf.get('jazzcash_secret_key', 'ca45b35e132b46b9b68dd55f1ab077de'),
+            'db': DBConnection(conf),
         }
 
         # Instantiate modules
@@ -270,10 +269,8 @@ class JazzCashAutoPayout:
         try:
             trace_id_filter.trace_id = f"{os.getpid()}_{uuid.uuid4()}"
 
-            # 检查紧急停机状态
-            emergency_stop = self.redis.get("easypaisa_emergency_stop")
-            if emergency_stop is not None and emergency_stop != b"0" and emergency_stop != "0":
-                self.logger.warning(f"检测到全局紧急停机状态（值：{emergency_stop}），停止所有订单处理")
+            if not is_auto_payout_enabled(conf, self.logger):
+                self.logger.warning("检测到MySQL自动代付开关关闭，停止所有订单处理")
                 time.sleep(10)
                 return
 
