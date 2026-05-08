@@ -629,6 +629,22 @@ class OrderLifecycle:
             if not payment_id_lock_value:
                 return {'success': False, 'message': f'订单{order_code} payment_id={payment_id}锁定失败'}
 
+            if not self.account_selector.check_account_release_time(payment_id):
+                return {'success': False, 'message': f'payment_id={payment_id}仍在释放期，跳过'}
+
+            if self.account_selector.is_account_recently_used(payment_id):
+                return {'success': False, 'message': f'payment_id={payment_id}近期已使用，跳过'}
+
+            amount_check = await self.account_selector.check_account_amount_limits(payment_id, amount)
+            if not amount_check.get('passed', True):
+                return {
+                    'success': False,
+                    'message': f'payment_id={payment_id}金额/日限额不通过: {amount_check}'
+                }
+
+            if not self.account_selector.check_payment_balance(payment_id, amount):
+                return {'success': False, 'message': f'payment_id={payment_id}余额不足，跳过'}
+
             if connection is None:
                 connection = self._open_connection()
                 own_connection = True
@@ -649,20 +665,19 @@ class OrderLifecycle:
                     # 转账成功，记录账号使用时间（动态冷却期）
                     self.account_selector.record_account_usage(selected_account['payment_id'])
 
-                    # 转账成功后立即扣减Redis余额
-                    balance_updated = self.account_selector.update_account_balance_after_transfer(
-                        payment_id=selected_account['payment_id'],
-                        transfer_amount=amount
-                    )
-                    if not balance_updated:
-                        self.account_selector.set_account_release_time(selected_account['payment_id'])
-                        return self._mark_unknown(connection, order_code, 'payment.balance扣减失败，人工核对')
-
                     # 转账成功，设置账号释放时间（从配置读取）
                     self.account_selector.set_account_release_time(selected_account['payment_id'])
 
                     self.settlement.qr_id = selected_account['payment_id']
                     with connection.cursor() as cur:
+                        balance_updated = self.account_selector.deduct_account_balance_in_transaction(
+                            cur,
+                            selected_account['payment_id'],
+                            amount,
+                        )
+                        if not balance_updated:
+                            connection.rollback()
+                            return self._mark_unknown(connection, order_code, '官方已返回成功，但payment.balance余额不足或扣减失败，人工核对')
                         settled = self.settlement.handle_payout_success(connection, cur, claimed_order, transfer_result)
                     if settled:
                         connection.commit()
@@ -679,7 +694,7 @@ class OrderLifecycle:
                             'selected_account': selected_account
                         }
                     connection.rollback()
-                    return self._mark_unknown(connection, order_code, 'success settlement failed, manual review required')
+                    return self._mark_unknown(connection, order_code, '官方已返回成功，payment.balance扣减与结算事务失败，人工核对')
                 elif transfer_result is None:
                     self.account_selector.set_account_release_time(selected_account['payment_id'])
                     return self._mark_unknown(connection, order_code, 'EasyPaisa no response, manual review required')

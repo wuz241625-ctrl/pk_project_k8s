@@ -208,6 +208,56 @@ class TestUpdateAccountBalance:
         mock_conn.commit.assert_called_once()
         redis_mock.zadd.assert_not_called()
 
+    def test_check_payment_balance_true_when_current_balance_sufficient(self, selector):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'balance': Decimal('6000')}
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        selector.db_provider = lambda: mock_conn
+
+        result = selector.check_payment_balance('pay_001', Decimal('5000'))
+
+        assert result is True
+
+    def test_check_payment_balance_false_when_current_balance_insufficient(self, selector):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'balance': Decimal('1000')}
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
+        selector.db_provider = lambda: mock_conn
+
+        result = selector.check_payment_balance('pay_001', Decimal('5000'))
+
+        assert result is False
+
+    def test_deduct_account_balance_in_transaction_requires_sufficient_balance(self, selector):
+        mock_cursor = MagicMock()
+        mock_cursor.execute.return_value = 0
+
+        result = selector.deduct_account_balance_in_transaction(
+            mock_cursor,
+            'pay_001',
+            Decimal('5000'),
+        )
+
+        assert result is False
+        sql = " ".join(mock_cursor.execute.call_args[0][0].split())
+        assert "COALESCE(balance, 0) >= %s" in sql
+
+    def test_deduct_account_balance_in_transaction_success(self, selector):
+        mock_cursor = MagicMock()
+        mock_cursor.execute.return_value = 1
+
+        result = selector.deduct_account_balance_in_transaction(
+            mock_cursor,
+            'pay_001',
+            Decimal('5000'),
+        )
+
+        assert result is True
+
 
 # ========== get_payment_id_lock tests ==========
 
@@ -281,6 +331,20 @@ class TestDispatchOrdersToAccounts:
             'amount_top': Decimal('0'),
         }]
         orders = [{'code': 'ORD_TOO_LARGE', 'amount': Decimal('5000')}]
+
+        result = selector.dispatch_orders_to_accounts(orders, accounts)
+
+        assert result == []
+
+    def test_dispatch_uses_daily_remaining_not_full_amount_top(self, selector):
+        accounts = [{
+            'payment_id': 'pay_001',
+            'balance': Decimal('10000'),
+            'balance_limit': Decimal('0'),
+            'amount_top': Decimal('10000'),
+            'daily_remaining': Decimal('1000'),
+        }]
+        orders = [{'code': 'ORD_TOO_LARGE_FOR_DAY', 'amount': Decimal('5000')}]
 
         result = selector.dispatch_orders_to_accounts(orders, accounts)
 

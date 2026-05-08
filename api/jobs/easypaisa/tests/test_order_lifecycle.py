@@ -306,6 +306,11 @@ def _wire_locks(lifecycle):
     lifecycle.account_selector.del_lock.return_value = True
     lifecycle.account_selector.release_account_lock.return_value = True
     lifecycle.account_selector.del_payment_id_lock.return_value = True
+    lifecycle.account_selector.check_account_release_time.return_value = True
+    lifecycle.account_selector.is_account_recently_used.return_value = False
+    lifecycle.account_selector.check_account_amount_limits = AsyncMock(return_value={'passed': True})
+    lifecycle.account_selector.check_payment_balance.return_value = True
+    lifecycle.account_selector.deduct_account_balance_in_transaction.return_value = True
 
 
 class TestProcessPayoutOrderStateMachine:
@@ -346,6 +351,8 @@ class TestProcessPayoutOrderStateMachine:
         lifecycle.settlement.handle_payout_success.assert_called_once()
         assert lifecycle.settlement.qr_id == '533295'
         lifecycle.redis.publish.assert_called_with('order_df_notify', 'ORD001')
+        lifecycle.account_selector.deduct_account_balance_in_transaction.assert_called_once()
+        lifecycle.account_selector.update_account_balance_after_transfer.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_balance_deduction_failure_marks_unknown_and_skips_settlement(self, lifecycle):
@@ -356,7 +363,7 @@ class TestProcessPayoutOrderStateMachine:
             'transaction_id': 'TXN001',
             'payer_phone': '03325009516',
         })
-        lifecycle.account_selector.update_account_balance_after_transfer.return_value = False
+        lifecycle.account_selector.deduct_account_balance_in_transaction.return_value = False
 
         with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
             result = await lifecycle.process_payout_order(
@@ -368,6 +375,80 @@ class TestProcessPayoutOrderStateMachine:
         assert result['unknown'] is True
         lifecycle.settlement.handle_payout_success.assert_not_called()
         assert any("SET status = 2" in sql for sql, _ in fake_conn.cursor_obj.executed)
+
+    @pytest.mark.asyncio
+    async def test_release_time_rechecked_after_payment_lock_before_claim(self, lifecycle):
+        _wire_locks(lifecycle)
+        fake_conn = FakeConnection(claim_rowcount=1)
+        lifecycle.account_selector.check_account_release_time.return_value = False
+        lifecycle.transfer_executor._execute_easypaisa_transfer = AsyncMock()
+
+        with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
+            result = await lifecycle.process_payout_order(
+                {'code': 'ORD001', 'amount': '100.00', 'retry_count': 0},
+                selected_account=_selected_account(),
+            )
+
+        assert result['success'] is False
+        assert '释放期' in result['message']
+        lifecycle.transfer_executor._execute_easypaisa_transfer.assert_not_called()
+        assert not any("SET status = 1" in sql for sql, _ in fake_conn.cursor_obj.executed)
+
+    @pytest.mark.asyncio
+    async def test_recent_usage_rechecked_after_payment_lock_before_claim(self, lifecycle):
+        _wire_locks(lifecycle)
+        fake_conn = FakeConnection(claim_rowcount=1)
+        lifecycle.account_selector.is_account_recently_used.return_value = True
+        lifecycle.transfer_executor._execute_easypaisa_transfer = AsyncMock()
+
+        with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
+            result = await lifecycle.process_payout_order(
+                {'code': 'ORD001', 'amount': '100.00', 'retry_count': 0},
+                selected_account=_selected_account(),
+            )
+
+        assert result['success'] is False
+        assert '近期已使用' in result['message']
+        lifecycle.transfer_executor._execute_easypaisa_transfer.assert_not_called()
+        assert not any("SET status = 1" in sql for sql, _ in fake_conn.cursor_obj.executed)
+
+    @pytest.mark.asyncio
+    async def test_amount_limit_rechecked_after_payment_lock_before_claim(self, lifecycle):
+        _wire_locks(lifecycle)
+        fake_conn = FakeConnection(claim_rowcount=1)
+        lifecycle.account_selector.check_account_amount_limits = AsyncMock(
+            return_value={'passed': False, 'reason': 'balance_limit_exceeded'}
+        )
+        lifecycle.transfer_executor._execute_easypaisa_transfer = AsyncMock()
+
+        with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
+            result = await lifecycle.process_payout_order(
+                {'code': 'ORD001', 'amount': '100.00', 'retry_count': 0},
+                selected_account=_selected_account(),
+            )
+
+        assert result['success'] is False
+        assert '金额/日限额不通过' in result['message']
+        lifecycle.transfer_executor._execute_easypaisa_transfer.assert_not_called()
+        assert not any("SET status = 1" in sql for sql, _ in fake_conn.cursor_obj.executed)
+
+    @pytest.mark.asyncio
+    async def test_balance_rechecked_after_payment_lock_before_claim(self, lifecycle):
+        _wire_locks(lifecycle)
+        fake_conn = FakeConnection(claim_rowcount=1)
+        lifecycle.account_selector.check_payment_balance.return_value = False
+        lifecycle.transfer_executor._execute_easypaisa_transfer = AsyncMock()
+
+        with patch('jobs.easypaisa.payout.order_lifecycle.pymysql.connect', return_value=fake_conn):
+            result = await lifecycle.process_payout_order(
+                {'code': 'ORD001', 'amount': '100.00', 'retry_count': 0},
+                selected_account=_selected_account(),
+            )
+
+        assert result['success'] is False
+        assert '余额不足' in result['message']
+        lifecycle.transfer_executor._execute_easypaisa_transfer.assert_not_called()
+        assert not any("SET status = 1" in sql for sql, _ in fake_conn.cursor_obj.executed)
 
     @pytest.mark.asyncio
     async def test_first_402_returns_order_to_retry_pool(self, lifecycle):

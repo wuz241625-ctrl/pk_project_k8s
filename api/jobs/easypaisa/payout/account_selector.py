@@ -550,8 +550,16 @@ class AccountSelector:
                     SELECT id AS payment_id, phone, account, name, bank_type, bank_type_id,
                            partner_id, account_accno, COALESCE(balance, 0) AS balance,
                            COALESCE(amount_top, 0) AS amount_top,
-                           COALESCE(balance_limit, 0) AS balance_limit
+                           COALESCE(balance_limit, 0) AS balance_limit,
+                           COALESCE(today.today_amount, 0) AS today_amount
                     FROM payment
+                    LEFT JOIN (
+                        SELECT payment_id, COALESCE(SUM(amount), 0) AS today_amount
+                        FROM orders_df
+                        WHERE DATE(time_create) = CURDATE()
+                          AND status IN (1, 3, 4)
+                        GROUP BY payment_id
+                    ) today ON today.payment_id = payment.id
                     WHERE {condition}
                       AND (bank_type = 97 OR bank_type_id = 97)
                       AND COALESCE(balance, 0) >= %s
@@ -564,6 +572,9 @@ class AccountSelector:
             accounts = []
             for row in rows:
                 balance = Decimal(str(row.get('balance') or 0))
+                amount_top = Decimal(str(row.get('amount_top') or 0))
+                today_amount = Decimal(str(row.get('today_amount') or 0))
+                daily_remaining = amount_top - today_amount if amount_top > 0 else None
                 accounts.append({
                     'payment_id': str(row.get('payment_id')),
                     'phone': row.get('phone'),
@@ -572,8 +583,10 @@ class AccountSelector:
                     'name': row.get('name'),
                     'account_accno': row.get('account_accno'),
                     'balance': balance,
-                    'amount_top': Decimal(str(row.get('amount_top') or 0)),
+                    'amount_top': amount_top,
                     'balance_limit': Decimal(str(row.get('balance_limit') or 0)),
+                    'today_amount': today_amount,
+                    'daily_remaining': daily_remaining,
                     'priority': int(balance),
                 })
             self.logger.info(f"从 MySQL payment.balance 获取 {len(accounts)} 个 EasyPaisa 代付候选")
@@ -590,6 +603,56 @@ class AccountSelector:
         return self.get_mysql_payout_candidates(min_balance=min_balance, count=count, connection=connection)
 
     # ========== Balance Update & API Fetch ==========
+
+    def check_payment_balance(self, payment_id: str, amount: Decimal) -> bool:
+        """锁内复查 MySQL 当前余额，避免多 worker 使用预选旧余额。"""
+        connection = None
+        try:
+            connection = self._get_db_connection()
+            with connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT COALESCE(balance, 0) AS balance
+                    FROM payment
+                    WHERE id = %s
+                      AND (bank_type = 97 OR bank_type_id = 97)
+                    LIMIT 1
+                    """,
+                    (payment_id,),
+                )
+                row = cur.fetchone()
+            if connection:
+                connection.commit()
+            if not row:
+                return False
+            return Decimal(str(row.get('balance') or 0)) >= Decimal(str(amount))
+        except Exception as e:
+            if connection:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+            self.logger.error(f"检查账号{payment_id} MySQL余额失败: {e}")
+            return False
+
+    def deduct_account_balance_in_transaction(self, cur, payment_id: str, transfer_amount: Decimal) -> bool:
+        """在订单成功结算同一事务内扣减 payment.balance。"""
+        affected = cur.execute(
+            """
+            UPDATE payment
+            SET balance = COALESCE(balance, 0) - %s,
+                time_update = NOW()
+            WHERE id = %s
+              AND (bank_type = 97 OR bank_type_id = 97)
+              AND COALESCE(balance, 0) >= %s
+            LIMIT 1
+            """,
+            (transfer_amount, payment_id, transfer_amount),
+        )
+        self.logger.info(
+            f"EasyPaisa账号{payment_id} 事务内扣减MySQL余额: -{transfer_amount}, affected={affected}"
+        )
+        return affected == 1
 
     def update_account_balance_after_transfer(self, payment_id: str, transfer_amount: Decimal):
         """
@@ -609,12 +672,14 @@ class AccountSelector:
                 affected = cur.execute(
                     """
                     UPDATE payment
-                    SET balance = GREATEST(COALESCE(balance, 0) - %s, 0),
+                    SET balance = COALESCE(balance, 0) - %s,
                         time_update = NOW()
                     WHERE id = %s
                       AND (bank_type = 97 OR bank_type_id = 97)
+                      AND COALESCE(balance, 0) >= %s
+                    LIMIT 1
                     """,
-                    (transfer_amount, payment_id),
+                    (transfer_amount, payment_id, transfer_amount),
                 )
                 connection.commit()
             self.logger.info(f"EasyPaisa账号{payment_id} MySQL余额已扣减: -{transfer_amount}, affected={affected}")
@@ -937,7 +1002,10 @@ class AccountSelector:
         for account in accounts_sorted:
             pid = account['payment_id']
             amount_top = Decimal(str(account.get('amount_top') or 0))
-            virtual_daily_remaining[pid] = amount_top if amount_top > 0 else None
+            if account.get('daily_remaining') is not None:
+                virtual_daily_remaining[pid] = Decimal(str(account.get('daily_remaining') or 0))
+            else:
+                virtual_daily_remaining[pid] = amount_top if amount_top > 0 else None
         buckets = {a['payment_id']: {'account': a, 'orders': []} for a in accounts_sorted}
         assigned_pids = set()
         unassigned = []

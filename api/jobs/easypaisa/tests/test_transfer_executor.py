@@ -113,8 +113,8 @@ class TestExtractTransactionId:
         result = executor._extract_transaction_id(api_result, 'transferToCard')
         assert result == 'BUS111222333'
 
-    def test_fallback_generates_ep_prefix_id(self, executor):
-        """When no transaction ID found, generates EP-prefixed fallback."""
+    def test_missing_transaction_id_returns_empty_string(self, executor):
+        """没有官方交易号时不能生成本地假 UTR。"""
         api_result = {
             'code': 200,
             'data': {
@@ -124,20 +124,19 @@ class TestExtractTransactionId:
             }
         }
         result = executor._extract_transaction_id(api_result, 'transferToAcc')
-        assert result.startswith('EP')
-        assert len(result) == 14  # EP + 12 hex chars
+        assert result == ''
 
-    def test_empty_data_generates_fallback(self, executor):
-        """Empty data dict generates fallback ID."""
+    def test_empty_data_returns_empty_string(self, executor):
+        """Empty data dict returns no transaction ID."""
         api_result = {'code': 200, 'data': {}}
         result = executor._extract_transaction_id(api_result, 'transferToAcc')
-        assert result.startswith('EP')
+        assert result == ''
 
-    def test_exception_generates_fallback(self, executor):
-        """Exception during extraction generates fallback ID."""
+    def test_exception_returns_empty_string(self, executor):
+        """Exception during extraction returns no transaction ID."""
         api_result = {'code': 200, 'data': None}  # Will cause AttributeError
         result = executor._extract_transaction_id(api_result, 'transferToAcc')
-        assert result.startswith('EP')
+        assert result == ''
 
 
 # ========== _is_pakistan_mobile_number tests ==========
@@ -238,6 +237,41 @@ class TestExecuteEasypaisaTransfer:
         assert result is not None
         assert result['success'] is False
         assert result['order_status'] == 'P'
+
+    @pytest.mark.asyncio
+    async def test_success_status_without_transaction_id_is_not_success(self, executor):
+        """官方返回 S 但缺少官方交易号时进入人工确认，不写假 UTR。"""
+        order_data = {
+            'code': 'ORD001_NO_TXN',
+            'amount': 1000,
+            'payment_account': '03001234567',
+            'payment_name': 'Test User',
+            'ifsc': 'easypaisa',
+        }
+        account_info = {
+            'payment_id': 'PAY001',
+            'phone': '03009876543',
+            'account_accno': 'ACC123',
+        }
+
+        executor._call_easypaisa_api = AsyncMock(return_value={
+            'code': 200,
+            'msg': 'Success',
+            'data': {
+                'body': {
+                    'orderStatus': 'S',
+                    'data': {}
+                }
+            }
+        })
+
+        result = await executor._execute_easypaisa_transfer(order_data, account_info)
+
+        assert result is not None
+        assert result['success'] is False
+        assert result['code'] == 200
+        assert result['order_status'] == 'S'
+        assert result['can_retry'] is False
 
     @pytest.mark.asyncio
     async def test_code_200_unknown_order_status_is_not_success(self, executor):

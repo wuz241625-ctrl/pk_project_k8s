@@ -142,13 +142,12 @@ class TransferExecutor:
             if transaction_id:
                 return transaction_id
 
-            # 如果都没有，记录警告并生成备用ID
-            self.logger.warning(f"API响应中未找到交易ID，使用备用方案生成ID")
-            return f"EP{uuid.uuid4().hex[:12].upper()}"
+            self.logger.warning("API响应中未找到官方交易ID")
+            return ""
 
         except Exception as e:
             self.logger.error(f"提取交易ID失败: {e}")
-            return f"EP{uuid.uuid4().hex[:12].upper()}"
+            return ""
 
     async def _execute_easypaisa_transfer(self, order_data: Dict, account_info: Dict) -> Optional[Dict]:
         """执行EasyPaisa转账 - 调用真实API"""
@@ -423,6 +422,37 @@ class TransferExecutor:
                     elif order_status == "S":
                         # ========== orderStatus = S (成功) ==========
                         self.logger.info(f"转账成功(orderStatus={order_status})! 交易ID: {transaction_id}")
+                        if not transaction_id:
+                            error_message = f"EasyPaisa返回成功状态S但缺少官方交易号: msg={msg}"
+                            self.logger.error(error_message)
+
+                            process_details.update({
+                                'lock_release_time': datetime.now().isoformat(),
+                                'lock_release_status': 'success',
+                                'lock_release_details': {
+                                    'account_lock_released': True,
+                                    'payment_id_lock_released': True,
+                                    'release_reason': 'missing_transaction_id'
+                                },
+                                'order_status': 'S',
+                                'order_status_meaning': 'success_without_transaction_id',
+                                'total_duration_ms': int((time.time() - process_start_time) * 1000)
+                            })
+
+                            self.log_complete_transaction(order_data, account_info, inner_payload, api_result,
+                                                        "failed", transaction_id="", start_time=start_time,
+                                                        before_balance=before_balance,
+                                                        error_message=error_message,
+                                                        process_details=process_details)
+
+                            return {
+                                'success': False,
+                                'message': error_message,
+                                'code': 200,
+                                'order_status': 'S',
+                                'can_retry': False,
+                                'transaction_id': ''
+                            }
 
                         # 计算转账后余额（优化：避免额外API调用）
                         after_balance = None
