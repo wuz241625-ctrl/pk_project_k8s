@@ -7,6 +7,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 
 
 # 增加
@@ -218,7 +219,7 @@ class getMerchantRank(BaseHandler):
             return await self.json_response(data=msg[10007])
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
         if not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         sql = """select m.id,m.cellphone,m.name,m.balance,count(o.id) as count,sum(o.amount) as amount,
                 count(if(o.status>0,1,null)) as success_count,sum(if(o.status>0,o.amount,0)) as success_amount,
                 cast(count(if(o.status>2,1,null))/if(count(o.id)=0,1,count(o.id)) * 100 as decimal(14,0)) as rate

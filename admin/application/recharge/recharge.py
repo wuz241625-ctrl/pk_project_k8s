@@ -6,6 +6,7 @@ import tornado
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
+from application.timezone import display_today_between
 
 # 获取系统收款信息
 from application.message import msg
@@ -33,7 +34,7 @@ class getRechargePartner(BaseHandler):
             between = time_success_between
 
         if not condition or not condition['code'] and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
 
         keys_count = ['amount', 'status']
         data_r, total, count = await self.get_result('partner_recharge', ['*'], keys_count, condition, between, data['size'], data['page'])
@@ -387,7 +388,7 @@ class getWithdrawPartner(BaseHandler):
             between = time_success_between
 
         if (not condition or not condition['code']) and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         keys_count = ['amount', 'status']
         data_r, total, count = await self.get_result('partner_withdraw', ['*'], keys_count, condition, between,
                                                      data['size'], data['page'])
@@ -492,7 +493,7 @@ class getWithdrawMerchant(BaseHandler):
             between = time_success_between
 
         if (not condition or not condition['code']) and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         keys_count = ['amount', 'status']
         data_r, total, count = await self.get_result('merchant_withdraw', ['*'], keys_count, condition, between,
                                                      data['size'], data['page'])

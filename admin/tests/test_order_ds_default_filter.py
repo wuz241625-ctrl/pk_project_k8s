@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from datetime import date, datetime
+from datetime import datetime, timezone
 
 
 CURRENT_DIR = os.path.dirname(__file__)
@@ -17,11 +17,11 @@ from application.order.order import (
 
 class OrderDsDefaultFilterTests(unittest.TestCase):
     def test_default_time_create_range_ends_at_day_end(self):
-        result = build_order_ds_default_time_create_between(datetime(2026, 5, 1, 18, 50, 0))
+        result = build_order_ds_default_time_create_between(datetime(2026, 5, 1, 18, 50, 0, tzinfo=timezone.utc))
 
         self.assertEqual(result["key"], "time_create")
-        self.assertEqual(result["start"], date(2026, 5, 1))
-        self.assertEqual(result["end"], datetime(2026, 5, 1, 23, 59, 59))
+        self.assertEqual(result["start"], datetime(2026, 4, 30, 19, 0, 0))
+        self.assertEqual(result["end"], datetime(2026, 5, 1, 18, 59, 59))
 
     def test_existing_between_is_not_overwritten_when_code_is_missing(self):
         explicit_between = {

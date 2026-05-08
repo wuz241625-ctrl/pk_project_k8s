@@ -6,6 +6,7 @@ from decimal import Decimal
 from aiomysql import DictCursor
 
 from application.message import msg
+from application.timezone import display_now, display_today_between, display_to_utc_naive
 
 
 async def Agent(self, action, data):
@@ -29,13 +30,14 @@ async def getagentinfo(self, data):
     partner_id = self.current_user['id']
     childs = await self.get_results_by_condition('partner_tree', ['child'], {'parent': partner_id, 'distance': 1})
     user_data['agent_number'] = len(childs)
-    time = datetime.datetime.combine(datetime.datetime.today().date(), datetime.time())
+    time = display_today_between('time_create')['start']
     if data['time'] == 1:
         time -= datetime.timedelta(days=1)
     if data['time'] == 2:
         time -= datetime.timedelta(days=7)
     if data['time'] == 3:
-        time = datetime.datetime(time.year, time.month, 1)
+        display_month = display_now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        time = display_to_utc_naive(display_month)
     # 佣金查询
     user_data['agent_ds_amount'] = Decimal(0)
     user_data['agentlist'] = []
@@ -62,7 +64,7 @@ async def getagentlist(self, data):
     values = [self.current_user['id'], data['offset']]
     agents = await self.query(sql, *values)
     # 计算查找时间
-    time = datetime.datetime.combine(datetime.datetime.today().date(), datetime.time())
+    time = display_today_between('time_create')['start']
     if data['time'] == 1:
         time -= datetime.timedelta(days=1)
     if data['time'] == 2:

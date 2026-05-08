@@ -14,6 +14,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 import os
 import csv
 import re
@@ -701,7 +702,7 @@ class getPartnerRank(BaseHandler):
             return await self.json_response(data=msg[10007])
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
         if not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         sql = """select p.id,p.cellphone,p.name,p.balance,count(o.id) as count,sum(if(o.amount>0,o.amount,0)) as amount,
                 count(if(o.status>2,1,null)) as success_count,sum(if(o.status>2,o.amount,0)) as success_amount,
                 cast(count(if(o.status>2,1,null))/if(count(o.id)=0,1,count(o.id)) * 100 as decimal(14,0)) as rate
@@ -1331,7 +1332,7 @@ class getBank_recoed(BaseHandler):
         # 处理 UTR 的模糊查询
         utr_value = data['serchData'].get('utr', '').strip()
         if not between and (not condition or not condition['code']):
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         other_str = None
         if str(self.current_user['role_id']) == '19':
             tg_partners_ids = await self.get_partners_by_parent_id(self.current_user['parent_id'])
@@ -4865,7 +4866,7 @@ class getTransfer(BaseHandler):
             between = time_success_between
 
         if not condition or not condition['code'] and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
 
         keys_count = ['amount', 'status']
         data_r, total, count = await self.get_result('transfer', ['*'], keys_count, condition, between, data['size'], data['page'])
@@ -5325,7 +5326,7 @@ class getBankRank(BaseHandler):
             return await self.json_response(data=msg[10007])
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
         if not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         sql = """SELECT bt.name,COUNT(o.id) AS count, SUM(IF(o.amount > 0, o.amount, 0)) AS amount,COUNT(IF(o.status > 2, 1, NULL)) AS success_count,SUM(IF(o.status > 2, o.amount, 0)) AS success_amount,CAST(COUNT(IF(o.status > 2, 1, NULL)) / IF(COUNT(o.id) = 0, 1, COUNT(o.id)) * 100 AS DECIMAL(14,0)) AS rate FROM payment AS p LEFT JOIN bank_type AS bt ON bt.id = p.bank_type LEFT JOIN orders_ds AS o ON o.payment_id = p.id and o.time_create between %s and %s"""
         bt_key, bt_start, bt_end = await self.dict_to_between(between)
         values = [bt_start, bt_end]

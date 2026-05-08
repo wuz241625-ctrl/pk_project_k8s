@@ -5,6 +5,7 @@ from urllib import parse
 import pytz
 import razorpay
 from application.base import BaseHandler
+from application.timezone import display_now
 import simplejson as json
 from .success import order_success_ds, order_success_ds_third
 import hashlib
@@ -1960,7 +1961,7 @@ class gamepayer_notify(BaseHandler):
             data_post = dict()
             data_post['merchant_id'] = mer_id
             data_post['merchant_orderid'] = code
-            data_post['datetime'] = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
+            data_post['datetime'] = display_now().strftime('%Y-%m-%d %H:%M:%S')
             # 计算验证签名
             data_post['sign'] = SignatureAndVerification.md5_sign(data_post, key, "catspay").lower()
 

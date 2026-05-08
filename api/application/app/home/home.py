@@ -5,6 +5,7 @@ from decimal import Decimal
 from aiomysql import DictCursor
 
 from application.message import msg
+from application.timezone import display_today_between
 
 
 async def Home(self, action, data):
@@ -34,7 +35,7 @@ async def getUserInfo(self):
     sql = """select sum(r.amount) as amount_all,sum(if(s.id is null and f.id is null,r.amount,0)) as amount_other from 
     balance_record r left join orders_ds s on s.code=r.code and s.partner_id=user_id left join orders_df f on 
     f.code=r.code and f.partner_id=user_id where r.time_create>%s and record_type=3 and user_type=0 and user_id=%s"""
-    today = datetime.datetime.combine(datetime.datetime.today().date(), datetime.time())
+    today = display_today_between('time_create')['start']
     values = [today, self.current_user['id']]
     r = (await self.query(sql, *values))[0]
     user_data['amount_all'] = r['amount_all'] if r['amount_all'] else Decimal(0)

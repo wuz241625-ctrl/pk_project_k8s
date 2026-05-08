@@ -43,3 +43,14 @@ cd merchant-h5 && NODE_OPTIONS=--openssl-legacy-provider npm run d7pay:prod
 cd apkdownload && npm run build:d7pay
 python3 ops/tenants/d7pay/verify_release_contract.py
 ```
+
+## D7pay 时区验收
+
+业务存储保持 UTC，展示和默认查询日界使用巴基斯坦时间转换。发布前可执行：
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_timezone_policy
+PYTHONPATH=admin python3 -m unittest admin.tests.test_timezone_policy admin.tests.test_order_ds_default_filter
+PYTHONPATH=merchant python3 -m unittest merchant.tests.test_timezone_policy
+rg -n "Asia/Shanghai|datetime\\.today\\(\\)\\.date\\(\\)" api admin merchant -g '*.py'
+```

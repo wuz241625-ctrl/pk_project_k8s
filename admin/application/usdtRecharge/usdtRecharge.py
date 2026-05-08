@@ -7,6 +7,7 @@ import tornado
 from aiomysql import DictCursor
 
 from application.base import BaseHandler
+from application.timezone import display_today_between
 
 # 获取系统收款信息
 from application.message import msg
@@ -35,7 +36,7 @@ class getUsdtRecharge(BaseHandler):
             between = time_success_between
 
         if not condition or not condition['serial_number'] and not between:
-            between = {'key': 'created_at', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('created_at')
         # 获取顶级id下的所有订单
         top_partner_sql_part = ''
         partner_ids = []

@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 
 from application.base import BaseHandler,RewriteJsonEncoder
+from application.timezone import display_today_between
 import re
 
 # 统计
@@ -112,7 +113,8 @@ class getCountOneW(BaseHandler):
             result = dict(code=20000, data=data_r, msg='获取成功')
             return await self.json_response(result)
 
-        date_start = datetime.datetime.combine(datetime.datetime.today().date(), datetime.time())
+        today_between = display_today_between('time_create')
+        date_start = today_between['start']
         
         # sql = 'select {keys} from {table} where time_create between %s and %s'.format(
         #     keys='status, amount, earn_system, poundage, time_create', table=table)
@@ -198,9 +200,9 @@ class getCountOneW(BaseHandler):
                     COALESCE(SUM(CASE WHEN status >= 3 and earn_system IS NOT NULL THEN earn_system ELSE 0 END), 0) AS order_earn_system,
                     COALESCE(SUM(CASE WHEN status >= 3 and poundage IS NOT NULL THEN poundage ELSE 0 END), 0)   AS order_poundage
                     from {table} {option} between %s and %s """.format(table = table,option = option)
-            value = [date_start,date_start + datetime.timedelta(days=1)]
+            value = [date_start, today_between['end']]
             data  = await self.query(sql, *value)
-            date_end = datetime.datetime.combine(datetime.datetime.today().date(), datetime.time())
+            date_end = display_today_between('time_create')['start']
             await self.redis.set(key,json.dumps(data[0],cls=RewriteJsonEncoder),ex=((8-(date_end-date_start).days)*24*60*60))
             return data[0]
 

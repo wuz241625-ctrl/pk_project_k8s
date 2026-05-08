@@ -6,6 +6,7 @@ import tornado
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 
 
 class getSysRecord(BaseHandler):
@@ -38,7 +39,7 @@ class getBalanceRecord(BaseHandler):
             return await self.json_response(data=msg[10007])
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
         if (not condition or not condition['code']) and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         keys = ['code', 'admin_id', 'user_type', 'user_id', 'change_before', 'amount', 'change_after', 'time_create',
                 'remark', 'record_type', 'merchant_code']
         # 如果是推广账号，则过滤出推广账号下的码商订单

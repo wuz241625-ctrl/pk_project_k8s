@@ -17,6 +17,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 import hashlib
 import requests
 import math
@@ -28,10 +29,7 @@ query_ospay_order, query_ospay_upi_order, query_TataPay_order, query_789pay_upi_
 
 
 def build_order_ds_default_time_create_between(now=None):
-    current = now or datetime.now()
-    day = current.date()
-    day_end = datetime.combine(day, datetime.max.time()).replace(microsecond=0)
-    return {'key': 'time_create', 'start': day, 'end': day_end}
+    return display_today_between('time_create', now)
 
 
 def should_apply_order_ds_default_time_create_between(condition, between):
@@ -678,7 +676,7 @@ class getOrderDs(BaseHandler):
         # if not between:
         #     between = dict()
         #     between['key'] = 'time_create'
-        #     between['start'] = datetime.today().date()
+        #     between['start'] = display_today_between('time_create')['start']
         #     between['end'] = datetime.now()
         #     cdt += ' and {key} between %s and %s'.format(key=between['key'])
         #     value = [between['start'], between['end']]
@@ -743,10 +741,7 @@ class getDSMerchantFinishOrProcessing(BaseHandler):
             cdt += ' and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         if not between:
-            between = dict()
-            between['key'] = 'time_create'
-            between['start'] = datetime.today().date()
-            between['end'] = datetime.now()
+            between = display_today_between('time_create')
             cdt += ' and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         merchant_processing = []
@@ -968,7 +963,7 @@ class getOrderDsCd(BaseHandler):
         # if not between:
         #     between = dict()
         #     between['key'] = 'time_create'
-        #     between['start'] = datetime.today().date()
+        #     between['start'] = display_today_between('time_create')['start']
         #     between['end'] = datetime.now()
         #     cdt += 'and {key} between %s and %s'.format(key=between['key'])
         #     value = [between['start'], between['end']]
@@ -999,10 +994,7 @@ class getDSCDProcessing(BaseHandler):
             cdt += 'and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         if not between:
-            between = dict()
-            between['key'] = 'time_create'
-            between['start'] = datetime.today().date()
-            between['end'] = datetime.now()
+            between = display_today_between('time_create')
             cdt += 'and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         sql_p = """
@@ -1887,7 +1879,7 @@ class getOrderDf(BaseHandler):
             condition, between = await self.split_between_condition(condition, 'time_updated')
 
         if not condition or not condition.get('code') and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         keys_count = ['amount', 'status','realpay','earn_merchant','earn_partner_self','earn_system','otherpay_id','otherpay','debit_account', 'utr', 'is_split', 'parent_id']
         sql_part = ' where 1 = 1 '
         sql_part_ot = ''
@@ -2184,7 +2176,7 @@ class getOrderDf(BaseHandler):
         # if not between:
         #     between = dict()
         #     between['key'] = 'time_create'
-        #     between['start'] = datetime.today().date()
+        #     between['start'] = display_today_between('time_create')['start']
         #     between['end'] = datetime.now()
         #     cdt += 'and {key} between %s and %s'.format(key=between['key'])
         #     value = [between['start'], between['end']]
@@ -2289,10 +2281,7 @@ class getDFMerchantFinishOrProcessing(BaseHandler):
             cdt += 'and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         if not between:
-            between = dict()
-            between['key'] = 'time_create'
-            between['start'] = datetime.today().date()
-            between['end'] = datetime.now()
+            between = display_today_between('time_create')
             cdt += 'and {key} between %s and %s'.format(key=between['key'])
             value = [between['start'], between['end']]
         merchant_processing = []

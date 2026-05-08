@@ -39,6 +39,18 @@ class AdminTimezonePolicyTests(unittest.TestCase):
             "2026-05-04 22:30:00",
         )
 
+    def test_display_today_between_uses_pakistan_day_as_utc_query_range(self):
+        timezone_policy = importlib.import_module("application.timezone")
+
+        result = timezone_policy.display_today_between(
+            "time_create",
+            datetime(2026, 5, 4, 20, 30, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["key"], "time_create")
+        self.assertEqual(result["start"], datetime(2026, 5, 4, 19, 0, 0))
+        self.assertEqual(result["end"], datetime(2026, 5, 5, 18, 59, 59))
+
 
 if __name__ == "__main__":
     unittest.main()

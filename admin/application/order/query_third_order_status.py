@@ -6,6 +6,7 @@ from datetime import datetime
 
 import pytz
 import requests
+from application.timezone import display_now
 from requests.adapters import HTTPAdapter
 from urllib3 import Retry
 from decimal import Decimal, InvalidOperation
@@ -998,7 +999,7 @@ async def query_gamepayer_order(self, mer_id, code, access_key, mc_key2, query_u
         data_post = dict()
         data_post['merchant_id'] = mer_id
         data_post['merchant_orderid'] = code
-        data_post['datetime'] = datetime.now(pytz.timezone('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
+        data_post['datetime'] = display_now().strftime('%Y-%m-%d %H:%M:%S')
 
         # 计算验证签名
         query_str = f'{"&".join(f"{key}={value}" for key, value in dict(sorted(data_post.items(), key=lambda item: item[0])).items())}{access_key}'

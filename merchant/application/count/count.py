@@ -5,6 +5,7 @@ import tornado
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 
 
 # 统计
@@ -78,7 +79,7 @@ class getBalanceRecord(BaseHandler):
             return await self.json_response(data=msg[10007])
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
         if (not condition or not condition.get('code')) and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         condition['user_type'] = 1
         condition['user_id'] = self.current_user['id']
         # flag 需要特殊处理的标记标记  例如  code not like '%_%'

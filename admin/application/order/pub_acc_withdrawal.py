@@ -2,6 +2,7 @@ from application.base import BaseHandler
 import tornado
 import json
 from application.message import msg
+from application.timezone import display_today_between
 import pandas as pd
 import re
 from datetime import datetime
@@ -386,7 +387,7 @@ class getBankWithdrawal(BaseHandler):
         condition, between = await self.split_between_condition(data['serchData'], 'time_create')
 
         if not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
 
         data_r, total ,amount_list= await self.get_result('bank_withdrawal', ['*'], ['amount'], condition, between, data['size'],data['page'])
         accountSum = 0

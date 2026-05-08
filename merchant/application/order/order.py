@@ -7,6 +7,7 @@ from aiomysql import DictCursor
 
 from application.base import BaseHandler
 from application.message import msg
+from application.timezone import display_today_between
 
 
 async def get_all_sub_merchants(db, merchant_id, logger):
@@ -44,7 +45,7 @@ class getOrderDs(BaseHandler):
         if not between:
             condition, between = await self.split_between_condition(condition, 'time_success')
         if should_use_default_order_range(condition, between):
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         # 查找所有下级商户的 ID
         sub_merchant_ids = await get_all_sub_merchants(self.application.db, self.current_user['id'], self.logger)
         
@@ -137,7 +138,7 @@ class getOrderDf(BaseHandler):
         if not between:
             condition, between = await self.split_between_condition(condition, 'time_success')
         if should_use_default_order_range(condition, between):
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         # condition['merchant_id'] = self.current_user['id']
         # 查找所有下级商户的 ID 
         sub_merchant_ids = await get_all_sub_merchants(self.application.db, self.current_user['id'], self.logger)
@@ -235,7 +236,7 @@ class getWithdraw(BaseHandler):
         condition, between = await self.split_between_condition(data['serchData'], 'time_accept')
         condition, between = await self.split_between_condition(condition, 'time_create')
         if (not condition or not condition.get('code')) and not between:
-            between = {'key': 'time_create', 'start': datetime.today().date(), 'end': datetime.now()}
+            between = display_today_between('time_create')
         condition['merchant_id'] = self.current_user['id']
         keys = ['code', 'amount', 'status', 'time_create', 'time_success', 'address']
         data_r, total = await self.get_result('merchant_withdraw', keys, None, condition, between, data['size'],

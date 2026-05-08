@@ -2,6 +2,7 @@ import importlib
 import os
 import sys
 import unittest
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -48,6 +49,36 @@ class TimezonePolicyTests(unittest.TestCase):
             timezone_policy.display_to_utc_naive("2026-05-04 22:30:00"),
             datetime(2026, 5, 4, 17, 30, 0),
         )
+
+    def test_display_today_between_uses_pakistan_day_as_utc_query_range(self):
+        timezone_policy = importlib.import_module("application.timezone")
+
+        result = timezone_policy.display_today_between(
+            "time_create",
+            datetime(2026, 5, 4, 20, 30, 0, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual(result["key"], "time_create")
+        self.assertEqual(result["start"], datetime(2026, 5, 4, 19, 0, 0))
+        self.assertEqual(result["end"], datetime(2026, 5, 5, 18, 59, 59))
+
+    def test_backend_code_has_no_shanghai_timezone_literal(self):
+        result = subprocess.run(
+            [
+                "rg",
+                "Asia" + "/Shanghai",
+                "api",
+                "admin",
+                "merchant",
+                "-g",
+                "*.py",
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
 
 
 if __name__ == "__main__":
