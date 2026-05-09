@@ -356,6 +356,49 @@ systemctl reload nginx
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
+## 扫码页静态资源 404 或 `$ is not defined`
+
+现象：
+
+```text
+reset.css 404
+qrcode.min.js 404
+jquery-2.1.4.min.js 404
+layer3.js 404
+Uncaught ReferenceError: $ is not defined
+```
+
+原因：
+
+- Tornado `static_url()` 默认生成 `/static/...`。
+- D7pay 的 `api.d7pay.net` 如果只配置 `location /api/`，`/static/...` 不会进入 API 服务。
+- API 镜像还必须包含模板引用的 `api/static/v2/plugins/jquery/jquery-2.1.4.min.js`。
+
+处理：
+
+```nginx
+location ^~ /static/ {
+    proxy_pass http://127.0.0.1:31085/static/;
+    expires 3650d;
+    add_header Cache-Control "public, immutable";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
+
+检查：
+
+```bash
+nginx -t
+systemctl reload nginx
+curl -k -I https://api.d7pay.net/static/css/reset.css
+curl -k -I https://api.d7pay.net/static/v2/plugins/jquery/jquery-2.1.4.min.js
+```
+
+两条静态资源请求都应返回 `200`。如果 jQuery 仍是 `404`，重新发布 API 镜像，确认仓库里存在 `api/static/v2/plugins/jquery/jquery-2.1.4.min.js`。
+
 ## 回滚命令被拒绝
 
 现象：

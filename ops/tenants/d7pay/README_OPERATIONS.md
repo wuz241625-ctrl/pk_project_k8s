@@ -87,11 +87,37 @@ nginx -t
 systemctl reload nginx
 ```
 
+D7pay 的 `api` 域名必须把 `/static/` 交给 API 静态资源。当前 API 支付页使用 Tornado `static_url()`，浏览器会请求 `https://api.d7pay.net/static/...`；如果 nginx 只代理 `/api/`，扫码页会出现 `reset.css`、`qrcode.min.js`、`jquery-2.1.4.min.js`、`layer3.js` 404，随后报 `$ is not defined`。
+
+推荐规则与 tc160 一致，K8s/NodePort 场景使用代理到 API NodePort：
+
+```nginx
+location ^~ /static/ {
+    proxy_pass http://127.0.0.1:31085/static/;
+    expires 3650d;
+    add_header Cache-Control "public, immutable";
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
+
+上线后验收：
+
+```bash
+curl -k -I https://api.d7pay.net/static/css/reset.css
+curl -k -I https://api.d7pay.net/static/v2/plugins/jquery/jquery-2.1.4.min.js
+```
+
+两条都应返回 `200`。
+
 ## 验收
 
 - `pk` namespace 仍在运行，`awekay.com` 仍指向原业务。
 - `pk-d7pay` namespace 存在，`api/admin/merchant/admin-h5/merchant-h5/apkdownload` rollout 成功。
 - admin、merchant、apkdownload、api 四个客户域名都能访问。
+- `https://api.d7pay.net/static/css/reset.css` 和 `https://api.d7pay.net/static/v2/plugins/jquery/jquery-2.1.4.min.js` 返回 `200`，扫码页控制台不再出现静态资源 404。
 - admin、merchant、App 展示 D7pay 品牌。
 - API、数据库、Redis、指纹目录和 APK 目录都只属于 D7pay。
 - D7pay 业务时间保持 UTC：不修改 MySQL、Redis、Pod 系统时区；`d7pay-config` 必须包含 `BUSINESS_TIMEZONE=UTC` 和 `APP_DISPLAY_TIMEZONE=Asia/Karachi`。

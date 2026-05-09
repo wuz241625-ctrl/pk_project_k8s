@@ -107,3 +107,5 @@
 - 可一键停用 D7pay 实例。
 - nginx 白名单对 admin 和 merchant 生效。
 - D7pay 客户自有的 admin、merchant、api、apkdownload 域名均解析并代理到 D7pay 专属 NodePort；`*.d7pay.example.com` 只能作为占位，不能作为正式发布域名。
+- `api.d7pay.net` 必须提供 `/static/` 到 API 静态资源的代理；`/static/css/reset.css`、`/static/js/qrcode.min.js`、`/static/js/layer3.js`、`/static/v2/plugins/jquery/jquery-2.1.4.min.js` 均返回 `200`。
+- 扫码页不应出现 `reset.css`、`qrcode.min.js`、`jquery-2.1.4.min.js`、`layer3.js` 静态资源 `404`，也不应因 jQuery 缺失出现 `$ is not defined`。

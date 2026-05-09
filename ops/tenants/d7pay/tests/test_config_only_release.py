@@ -7,8 +7,10 @@ from ops.tenants.d7pay.scripts import render_app_config
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 DEPLOY_SCRIPT = ROOT / "ops/tenants/d7pay/jenkins/deploy-d7pay.sh"
 APPLY_CONFIG_SCRIPT = ROOT / "ops/tenants/d7pay/scripts/apply-config.sh"
+RENDER_CONFIG_SCRIPT = ROOT / "ops/tenants/d7pay/scripts/render-config.sh"
 D7PAY_K8S_DIR = ROOT / "ops/tenants/d7pay/k8s"
 JENKINS_ENV_EXAMPLE = ROOT / "ops/tenants/d7pay/jenkins.env.example"
+API_STATIC_DIR = ROOT / "api/static"
 
 
 FORBIDDEN_BUILD_MARKERS = (
@@ -44,6 +46,19 @@ class D7payConfigOnlyReleaseTest(unittest.TestCase):
         self.assertIn("data-volumes.yaml", text)
         for marker in FORBIDDEN_BUILD_MARKERS:
             self.assertNotIn(marker, text)
+
+    def test_rendered_nginx_exposes_api_static_assets_like_tc160(self):
+        text = RENDER_CONFIG_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("location ^~ /static/", text)
+        self.assertIn("proxy_pass http://127.0.0.1:31085/static/;", text)
+        self.assertIn('add_header Cache-Control "public, immutable";', text)
+
+    def test_api_static_contains_legacy_jquery_referenced_by_order_templates(self):
+        jquery_path = API_STATIC_DIR / "v2/plugins/jquery/jquery-2.1.4.min.js"
+
+        self.assertTrue(jquery_path.exists())
+        self.assertIn("jQuery v2.1.4", jquery_path.read_text(encoding="utf-8", errors="ignore")[:200])
 
     def test_d7pay_config_keeps_business_time_utc_and_displays_pakistan_time(self):
         configmap = (D7PAY_K8S_DIR / "app-configmap.yaml").read_text(encoding="utf-8")
