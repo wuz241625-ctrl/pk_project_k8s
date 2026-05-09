@@ -9,6 +9,7 @@
 - `api/jobs/pakistanpay_v2.py`
   - `_credit_statement_matches_due_order()` 新增账单时间判断。
   - 只有当 `orders_ds.time_create <= statement.tradeTime <= orders_ds.time_create + 8 分钟` 时才允许预匹配成功。
+  - D7pay 运行口径中 MySQL 为 UTC，上游 EasyPaisa `tradeTime` 为巴基斯坦时间；实际比较前必须先把 `tradeTime` 按 `APP_DISPLAY_TIMEZONE` 转为 UTC。
   - 如果账单缺少可解析 `tradeTime` 或订单缺少可解析 `time_create`，不允许预匹配。
 - `api/tests/easypaisa_runtime/test_statement_order_scheduler.py`
   - 新增历史流水不回调测试。

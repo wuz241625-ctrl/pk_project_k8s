@@ -28,6 +28,14 @@ python3 -m pytest api/tests/test_decimal_amount.py api/tests/test_raast_qr.py ap
 git diff --name-status | egrep 'ops/tenants/d7pay|config.example.py|apkdownload|admin-h5|merchant-h5|k8s|jenkins' || true
 ```
 
+## EasyPaisa 账单时间口径检查
+
+MySQL 与系统时间保持 UTC。EasyPaisa 上游账单 `tradeTime` 按巴基斯坦时间解释，进入代收/代付账单窗口比较前转为 UTC。
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_payout_statement_match_is_observation_only_without_callback api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_matches_when_statement_time_is_inside_order_window api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_rejects_statement_time_after_converted_window -v
+```
+
 ## 垃圾残留检查
 
 ```bash

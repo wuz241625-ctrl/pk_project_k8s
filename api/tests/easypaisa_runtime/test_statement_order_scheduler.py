@@ -287,7 +287,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
             "code": "DF001",
             "payment_id": 533295,
             "amount": "100.00",
-            "time_accept": "2026-05-08 12:00:00",
+            "time_accept": "2026-05-08 07:00:00",
             "payment_account": "03001234567",
         }
         bank = self._bank(df_rows=[df_order])
@@ -330,7 +330,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
             "partner_id": 33056,
             "amount": "100.00",
             "utr": "3001234567",
-            "time_create": "2026-05-08 12:00:00",
+            "time_create": "2026-05-08 07:00:00",
         }
         bank = self._bank(ds_rows=[ds_order])
         bank.send = AsyncMock(return_value={"is_success": True})
@@ -365,6 +365,45 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
         self.assertEqual(sent_payload["utr"], "3001234567")
         self.assertEqual(sent_payload["amount"], "100.00")
         self.assertEqual(sent_payload["trans_id"], "EXT001")
+
+    def test_collection_credit_rejects_statement_time_after_converted_window(self):
+        ds_order = {
+            "code": "DS001",
+            "payment_id": 533295,
+            "partner_id": 33056,
+            "amount": "100.00",
+            "utr": "3001234567",
+            "time_create": "2026-05-08 07:00:00",
+        }
+        bank = self._bank(ds_rows=[ds_order])
+        bank.send = AsyncMock(return_value={"is_success": True})
+        bank.getBills = AsyncMock(return_value={
+            "is_success": True,
+            "transaction_history_list": [
+                {
+                    "orderNo": "REALUTR001",
+                    "amount": 100.0,
+                    "tradeTime": "2026-05-08 12:09:00",
+                    "appTransaction": True,
+                    "busTypeName": "Cash In",
+                    "historyDetailRspDTO": {
+                        "fromFri": "FRI:03001234567/MSISDN",
+                        "gatherNo": "AC98525348",
+                        "accountNo": "03001234567",
+                        "fee": 5,
+                        "extOrderNo": "EXT001",
+                    },
+                }
+            ],
+        })
+
+        result = asyncio.run(bank.grabstatement(
+            {"id": 533295, "partner_id": 33056, "phone": "03325009516", "account_accno": "98525348"},
+            statement_context={"df_orders": [], "ds_orders": [ds_order], "has_due": True},
+        ))
+
+        self.assertTrue(result)
+        bank.send.assert_not_awaited()
 
     def test_collection_credit_rejects_old_statement_before_order_window(self):
         ds_order = {
@@ -412,7 +451,7 @@ class EasyPaisaStatementOrderSchedulerTests(unittest.TestCase):
             "partner_id": 33056,
             "amount": "100.00",
             "utr": "3001234567",
-            "time_create": "2026-05-08 12:00:00",
+            "time_create": "2026-05-08 07:00:00",
         }
         bank = self._bank(ds_rows=[ds_order])
         bank.send = AsyncMock(return_value={"is_success": True})

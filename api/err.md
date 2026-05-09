@@ -114,3 +114,23 @@ test -z "$(git ls-files api/application/phonepe api/jobs/check_proxy.py api/jobs
 ```bash
 python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_easypaisa_redis_compat_retirement.py -q
 ```
+
+## 0.6 EasyPaisa 账单 tradeTime 与 UTC 订单时间错位
+
+现象：
+
+- MySQL 和系统时间为 UTC。
+- EasyPaisa 上游账单 `tradeTime` 为巴基斯坦时间。
+- 代收订单或代付订单实际在窗口内，但 worker 直接用无时区 datetime 比较，导致 `tradeTime` 被当成 UTC，出现误判不匹配。
+
+处理：
+
+- 数据库字段 `orders_ds.time_create`、`orders_df.time_accept` 继续按 UTC naive datetime 处理。
+- 上游 `tradeTime` 先按 `APP_DISPLAY_TIMEZONE` 解析，默认 `Asia/Karachi`，再转换为 UTC naive datetime。
+- 代收账单确认和代付账单观察共用该边界，不改 MySQL、Pod、Redis 或宿主机时区。
+
+验证：
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_payout_statement_match_is_observation_only_without_callback api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_matches_when_statement_time_is_inside_order_window api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_rejects_statement_time_after_converted_window -v
+```

@@ -28,9 +28,10 @@ parent_dir = os.path.dirname(current_dir)
 sys.path.insert(0, parent_dir)
 
 import config
+from application.timezone import display_timezone
 from jobs.common.db import DBConnection
 from jobs.easypaisa.wallet_status_service import WorkerWalletStatusService
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 # EasyPaisa 账单 worker：MySQL 订单窗口调度，Redis 不再作为钱包状态或旧队列来源。
 
@@ -526,7 +527,7 @@ class BankLogin:
         return format(value, "f")
 
     @staticmethod
-    def _parse_statement_time(value):
+    def _parse_datetime(value):
         if isinstance(value, datetime):
             return value
         if not value:
@@ -538,6 +539,33 @@ class BankLogin:
             except ValueError:
                 continue
         return None
+
+    @staticmethod
+    def _statement_display_timezone():
+        try:
+            return display_timezone()
+        except Exception:
+            return dt_timezone(timedelta(hours=5))
+
+    @classmethod
+    def _parse_statement_time(cls, value):
+        parsed = cls._parse_datetime(value)
+        if not parsed:
+            return None
+        if parsed.tzinfo is None:
+            source_tz = cls._statement_display_timezone()
+            localize = getattr(source_tz, "localize", None)
+            parsed = localize(parsed) if callable(localize) else parsed.replace(tzinfo=source_tz)
+        return parsed.astimezone(dt_timezone.utc).replace(tzinfo=None)
+
+    @classmethod
+    def _parse_database_time(cls, value):
+        parsed = cls._parse_datetime(value)
+        if not parsed:
+            return None
+        if parsed.tzinfo is None:
+            return parsed
+        return parsed.astimezone(dt_timezone.utc).replace(tzinfo=None)
 
     @staticmethod
     def _digits(value) -> str:
@@ -608,7 +636,7 @@ class BankLogin:
             or raw_trans.get("trnDate")
             or raw_trans.get("transactionTime")
         )
-        accept_time = self._parse_statement_time(order.get("time_accept"))
+        accept_time = self._parse_database_time(order.get("time_accept"))
         if not trade_time or not accept_time:
             return False
         lower_bound = accept_time - timedelta(seconds=30)
@@ -650,7 +678,7 @@ class BankLogin:
         for order in ds_orders:
             order_amount = self._to_money(order.get("amount"))
             order_utr = self._normalize_msisdn(order.get("utr"))
-            order_time = self._parse_statement_time(order.get("time_create"))
+            order_time = self._parse_database_time(order.get("time_create"))
             if not order_time:
                 continue
             if (
