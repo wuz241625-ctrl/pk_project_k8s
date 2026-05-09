@@ -41,6 +41,8 @@ PYTHONPATH=api python3 -m unittest api.tests.easypaisa_runtime.test_statement_or
 ```bash
 test -z "$(git ls-files api/application/phonepe api/jobs/check_proxy.py api/jobs/clear_redis_dsdf.py api/jobs/clear_redis_inactive_payment.py api/jobs/collect_partner_status.py api/jobs/order_push.py api/jobs/weight.py api/static/images/india_transaction/PhonePe.svg)"
 test -z "$(git ls-files api/application/lakshmi_api/services/payments/airtel_service.py api/application/lakshmi_api/services/payments/amazon_pay_service.py api/application/lakshmi_api/services/payments/freecharge_service.py api/application/lakshmi_api/services/payments/indus_pay_service.py api/application/lakshmi_api/services/payments/jio_service.py api/application/lakshmi_api/services/payments/maha_service.py api/application/lakshmi_api/services/payments/mobikwik_service.py api/application/lakshmi_api/services/payments/phonepe_service.py api/application/lakshmi_api/services/payments/ulcash_service.py)"
+PYTHONPATH=api python3 -m unittest api.tests.test_legacy_india_bank_code_retirement -v
+rg -n "async def (indusind|freecharge|mobikwik|maharastra)|导入所有银行模块|jio_bank|payment_online_ds|payment_online_df" api/application admin/application merchant/application --glob '!**/__pycache__/**' --glob '!*.md'
 ```
 
 ## 验收测试

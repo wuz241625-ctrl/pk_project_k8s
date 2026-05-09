@@ -114,6 +114,15 @@ class LegacyIndiaBankCodeRetirementTest(unittest.TestCase):
             "JIO",
         )
 
+    def test_websocket_bank_analysis_no_longer_keeps_retired_bank_parsers(self):
+        self.assert_file_not_contains(
+            "api/application/websocket/bank_analysis.py",
+            "async def indusind",
+            "async def freecharge",
+            "async def mobikwik",
+            "async def maharastra",
+        )
+
     def test_wallet_workers_do_not_keep_unreachable_indus_grab_upi_flow(self):
         for relative_path in ("api/jobs/pakistanpay_v2.py", "api/jobs/Jazzcashpay_v2.py"):
             self.assert_file_not_contains(

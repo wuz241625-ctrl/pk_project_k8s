@@ -3,8 +3,7 @@ from application.lakshmi_api.base import BaseHandler, ApiError, BearerTokenError
 from application.lakshmi_api.exceptions.api_error import NewApiError
 from application.lakshmi_api.error_handler import handle_errors
 
-# 导入所有银行模块
-# from application.app.login.banks.jio_bank import JioBank  # 文件不存在，暂时注释
+# 导入当前仍在使用的登录模块
 from application.app.login.banks.easypaisa import EasyPaisa
 from application.app.login.banks.jazzcash import JazzCash
 

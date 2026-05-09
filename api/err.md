@@ -134,3 +134,24 @@ python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_easy
 ```bash
 PYTHONPATH=api python3 -m unittest api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_payout_statement_match_is_observation_only_without_callback api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_matches_when_statement_time_is_inside_order_window api.tests.easypaisa_runtime.test_statement_order_scheduler.EasyPaisaStatementOrderSchedulerTests.test_collection_credit_rejects_statement_time_after_converted_window -v
 ```
+
+## 0.7 与 pk_project 文件对比时旧印度钱包残留回流
+
+现象：
+
+- D7pay 与 `/Users/tear/pk_project` 文件对比时，D7pay 仍保留 pk_project 已删除的旧印度钱包解析函数。
+- `api/application/websocket/bank_analysis.py` 中出现 `indusind`、`freecharge`、`mobikwik`、`maharastra`。
+- 注释里出现旧 Redis 在线集合 `payment_online_ds` / `payment_online_df`，或不存在的 `JioBank` 引用。
+
+处理：
+
+- 删除孤立旧解析函数，不恢复旧银行登录、旧 worker 或 runtime SQL。
+- 删除旧 Redis 在线集合注释，避免把 Redis 当业务态判断源。
+- 登录控制器注释只保留当前实际使用的 EasyPaisa/JazzCash。
+
+验证：
+
+```bash
+PYTHONPATH=api python3 -m unittest api.tests.test_legacy_india_bank_code_retirement -v
+rg -n "async def (indusind|freecharge|mobikwik|maharastra)|导入所有银行模块|jio_bank|payment_online_ds|payment_online_df" api/application admin/application merchant/application --glob '!**/__pycache__/**' --glob '!*.md'
+```

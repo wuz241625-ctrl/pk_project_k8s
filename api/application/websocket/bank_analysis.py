@@ -185,51 +185,6 @@ async def rbl(self, content, amount):
         return False
 
 
-# indusind银行内容解析
-async def indusind(self, content, amount):
-    data = dict()
-    try:
-        # 转入
-        if content[:3] == 'UPI' and amount > Decimal(0):
-            contents = content.split('/')
-            data['trade_type'] = 1
-            data['utr'] = contents[1]
-            data['code'] = contents[6][:5]
-        # # 转出(UPI/IMPS/Transfer)
-        # elif content[:3] == 'UPI' and amount < Decimal(0) or content[:8] == 'SentIMPS' or content[:7] == 'IB:SENT':
-        #     data['trade_type'] = 1
-        #     if 'UPI' in content:
-        #         data['utr'] = content.split('/')[2]
-        #     elif 'IMPS' in content:
-        #         contents = content.split('/')
-        #         data['utr'] = contents[0]
-        #         data['ifsc'] = contents[1][:(len(content[1]) - 4)]
-        #         data['code'] = contents[1][-4:]
-        #     else:
-        #         data['utr'] = content.split('-')[2]
-        # # 手续费
-        # elif content[:4] == 'Chrg':
-        #     data['trade_type'] = 2
-        #     contents = content.split(' ')
-        #     data['utr'] = contents[len(contents) - 1]
-        # # 退回(UPI/IMPS)
-        # elif content[:7] == 'REV-UPI' or content[:3] == 'REV':
-        #     data['trade_type'] = 3
-        #     if 'UPI' in content:
-        #         contents = content.split('/')
-        #         data['utr'] = contents[2]
-        #     else:
-        #         contents = content.split(' ')
-        #         data['utr'] = contents[3]
-        #     record = await self.get_result_by_condition('bank_record', ['code', 'ifsc'],
-        #                                                 {'trade_type': 1, 'utr': data['utr']})
-        #     data['code'] = record['code']
-        #     data['ifsc'] = record['ifsc']
-        return data
-    except Exception:
-        return False
-
-
 # sbi银行内容解析
 async def sbi(self, content, amount):
     data = dict()
@@ -408,39 +363,6 @@ async def boi(self, content, amount):
         return False
 
 
-async def freecharge(self, content, amount):
-    data = dict()
-    try:
-        # 转入
-        if amount > Decimal(0):
-            contents = content.split('/')
-            data['trade_type'] = 1
-            data['utr'] = contents[0]
-            data['code'] = contents[1][:5]
-        # 转出
-        elif amount < Decimal(0):
-            data['trade_type'] = 2
-            contents = content.split('@')
-            data['code'] = contents[0][-4:]
-            data['ifsc'] = contents[1][:12]
-            data['utr'] = contents[2]
-        return data
-    except Exception:
-        return False
-
-
-async def mobikwik(self, content, amount):
-    data = dict()
-    try:
-        # 转入
-        if amount > Decimal(0):
-            data['trade_type'] = 1
-            data['utr'] = content
-            data['code'] = ''
-        return data
-    except Exception:
-        return False
-
 async def bob(self, content, amount):
     data = dict()
     try:
@@ -583,19 +505,6 @@ async def cosmos(self, content, amount):
             data['utr'] = contents[1]
             if len(contents[2]) == 5:
                 data['code'] = contents[2]
-        return data
-    except Exception:
-        return False
-
-async def maharastra(self, content, amount):
-    data = dict()
-    try:
-        # 转入
-        if content[:3] == 'UPI' and amount > Decimal(0):
-            twelve_digit_num = re.search(r'\d{12}', content)
-            if twelve_digit_num:
-                data['utr'] = twelve_digit_num.group()
-                data['trade_type'] = 1
         return data
     except Exception:
         return False
