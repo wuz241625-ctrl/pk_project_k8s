@@ -1,4 +1,3 @@
-import json
 import sys
 import unittest
 from pathlib import Path
@@ -120,7 +119,7 @@ class JazzCashWalletStatusScanTests(unittest.TestCase):
         self.assertNotIn("AND certified = 1", sql)
         self.assertNotIn("AND manual_status = 0", sql)
 
-    def test_sync_mysql_wallet_collection_accounts_restores_hash_and_zset(self):
+    def test_sync_mysql_wallet_collection_accounts_does_not_restore_legacy_hash_and_zset(self):
         bank = self._bank(
             rows=[
                 {
@@ -136,15 +135,9 @@ class JazzCashWalletStatusScanTests(unittest.TestCase):
 
         synced = bank.sync_mysql_wallet_collection_accounts()
 
-        self.assertEqual(synced, 1)
-        raw = bank.redis.hget("hash_jazzcash", "533302")
-        login_data = json.loads(raw)
-        self.assertEqual(login_data["id"], 533302)
-        self.assertEqual(login_data["real_payment_id"], 533302)
-        self.assertEqual(login_data["status"], "grabstatement")
-        self.assertEqual(login_data["phone"], "03409297123")
-        self.assertEqual(login_data["qr_channel"], "1003")
-        self.assertEqual(bank.redis.zscore("set_jazzcash", "533302"), 0)
+        self.assertEqual(synced, 0)
+        self.assertIsNone(bank.redis.hget("hash_jazzcash", "533302"))
+        self.assertIsNone(bank.redis.zscore("set_jazzcash", "533302"))
 
     def test_update_key_removes_wallet_when_mysql_wallet_status_is_off(self):
         bank = self._bank(

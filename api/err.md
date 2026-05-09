@@ -189,3 +189,30 @@ SHOW INDEX FROM orders_ds WHERE Key_name = 'uk_orders_ds_trans_id_unique';
 SHOW INDEX FROM bank_record WHERE Key_name = 'uk_bank_record_payment_trade_trans';
 SHOW CREATE TABLE balance_record_idempotency;
 ```
+
+## 0.9 JazzCashBusiness 账单或代付状态机回退到旧逻辑
+
+现象：
+
+- `Jazzcashpay_v2.grabstatement` 不接收 `statement_context`。
+- JCB 抓到 PAY 账单后进入 `transaction_callback`，把代付账单当代收回调处理。
+- CREDIT 账单没有按本轮 MySQL 待确认代收订单的金额、付款手机号和时间窗口匹配就回调。
+- JCB 代付成功后在拆散链路里另起连接处理结算，或官方成功但 `payment.balance` 未在同一事务链路扣减。
+- 抢单失败仍调用官方转账，或未知/超时订单回到待处理池导致重复出款风险。
+
+原因：
+
+- 从旧 JazzCashBusiness worker 同步代码时，只同步了表面 worker 文件，没有同步 `/Users/tear/pk_project` 最新的账单匹配和 EasyPaisa 对齐状态机。
+- JCB 账单里的 PAY 是代付观测来源，不是代收成功依据；代收成功只能由 CREDIT 与待确认代收订单匹配触发。
+
+处理：
+
+- 以 `/Users/tear/pk_project/api/jobs/Jazzcashpay_v2.py`、`api/jobs/jazzcash/payout/account_selector.py`、`api/jobs/jazzcash/payout/order_lifecycle.py`、`api/jobs/jazzcash/payout/transfer_executor.py` 当前业务逻辑为准同步。
+- 保留 D7pay 租户配置、IP 识别、时区展示和资金幂等代码，不做全仓覆盖。
+
+验证：
+
+```bash
+PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_mysql_statement_scheduler.py api/tests/test_jazzcash_payout_state_machine.py -q
+PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_jazzcash_monitor_final_state.py api/tests/test_jazzcash_bill_worker_final_state.py -q
+```

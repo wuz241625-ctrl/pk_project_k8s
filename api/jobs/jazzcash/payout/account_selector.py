@@ -513,6 +513,53 @@ class AccountSelector:
         """从 MySQL payment.balance 获取余额最高的账号列表。"""
         return self.get_mysql_payout_candidates(min_balance=min_balance, count=count)
 
+    def check_payment_balance(self, payment_id: str, transfer_amount: Decimal) -> bool:
+        """抢单前复查 MySQL payment.balance，避免预分配后余额被并发消耗。"""
+        connection = None
+        try:
+            connection = self._get_db_connection()
+            with connection.cursor() as cur:
+                affected = cur.execute(
+                    """
+                    SELECT id
+                    FROM payment
+                    WHERE id = %s
+                      AND (bank_type = 98 OR bank_type_id = 98)
+                      AND COALESCE(balance, 0) >= %s
+                    LIMIT 1
+                    """,
+                    (payment_id, transfer_amount),
+                )
+            return affected == 1
+        except Exception as e:
+            self.logger.error(f"检查JazzCash账号{payment_id} MySQL余额失败: {e}")
+            return False
+        finally:
+            if connection:
+                try:
+                    connection.commit()
+                except Exception:
+                    pass
+
+    def deduct_account_balance_in_transaction(self, cur, payment_id: str, transfer_amount: Decimal) -> bool:
+        """在订单成功结算同一事务内扣减 payment.balance。"""
+        affected = cur.execute(
+            """
+            UPDATE payment
+            SET balance = COALESCE(balance, 0) - %s,
+                time_update = NOW()
+            WHERE id = %s
+              AND (bank_type = 98 OR bank_type_id = 98)
+              AND COALESCE(balance, 0) >= %s
+            LIMIT 1
+            """,
+            (transfer_amount, payment_id, transfer_amount),
+        )
+        self.logger.info(
+            f"JazzCash账号{payment_id} 事务内扣减MySQL余额: -{transfer_amount}, affected={affected}"
+        )
+        return affected == 1
+
 
     async def get_available_accounts(self, amount: Decimal, target_account: str = None) -> List[Dict]:
         """

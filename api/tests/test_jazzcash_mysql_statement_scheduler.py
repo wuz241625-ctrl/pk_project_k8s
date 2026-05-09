@@ -1,5 +1,7 @@
 import asyncio
+from datetime import datetime
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -77,6 +79,14 @@ class FakeRedis:
         self.kv[f"{key}:ttl"] = ttl
         return True
 
+    def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.kv:
+            return False
+        self.kv[key] = value
+        if ex is not None:
+            self.kv[f"{key}:ttl"] = ex
+        return True
+
     def setex(self, key, ttl, value):
         self.kv[key] = value
         self.kv[f"{key}:ttl"] = ttl
@@ -101,6 +111,7 @@ class JazzCashMysqlStatementSchedulerTests(unittest.TestCase):
         bank.statement_ds_window_seconds = 7 * 60
         bank.statement_df_window_seconds = 10 * 60
         bank.statement_df_probe_interval = 2 * 60
+        bank.upi_time = 5 * 60
         bank.redis = FakeRedis()
         bank.logger = MagicMock()
         bank.db_connection = FakeConnection(due_rows, payment_rows)
@@ -128,6 +139,7 @@ class JazzCashMysqlStatementSchedulerTests(unittest.TestCase):
 
         executed_sql = "\n".join(sql for sql, _ in bank.db_connection.executed)
         self.assertIn("FROM orders_ds", executed_sql)
+        self.assertIn("utr", executed_sql)
         self.assertIn("utr IS NOT NULL", executed_sql)
         self.assertIn("utr <> ''", executed_sql)
 
@@ -169,6 +181,109 @@ class JazzCashMysqlStatementSchedulerTests(unittest.TestCase):
         self.assertTrue(bank.acquire_statement_wallet_lock("533302", 60))
         self.assertFalse(bank.acquire_statement_wallet_lock("533302", 60))
         self.assertIn("statement_scan_lock:jazzcash:533302", bank.redis.kv)
+
+    def test_jazzcash_trade_time_uses_existing_naive_time_without_pkt_to_utc(self):
+        bank = self._bank()
+        mapped_trans = {
+            "txnAmount": "1.00",
+            "custRefNo": "923325009516",
+            "tradeTime": "2026-05-09T09:11:20",
+        }
+        ds_orders = [{
+            "amount": "1.00",
+            "utr": "03325009516",
+            "time_create": datetime(2026, 5, 9, 9, 10, 0),
+        }]
+
+        self.assertTrue(bank._credit_statement_matches_due_order(mapped_trans, ds_orders))
+
+    def test_jazzcash_credit_uses_due_context_and_pay_is_observation_only(self):
+        bank = self._bank()
+        bank.grabUpi = AsyncMock(return_value={"is_success": True})
+        bank.getBills = AsyncMock(return_value={
+            "is_success": True,
+            "transaction_history_list": [
+                {
+                    "TRANS_ID": "JC-CREDIT-1",
+                    "AC_FROM": "923325009516",
+                    "AC_TO": "923409297123",
+                    "AMOUNT_DEBITED": "0",
+                    "AMOUNT_CREDITED": "1.00",
+                    "FEE": "0",
+                    "DESCRIPTION": "credit",
+                    "INITIATOR_MSISDN": "923325009516",
+                    "TRX_DTTM": "2026-05-09T09:11:20",
+                    "CONTEXT_DATA": {},
+                },
+                {
+                    "TRANS_ID": "JC-PAY-1",
+                    "AC_FROM": "923409297123",
+                    "AC_TO": "923001112222",
+                    "AMOUNT_DEBITED": "1.00",
+                    "AMOUNT_CREDITED": "0",
+                    "FEE": "0",
+                    "DESCRIPTION": "pay",
+                    "INITIATOR_MSISDN": "923409297123",
+                    "TRX_DTTM": "2026-05-09T09:12:20",
+                    "CONTEXT_DATA": {"ACCOUNT_NUMBER": "03001112222"},
+                },
+            ],
+        })
+        bank.transaction_callback = AsyncMock(return_value=True)
+        login_data = {
+            "id": "533302",
+            "phone": "03409297123",
+            "partner_id": 33056,
+            "upi_time": int(time.time()),
+        }
+        statement_context = {
+            "ds_orders": [{
+                "code": "S1",
+                "payment_id": "533302",
+                "partner_id": 33056,
+                "amount": "1.00",
+                "utr": "03325009516",
+                "time_create": datetime(2026, 5, 9, 9, 10, 0),
+            }],
+            "df_orders": [{
+                "code": "D1",
+                "payment_id": "533302",
+                "partner_id": 33056,
+                "amount": "1.00",
+                "time_accept": datetime(2026, 5, 9, 9, 11, 0),
+                "payment_account": "03001112222",
+                "utr": "",
+            }],
+        }
+
+        asyncio.run(bank.grabstatement(login_data, if_first_time=False, statement_context=statement_context))
+
+        bank.transaction_callback.assert_awaited_once()
+        callback_transaction = bank.transaction_callback.await_args.args[0]
+        self.assertEqual(callback_transaction["txnType"], "CREDIT")
+        self.assertEqual(callback_transaction["extOrderNo"], "JC-CREDIT-1")
+
+    def test_transaction_callback_rejects_pay_without_debit_compatibility(self):
+        bank = self._bank()
+        bank.send = AsyncMock()
+
+        result = asyncio.run(bank.transaction_callback(
+            {
+                "txnType": "PAY",
+                "txnAmount": "1.00",
+                "custRefNo": "03001112222",
+                "txnStatus": "SUCCESS",
+                "txnNote": "pay",
+                "payeeAccountNo": "03001112222",
+                "payeeIfsc": "",
+                "fee": "0",
+                "extOrderNo": "JC-PAY-1",
+            },
+            {"id": "533302", "partner_id": 33056},
+        ))
+
+        self.assertFalse(result)
+        bank.send.assert_not_awaited()
 
     def test_source_main_scheduler_does_not_use_legacy_hash_set_queue(self):
         source = JAZZCASH_WORKER_SOURCE.read_text()

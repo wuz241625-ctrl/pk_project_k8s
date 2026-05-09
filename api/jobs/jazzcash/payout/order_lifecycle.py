@@ -89,6 +89,7 @@ class OrderLifecycle:
                 charset='utf8mb4',
                 autocommit=False
             )
+            self.mark_stale_claimed_orders_unknown(connection)
 
             with connection.cursor() as cur:
                 sql = """
@@ -204,8 +205,8 @@ class OrderLifecycle:
             # 新增代付专卡专用
             # 如果订单有指定需要用的出款账户，则从accounts中只挑选指定的专户。如果不指定则从广泛匹配号列表移除全局专卡专户登记的银行卡
             target_payment_filtered_accounts = []
-            if order_data['target_payment']:
-                target_payment_ids = self._parse_payment_id_list(order_data['target_payment'])
+            if order_data.get('target_payment'):
+                target_payment_ids = self._parse_payment_id_list(order_data.get('target_payment'))
                 target_payment_filtered_accounts = [account for account in accounts if str(account['payment_id']) in target_payment_ids]
             else:
                 dedicated_payment_ids = set(self._fetch_mysql_dedicated_payment_ids())
@@ -338,6 +339,96 @@ class OrderLifecycle:
             self.logger.error(f"风控检查异常: {e}")
             return {'passed': True, 'message': '风控检查异常，放行处理'}
 
+    def _open_connection(self):
+        return pymysql.connect(
+            host=conf['mysql_host'],
+            user=conf['mysql_user'],
+            password=conf['mysql_password'],
+            db=conf['mysql_database'],
+            charset='utf8mb4',
+            cursorclass=pymysql.cursors.DictCursor,
+            autocommit=False,
+        )
+
+    def _claim_order(self, connection, order_data: Dict, selected_account: Dict) -> Optional[Dict]:
+        """MySQL 原子抢单。抢不到就不能调用 JazzCash 官方出款。"""
+        order_code = order_data['code']
+        payment_id = selected_account['payment_id']
+        partner_id = selected_account.get('partner_id')
+        try:
+            with connection.cursor() as cur:
+                sql_claim = """
+                    UPDATE orders_df
+                    SET status = 1,
+                        time_accept = NOW(),
+                        payment_id = %s,
+                        partner_id = %s
+                    WHERE code = %s AND status = 0
+                    LIMIT 1
+                """
+                cur.execute(sql_claim, (payment_id, partner_id, order_code))
+                if cur.rowcount != 1:
+                    connection.rollback()
+                    self.logger.warning(f"订单{order_code}抢单失败，可能已被其他worker处理")
+                    return None
+
+                cur.execute("SELECT * FROM orders_df WHERE code = %s LIMIT 1", (order_code,))
+                claimed_order = cur.fetchone()
+                if not claimed_order:
+                    connection.rollback()
+                    self.logger.error(f"订单{order_code}抢单后查询失败")
+                    return None
+
+                connection.commit()
+                self.logger.info(f"订单{order_code}抢单成功: payment_id={payment_id}, partner_id={partner_id}")
+                return claimed_order
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"订单{order_code}抢单异常: {e}\n{traceback.format_exc()}")
+            return None
+
+    def _mark_payment_invalid(self, connection, payment_id: str, reason: str):
+        try:
+            with connection.cursor() as cur:
+                sql = """
+                    UPDATE payment
+                    SET wallet_status = 0,
+                        collection_status = 0,
+                        payout_status = 0
+                    WHERE id = %s
+                      AND (wallet_status <> 0 OR collection_status <> 0 OR payout_status <> 0)
+                    LIMIT 1
+                """
+                cur.execute(sql, (payment_id,))
+            self.logger.warning(f"JazzCash payment_id={payment_id} 因 {reason} 已关闭三最终态")
+        except Exception as e:
+            self.logger.error(f"关闭 JazzCash payment_id={payment_id} 三最终态失败: {e}")
+
+    def mark_stale_claimed_orders_unknown(self, connection, stale_minutes: int = 15) -> int:
+        """把长时间停在执行中的 JazzCash 订单转人工确认，避免 worker 崩溃后永久卡单。"""
+        try:
+            with connection.cursor() as cur:
+                sql = """
+                    UPDATE orders_df od
+                    JOIN payment p ON p.id = od.payment_id
+                    SET od.status = 2,
+                        od.sys_remark = %s
+                    WHERE od.status = 1
+                      AND od.time_accept IS NOT NULL
+                      AND od.time_accept < DATE_SUB(NOW(), INTERVAL %s MINUTE)
+                      AND (p.bank_type = 98 OR p.bank_type_id = 98)
+                """
+                remark = f"JazzCash执行中超过{stale_minutes}分钟，转人工确认"
+                affected = cur.execute(sql, (remark, stale_minutes))
+            connection.commit()
+            if affected:
+                self.logger.warning(f"JazzCash执行中超时订单已转人工确认: affected={affected}")
+            return affected
+        except Exception as e:
+            connection.rollback()
+            self.logger.error(f"JazzCash执行中超时巡检失败: {e}\n{traceback.format_exc()}")
+            return 0
+
     def _mark_unknown(self, connection, order_code: str, reason: str) -> Dict:
         """未知出款结果进入人工待确认，绝不回到待处理池。"""
         reason_text = str(reason)
@@ -457,7 +548,7 @@ class OrderLifecycle:
     # ========== 调度引擎 ==========
 
     async def process_payout_order(self, order_data: Dict, connection=None, selected_account: Dict = None) -> Dict:
-        """代付订单处理"""
+        """JazzCash 代付订单处理：与 EasyPaisa 保持同一抢单/执行/结算状态机。"""
         order_code = order_data['code']
         amount = Decimal(str(order_data['amount']))
 
@@ -467,6 +558,12 @@ class OrderLifecycle:
             return {'success': False, 'message': '缺少预分配账号'}
 
         account_id = selected_account['phone']
+        payment_id = selected_account['payment_id']
+        order_lock_value = None
+        account_lock = None
+        payment_id_lock_value = None
+        own_connection = False
+        claimed_order = None
 
         try:
             risk_result = await self.check_payout_risk(order_data)
@@ -476,59 +573,100 @@ class OrderLifecycle:
                     'message': f"风控拦截: {risk_result.get('message', risk_result['reason'])}"
                 }
 
-            transfer_result = await self.transfer_executor._execute_jazzcash_transfer(order_data, selected_account)
+            order_lock_value = self.account_selector.get_lock(order_code)
+            if not order_lock_value:
+                return {'success': False, 'message': f'订单{order_code}未抢到订单锁'}
 
-            if transfer_result and transfer_result.get('success'):
-                self.account_selector.record_account_usage(selected_account['payment_id'])
-                self.settlement.update_account_balance_after_transfer(
-                    payment_id=selected_account['payment_id'],
-                    transfer_amount=amount
-                )
-                self.account_selector.set_account_release_time(selected_account['payment_id'])
-                self.account_selector.release_selected_account(selected_account)
+            account_lock = await self.account_selector.acquire_account_lock(account_id, order_code)
+            if not account_lock:
+                return {'success': False, 'message': f'订单{order_code}账号{account_id}锁定失败'}
 
-                return {
-                    'success': True,
-                    'message': '转账成功',
-                    'transaction_id': transfer_result.get('transaction_id'),
-                    'account_used': account_id,
-                    'payment_id': selected_account['payment_id'],
-                    'partner_id': selected_account.get('partner_id'),
-                    'payer_phone': transfer_result.get('payer_phone'),
-                    'selected_account': selected_account
-                }
+            payment_id_lock_value = self.account_selector.get_payment_id_lock(payment_id)
+            if not payment_id_lock_value:
+                return {'success': False, 'message': f'订单{order_code} payment_id={payment_id}锁定失败'}
 
-            self.account_selector.set_account_release_time(selected_account['payment_id'])
-            self.account_selector.release_selected_account(selected_account)
+            if not self.account_selector.check_account_release_time(payment_id):
+                return {'success': False, 'message': f'payment_id={payment_id}仍在释放期，跳过'}
 
-            if transfer_result is None:
+            if self.account_selector.is_account_recently_used(payment_id):
+                return {'success': False, 'message': f'payment_id={payment_id}近期已使用，跳过'}
+
+            amount_check = await self.account_selector.check_account_amount_limits(payment_id, amount)
+            if not amount_check.get('passed', True):
                 return {
                     'success': False,
-                    'unknown': True,
-                    'message': 'JazzCash API无响应或脚本异常，进入人工待确认',
-                    'payment_id': selected_account['payment_id'],
-                    'partner_id': selected_account.get('partner_id')
+                    'message': f'payment_id={payment_id}金额/日限额不通过: {amount_check}'
                 }
+
+            if hasattr(self.account_selector, 'check_payment_balance') and not self.account_selector.check_payment_balance(payment_id, amount):
+                return {'success': False, 'message': f'payment_id={payment_id}余额不足，跳过'}
+
+            if connection is None:
+                connection = self._open_connection()
+                own_connection = True
+
+            claimed_order = self._claim_order(connection, order_data, selected_account)
+            if not claimed_order:
+                return {
+                    'success': False,
+                    'claimed': False,
+                    'message': f'订单{order_code}抢单失败',
+                }
+
+            transfer_result = await self.transfer_executor._execute_jazzcash_transfer(claimed_order, selected_account)
+
+            if transfer_result and transfer_result.get('success'):
+                self.account_selector.record_account_usage(payment_id)
+                self.account_selector.set_account_release_time(payment_id)
+
+                self.settlement.qr_id = payment_id
+                with connection.cursor() as cur:
+                    balance_updated = self.account_selector.deduct_account_balance_in_transaction(
+                        cur,
+                        payment_id,
+                        amount,
+                    )
+                    if not balance_updated:
+                        connection.rollback()
+                        return self._mark_unknown(connection, order_code, '官方已返回成功，但payment.balance余额不足或扣减失败，人工核对')
+                    settled = self.settlement.handle_payout_success(connection, cur, claimed_order, transfer_result)
+                if settled:
+                    connection.commit()
+                    self.redis.publish('order_df_notify', order_code)
+                    if hasattr(self.account_selector, 'mark_order_cooldown_success'):
+                        self.account_selector.mark_order_cooldown_success(order_code)
+                    return {
+                        'success': True,
+                        'message': '转账成功',
+                        'transaction_id': transfer_result.get('transaction_id'),
+                        'account_used': account_id,
+                        'payment_id': payment_id,
+                        'partner_id': selected_account.get('partner_id'),
+                        'payer_phone': transfer_result.get('payer_phone'),
+                        'selected_account': selected_account
+                    }
+
+                connection.rollback()
+                return self._mark_unknown(connection, order_code, '官方已返回成功，payment.balance扣减与结算事务失败，人工核对')
+
+            self.account_selector.set_account_release_time(payment_id)
+
+            if transfer_result is None:
+                return self._mark_unknown(connection, order_code, 'JazzCash no response, manual review required')
 
             message = transfer_result.get('message', '')
             error_code = transfer_result.get('code')
-            if error_code == 402:
-                return {
-                    'success': False,
-                    'code': 402,
-                    'message': message,
-                    'payment_id': selected_account['payment_id'],
-                    'partner_id': selected_account.get('partner_id')
-                }
+            if transfer_result.get('account_invalid'):
+                self._mark_payment_invalid(connection, payment_id, message or '501 account invalid')
+                return self._mark_unknown(connection, order_code, f"501 account invalid: {message}")
 
-            return {
-                'success': False,
-                'unknown': True,
-                'code': error_code,
-                'message': f"JazzCash出款结果未知(code={error_code})，进入人工待确认: {message}",
-                'payment_id': selected_account['payment_id'],
-                'partner_id': selected_account.get('partner_id')
-            }
+            if transfer_result.get('reject'):
+                return self._reject_order(connection, claimed_order, selected_account, transfer_result.get('reject_reason') or message)
+
+            if error_code == 402:
+                return self._handle_402(connection, claimed_order, selected_account, message)
+
+            return self._mark_unknown(connection, order_code, f"JazzCash API code={error_code}: {message}")
 
         except asyncio.TimeoutError:
             self.logger.warning(f"订单{order_code}API超时，进入人工待确认")
@@ -546,13 +684,9 @@ class OrderLifecycle:
                 )
             except Exception as log_e:
                 self.logger.warning(f"记录超时异常日志失败: {log_e}")
-            return {
-                'success': False,
-                'unknown': True,
-                'message': 'API超时，设为待确认状态待人工核实',
-                'payment_id': selected_account['payment_id'],
-                'partner_id': selected_account.get('partner_id')
-            }
+            if connection and claimed_order:
+                return self._mark_unknown(connection, order_code, 'API超时，设为待确认状态待人工核实')
+            return {'success': False, 'unknown': True, 'message': 'API超时，未抢单或无连接'}
         except Exception as e:
             self.logger.error(f"订单{order_code}处理异常: {e}")
             try:
@@ -569,287 +703,80 @@ class OrderLifecycle:
                 )
             except Exception as log_e:
                 self.logger.warning(f"记录处理异常日志失败: {log_e}")
-            return {
-                'success': False,
-                'unknown': True,
-                'message': f'处理异常，设为待确认状态待人工核实: {str(e)}',
-                'payment_id': selected_account['payment_id'],
-                'partner_id': selected_account.get('partner_id')
-            }
+            if connection and claimed_order:
+                return self._mark_unknown(connection, order_code, f'处理异常，人工待确认: {str(e)}')
+            return {'success': False, 'unknown': True, 'message': f'处理异常: {str(e)}'}
+        finally:
+            if payment_id_lock_value:
+                self.account_selector.del_payment_id_lock(payment_id, payment_id_lock_value)
+            if account_lock:
+                self.account_selector.release_account_lock(account_id, account_lock)
+            if order_lock_value:
+                self.account_selector.del_lock(order_code, order_lock_value)
+            if hasattr(self.account_selector, 'release_selected_account'):
+                try:
+                    self.account_selector.release_selected_account(selected_account)
+                except Exception:
+                    pass
+            if own_connection and connection:
+                try:
+                    connection.close()
+                except Exception:
+                    pass
 
-    async def process_single_order_async(self, order_message: str) -> bool:
-        """异步处理单个订单 - 完整事务控制版本"""
-        order_code = None
-        order_lock_value = None
+    async def _process_single_order_via_state_machine(self, order_message: str) -> bool:
+        """订单消息入口只负责读订单和选账号，执行/抢单/结算统一交给 process_payout_order。"""
+        parts = order_message.split('_')
+        if len(parts) < 2:
+            self.logger.error(f"订单消息格式错误: {order_message}")
+            return False
+
+        order_code = parts[0]
         connection = None
-        payment_id = None  # 用于错误处理和失败记录
-        payment_id_lock_value = None  # payment_id锁
-        account_lock = None  # 账号锁
-        account_id = None  # 账号ID
-        success_result = False  # 初始化最终结果
-
         try:
-            self.logger.info(f'收到订单消息: {order_message}')
-
-            # 解析订单消息（格式：{code}_{amount}）
-            parts = order_message.split('_')
-            if len(parts) < 2:
-                self.logger.error(f"订单消息格式错误: {order_message}")
-                return False
-
-            order_code = parts[0]
-            amount = parts[1]
-
             if not is_auto_payout_enabled(conf, self.logger):
                 self.logger.warning(f"订单{order_code}处理前检测到MySQL自动代付开关关闭，停止处理")
                 return False
 
-            # 🔥 订单锁已移到 prepare_account_and_locks 中获取（有可用账号后才获取）
+            connection = self._open_connection()
+            with connection.cursor() as cur:
+                cur.execute('SELECT * FROM orders_df WHERE code = %s', (order_code,))
+                order_data = cur.fetchone()
 
-            # 1. 建立数据库连接和事务
-            connection = pymysql.connect(
-                host=conf['mysql_host'],
-                user=conf['mysql_user'],
-                password=conf['mysql_password'],
-                db=conf['mysql_database'],
-                charset='utf8mb4',
-                cursorclass=pymysql.cursors.DictCursor,
-                autocommit=False  # 关闭自动提交，手动控制事务
-            )
-
-            try:
-                with connection.cursor() as cur:
-                    # 2. 查询订单信息（在事务内）
-                    sql = 'SELECT * FROM orders_df WHERE code = %s'
-                    cur.execute(sql, order_code)
-                    order_data = cur.fetchone()
-
-                    if not order_data:
-                        self.logger.error(f'订单{order_code}不存在')
-                        return False
-
-                    # 检查订单状态
-                    if order_data['status'] != 0:
-                        self.logger.info(f'订单{order_code}已被处理，状态: {order_data["status"]}')
-                        return False
-
-                    # 注意：冷却期检查已在get_pending_orders_by_time中完成
-
-                    # 🔥 3. 准备账号并获取锁（包含：选账号→订单锁→账号锁→payment_id锁）
-                    prepare_result = await self.prepare_account_and_locks(order_data)
-
-                    if not prepare_result['success']:
-                        # ✅ 无可用账号或锁获取失败：不更新订单状态，直接返回
-                        self.logger.info(
-                            f"订单{order_code} 准备账号失败: {prepare_result['message']}，"
-                            f"不更新订单状态，等待下次轮询"
-                        )
-                        return False
-
-                    # 提取准备好的资源
-                    selected_account = prepare_result['selected_account']
-                    order_lock_value = prepare_result['order_lock_value']
-                    account_lock = prepare_result['account_lock']
-                    payment_id_lock_value = prepare_result['payment_id_lock_value']
-                    account_id = prepare_result['account_id']
-                    payment_id = prepare_result['payment_id']
-
-                    self.logger.info(
-                        f"订单{order_code} 准备完成: 账号{account_id}, payment_id={payment_id}"
-                    )
-
-                    # 4. 原子抢单：只有 status=0 才能进入处理中，同时绑定本次出款账号。
-                    partner_id = selected_account.get('partner_id')
-                    sql = """
-                        UPDATE orders_df
-                        SET status = 1,
-                            time_accept = NOW(),
-                            payment_id = %s,
-                            partner_id = %s
-                        WHERE code = %s AND status = 0
-                        LIMIT 1
-                    """
-                    cur.execute(sql, (payment_id, partner_id, order_code))
-                    affected_rows = cur.rowcount
-                    if affected_rows == 0:
-                        self.logger.warning(f'订单{order_code}状态已不是0，可能已被其他进程处理，跳过')
-                        return False
-                    connection.commit()
-                    self.logger.info(f'订单{order_code}抢单成功: status=1, payment_id={payment_id}, partner_id={partner_id}')
-
-                    # 🔥 5. 执行转账（传入已选择的账号）
-                    result = await self.process_payout_order(
-                        order_data,
-                        connection,
-                        selected_account=selected_account
-                    )
-
-                    # 6. 根据处理结果分别处理。成功态只能由 settlement 用 status=1 守卫推进到 status=3。
-                    if result.get('success', False):
-                        # 9.1 代付成功：处理余额、佣金、流水
-                        success_connection = None
-                        try:
-                            self.logger.info(f"订单{order_code}开始处理余额、佣金和流水")
-
-                            # 重新建立连接进行后续处理
-                            success_connection = pymysql.connect(
-                                host=conf['mysql_host'],
-                                user=conf['mysql_user'],
-                                password=conf['mysql_password'],
-                                db=conf['mysql_database'],
-                                charset='utf8mb4',
-                                cursorclass=pymysql.cursors.DictCursor,
-                                autocommit=False
-                            )
-
-                            try:
-                                with success_connection.cursor() as success_cur:
-                                    # 设置 qr_id 用于后续处理
-                                    self.settlement.qr_id = result.get('payment_id')
-
-                                    # 🔥 重新查询最新的订单数据（包含已更新的payment_id、partner_id、status等）
-                                    sql_refresh = 'SELECT * FROM orders_df WHERE code = %s'
-                                    success_cur.execute(sql_refresh, (order_code,))
-                                    updated_order_data = success_cur.fetchone()
-
-                                    if not updated_order_data:
-                                        self.logger.error(f"重新查询订单{order_code}失败，数据不存在")
-                                        success_result = False
-                                    else:
-                                        self.logger.info(f"✅ 重新查询订单{order_code}成功：status={updated_order_data.get('status')}, payment_id={updated_order_data.get('payment_id')}, partner_id={updated_order_data.get('partner_id')}")
-
-                                        # 调用自己的success处理逻辑（使用最新的订单数据）
-                                        if self.settlement.handle_payout_success(success_connection, success_cur, updated_order_data, result):
-                                            success_connection.commit()
-                                            self.logger.info(f"订单{order_code}success处理成功")
-                                            success_result = True
-                                        else:
-                                            success_connection.rollback()
-                                            self.logger.error(f"订单{order_code}success处理失败")
-                                            self._mark_unknown(
-                                                success_connection,
-                                                order_code,
-                                                'JazzCash success settlement failed, manual review required'
-                                            )
-                                            success_result = False
-                            finally:
-                                if success_connection:
-                                    success_connection.close()
-
-                        except Exception as e:
-                            self.logger.error(f"订单{order_code}调用success处理异常: {e}")
-                            self.logger.error(traceback.format_exc())
-                            success_result = False
-
-                    else:
-                        if 'emergency_stop' in result.get('message', '') or 'system紧急停机' in result.get('message', ''):
-                            self.logger.warning(f'⚠️ 订单{order_code}遇到紧急停机，重置为待处理状态: {result["message"]}')
-                            sql = """
-                                UPDATE orders_df
-                                SET status = 0,
-                                    time_accept = NULL,
-                                    payment_id = NULL,
-                                    partner_id = NULL
-                                WHERE code = %s AND status = 1
-                                LIMIT 1
-                            """
-                            cur.execute(sql, (order_code,))
-                            connection.commit()
-                            self.logger.info(f'订单{order_code}已重置为待处理状态(status=0)')
-                            return False
-                        elif result.get('code') == 402:
-                            handled = self._handle_402(connection, order_data, selected_account, result.get('message', '402 failed'))
-                            return bool(handled.get('success'))
-                        else:
-                            unknown_result = self._mark_unknown(
-                                connection,
-                                order_code,
-                                result.get('message', 'JazzCash出款结果未知，人工待确认')
-                            )
-                            if payment_id:
-                                self.settlement.set_payment_id_failed(
-                                    payment_id,
-                                    unknown_result.get('message', '人工待确认'),
-                                    order_data,
-                                    status=2
-                                )
-                                self.account_selector.record_payment_failure(
-                                    payment_id=payment_id,
-                                    amount=order_data['amount'],
-                                    to_account=order_data.get('payment_account', ''),
-                                    reason=unknown_result.get('message', '人工待确认'),
-                                    order_code=order_code
-                                )
-                            return False
-
-                    return success_result
-
-            except Exception as e:
-                # 任何异常都需要重置订单状态（status=1已在第4471行提交，无法回滚）
-                self.logger.error(f"订单{order_code}处理异常: {e}")
-                tb_str = traceback.format_exc()
-                self.logger.error(f"详细错误: {tb_str}")
-
-                # 将订单标记为失败状态（status=2），保留time_accept用于追踪
-                try:
-                    with connection.cursor() as cur:
-                        sql = """
-                            UPDATE orders_df
-                            SET status = 2
-                            WHERE code = %s AND status = 1
-                        """
-                        cur.execute(sql, (order_code,))
-                        connection.commit()
-                        self.logger.info(f'订单{order_code}异常后已标记为失败状态(status=2)，保留time_accept')
-                except Exception as reset_e:
-                    self.logger.error(f'订单{order_code}更新失败状态失败: {reset_e}')
-
-                # 设置payment_id失败冷却期
-                if payment_id:
-                    # 在异常情况下，order_data可能不可用，所以只传递已知信息
-                    order_info = {'code': order_code} if order_code else None
-                    self.settlement.set_payment_id_failed(
-                        payment_id,
-                        f"系统异常: {str(e)}",
-                        order_info,
-                        status=3  # 3: 系统异常
-                    )
-
-                    # 🔥 记录失败详情到统一Hash（用于重复订单检测）
-                    # 只有在order_data可用时才记录（防止异常发生在查询订单之前）
-                    if order_data:
-                        self.account_selector.record_payment_failure(
-                            payment_id=payment_id,
-                            amount=order_data['amount'],
-                            to_account=order_data.get('payment_account', ''),
-                            reason=f"系统异常: {str(e)}",
-                            order_code=order_code
-                        )
-
+            if not order_data:
+                self.logger.error(f'订单{order_code}不存在')
+                return False
+            if order_data.get('status') != 0:
+                self.logger.info(f'订单{order_code}已被处理，状态: {order_data.get("status")}')
                 return False
 
-        except Exception as e:
-            self.logger.error(f"处理订单{order_message}初始化异常: {e}")
-            tb_str = traceback.format_exc()
-            self.logger.error(f"详细错误: {tb_str}")
-            return False
+            amount = Decimal(str(order_data['amount']))
+            target_account = order_data.get('payment_account', '')
+            accounts = await self.account_selector.get_available_accounts(amount, target_account)
+            target_payment = order_data.get('target_payment')
+            if target_payment:
+                target_payment_ids = self._parse_payment_id_list(target_payment)
+                accounts = [account for account in accounts if str(account['payment_id']) in target_payment_ids]
+            else:
+                dedicated_payment_ids = set(self._fetch_mysql_dedicated_payment_ids())
+                accounts = [account for account in accounts if str(account['payment_id']) not in dedicated_payment_ids]
 
+            if not accounts:
+                self.logger.info(f"订单{order_code} 暂无可用账号，不更新订单状态，等待下轮")
+                return False
+
+            result = await self.process_payout_order(order_data, selected_account=accounts[0])
+            return bool(result and result.get('success'))
+        except Exception as e:
+            self.logger.error(f"处理订单{order_message}初始化异常: {e}\n{traceback.format_exc()}")
+            return False
         finally:
-            # 7. 释放所有锁和资源
             if connection:
                 try:
                     connection.close()
-                except:
+                except Exception:
                     pass
 
-            # 释放 payment_id 锁
-            if payment_id_lock_value and payment_id:
-                self.account_selector.del_payment_id_lock(payment_id, payment_id_lock_value)
-
-            # 释放账号锁
-            if account_lock and account_id:
-                self.account_selector.release_account_lock(account_id, account_lock)
-
-            # 释放订单锁
-            if order_lock_value and order_code:
-                self.account_selector.del_lock(order_code, order_lock_value)
+    async def process_single_order_async(self, order_message: str) -> bool:
+        """异步处理单个订单：只读单选号，执行链统一交给 process_payout_order。"""
+        return await self._process_single_order_via_state_machine(order_message)

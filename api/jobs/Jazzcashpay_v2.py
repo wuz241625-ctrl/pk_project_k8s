@@ -22,9 +22,10 @@ import traceback
 import base64
 import pymysql
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal, InvalidOperation
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from logging.handlers import TimedRotatingFileHandler
 from requests.adapters import HTTPAdapter
 
@@ -294,7 +295,7 @@ class BankLogin:
         context = {"payment_id": payment_id, "ds_orders": [], "df_orders": [], "has_due": False, "interval": 60}
         context["ds_orders"] = self._fetch_rows(
             """
-            SELECT code, payment_id, partner_id, amount, time_create
+            SELECT code, payment_id, partner_id, amount, utr, time_create
             FROM orders_ds
             WHERE payment_id = %s
               AND status IN (1, 2)
@@ -354,8 +355,7 @@ class BankLogin:
             if not code:
                 continue
             lock_key = f"payout_unknown_probe_lock:{self.name}:{code}"
-            if self.redis.setnx(lock_key, 1):
-                self.redis.expire(lock_key, self.statement_df_probe_interval)
+            if self.redis.set(lock_key, 1, nx=True, ex=max(1, int(self.statement_df_probe_interval))):
                 reserved_df_orders.append(order)
             else:
                 self.logger.info(f"JazzCash 代付未知订单 {code} 两分钟探测锁未释放，跳过本轮账单观测")
@@ -365,11 +365,127 @@ class BankLogin:
 
     def acquire_statement_wallet_lock(self, payment_id, ttl):
         lock_key = f"statement_scan_lock:{self.name}:{payment_id}"
-        if not self.redis.setnx(lock_key, 1):
+        if not self.redis.set(lock_key, 1, nx=True, ex=max(1, int(ttl))):
             self.logger.info(f"JazzCash {payment_id} 账单爬取锁未释放，跳过本轮")
             return False
-        self.redis.expire(lock_key, ttl)
         return True
+
+    @staticmethod
+    def _to_money(value) -> Optional[Decimal]:
+        try:
+            return Decimal(str(value)).quantize(Decimal("0.01"))
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _money_to_callback(value: Optional[Decimal]) -> str:
+        if value is None:
+            return "0.00"
+        return format(value, "f")
+
+    @staticmethod
+    def _digits(value) -> str:
+        return "".join(ch for ch in str(value or "") if ch.isdigit())
+
+    @classmethod
+    def _normalize_msisdn(cls, value) -> str:
+        number = cls._digits(value)
+        while number.startswith("92"):
+            number = number[2:]
+        while number.startswith("0"):
+            number = number[1:]
+        return number
+
+    @staticmethod
+    def _parse_naive_datetime(value):
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None)
+        if not value:
+            return None
+        value = str(value).strip()
+        for fmt in (
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S.%f",
+            "%d-%m-%Y %I:%M:%S %p",
+            "%d-%m-%Y %H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _parse_provider_statement_time(cls, value):
+        return cls._parse_naive_datetime(value)
+
+    @classmethod
+    def _parse_db_utc_time(cls, value):
+        return cls._parse_naive_datetime(value)
+
+    def _credit_statement_matches_due_order(self, mapped_trans, ds_orders):
+        if not ds_orders:
+            return False
+        statement_amount = self._to_money(mapped_trans.get("txnAmount"))
+        statement_utr = self._normalize_msisdn(mapped_trans.get("custRefNo"))
+        statement_time = self._parse_provider_statement_time(mapped_trans.get("tradeTime"))
+        if statement_amount is None or not statement_utr or not statement_time:
+            self.logger.info(
+                f"JazzCash CREDIT流水缺少可匹配字段，跳过: amount={mapped_trans.get('txnAmount')}, "
+                f"utr={mapped_trans.get('custRefNo')}, trade_time={mapped_trans.get('tradeTime')}"
+            )
+            return False
+        for order in ds_orders:
+            order_amount = self._to_money(order.get("amount"))
+            order_utr = self._normalize_msisdn(order.get("utr"))
+            order_time = self._parse_db_utc_time(order.get("time_create"))
+            if not order_time:
+                continue
+            if (
+                order_amount == statement_amount
+                and order_utr == statement_utr
+                and order_time <= statement_time <= order_time + timedelta(minutes=8)
+            ):
+                return True
+        return False
+
+    def _payout_statement_matches_order(self, mapped_trans, order):
+        order_amount = self._to_money(order.get("amount"))
+        statement_amount = self._to_money(mapped_trans.get("txnAmount"))
+        if order_amount is None or statement_amount is None or order_amount != statement_amount:
+            return False
+        trade_time = self._parse_provider_statement_time(mapped_trans.get("tradeTime"))
+        accept_time = self._parse_db_utc_time(order.get("time_accept"))
+        if not trade_time or not accept_time:
+            return False
+        lower_bound = accept_time - timedelta(seconds=30)
+        upper_bound = accept_time + timedelta(seconds=self.statement_df_window_seconds)
+        return lower_bound <= trade_time <= upper_bound
+
+    def observe_payout_statement_matches(self, mapped_trans, login_data, df_orders):
+        if not df_orders:
+            self.logger.info(
+                f"JazzCash {login_data['id']} 发现PAY流水，但本轮没有 MySQL 代付未知订单，按观测模式跳过回调"
+            )
+            return False
+        matched = False
+        for order in df_orders:
+            if not self._payout_statement_matches_order(mapped_trans, order):
+                continue
+            matched = True
+            self.logger.info(
+                "JazzCash 代付账单观测匹配，不回调: "
+                f"payment_id={login_data['id']}, order_code={order.get('code')}, "
+                f"amount={order.get('amount')}, trade_time={mapped_trans.get('tradeTime')}, "
+                f"trans_id={mapped_trans.get('extOrderNo')}"
+            )
+        if not matched:
+            self.logger.info(
+                f"JazzCash {login_data['id']} PAY流水未匹配未知订单，不回调: "
+                f"amount={mapped_trans.get('txnAmount')}, trade_time={mapped_trans.get('tradeTime')}"
+            )
+        return matched
 
     async def process_statement_payment_id_async(self, payment_id):
         context = self.fetch_due_statement_scan_context(payment_id)
@@ -393,7 +509,7 @@ class BankLogin:
             f"JazzCash MySQL账单调度处理 payment_id={payment_id}, "
             f"ds_orders={len(context.get('ds_orders') or [])}, df_orders={len(context.get('df_orders') or [])}"
         )
-        return await self.grabstatement(account_context, if_first_time=False)
+        return await self.grabstatement(account_context, if_first_time=False, statement_context=context)
 
     async def process_statement_payment_ids_concurrent(self, payment_ids: List[str], concurrent_limit: int = 20):
         if not payment_ids:
@@ -929,10 +1045,16 @@ class BankLogin:
         return result
 
     # 爬取账单和upi
-    async def grabstatement(self, login_data, if_first_time=False):
+    async def grabstatement(self, login_data, if_first_time=False, statement_context=None):
         try:
             login_data['time'] = int(time.time())
             login_data['count'] = 1 if 'count' not in login_data else login_data['count'] + 1
+            ds_orders = (statement_context or {}).get("ds_orders", [])
+            df_orders = (statement_context or {}).get("df_orders", [])
+            self.logger.info(
+                f"JazzCash {login_data['id']} 开始爬取账单，"
+                f"代收待确认候选={len(ds_orders)}, 代付观测候选={len(df_orders)}"
+            )
 
             #  爬取upi
             if 'upi_time' not in login_data or login_data['upi_time'] + self.upi_time < int(time.time()):
@@ -1175,7 +1297,7 @@ class BankLogin:
                 mapped_trans = {
                     'txnType': txn_type,
                     # 统一使用计算后的金额
-                    'txnAmount': txn_amount,
+                    'txnAmount': self._money_to_callback(self._to_money(txn_amount)),
                     # custRefNo: 出款是对方账号/手机，入款是对方手机
                     'custRefNo': cust_ref_no,
                     'txnStatus': txn_status,
@@ -1185,10 +1307,24 @@ class BankLogin:
                     'payeeIfsc': transaction.get('bankCode', ''), # 使用 bankCode 作为 IFSC/Bank Info
                     'tradeTime': transaction.get('TRX_DTTM', ''), # 交易时间
                     'extOrderNo': trx_id,
-                    'fee': float(fee), # 手续费
+                    'fee': self._money_to_callback(self._to_money(fee)), # 手续费
                 }
-                # 回调
                 self.logger.info(f"grabstatement 数据编号{counter}封装后的数据: mapped_trans {mapped_trans} 。")
+
+                if mapped_trans["txnType"] == "PAY":
+                    self.observe_payout_statement_matches(mapped_trans, login_data, df_orders)
+                    counter += 1
+                    continue
+
+                if not self._credit_statement_matches_due_order(mapped_trans, ds_orders):
+                    self.logger.info(
+                        f"JazzCash {login_data['id']} CREDIT流水未匹配 status IN (1,2) 已提交手机号订单，跳过回调: "
+                        f"amount={mapped_trans.get('txnAmount')}, payer_phone={mapped_trans.get('custRefNo')}, "
+                        f"trans_id={mapped_trans.get('extOrderNo')}, trade_time={mapped_trans.get('tradeTime')}"
+                    )
+                    counter += 1
+                    continue
+
                 await self.transaction_callback(mapped_trans, login_data)
                 counter += 1
             # 首次爬取之后设置为非首次爬取
@@ -1319,13 +1455,11 @@ class BankLogin:
 
     # 原 sync_transaction 回调账单
     async def transaction_callback(self, transaction: Dict, login_data) -> bool:
-        self.logger.info(f"{login_data['id']}, transaction_callback(), 开始回调 transaction: {transaction}")
+        self.logger.info(f"{login_data['id']}, transaction_callback(), 开始回调代收 transaction: {transaction}")
         try:
-            if transaction['txnType'] not in ['CREDIT', 'PAY']:
-                self.logger.error(f"{login_data['id']}, transaction_callback() 失败,不支持的交易类型: {transaction}")
+            if transaction.get('txnType') != 'CREDIT':
+                self.logger.error(f"{login_data['id']}, transaction_callback() 失败，本入口只支持代收CREDIT: {transaction}")
                 return False
-            if transaction['txnType'] == 'PAY':
-                transaction['txnType'] = 'DEBIT'
             account = transaction.get("payeeAccountNo",'')
             ifsc = transaction.get("payeeIfsc",'')
 
@@ -1356,7 +1490,7 @@ class BankLogin:
                 self.logger.info(f"{login_data['id']}, transaction_callback 失败：{simplejson.dumps(orders_send)}")
                 return False
         except Exception as e:
-            self.logger.error(f"回调交易记录失败 {transaction['approvalRefNum']}: {str(e)}")
+            self.logger.error(f"回调交易记录失败 {transaction.get('extOrderNo', 'N/A')}: {str(e)}")
             return False
 
     # 添加多进程分片和并发处理方法

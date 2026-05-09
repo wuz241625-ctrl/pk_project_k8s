@@ -41,6 +41,20 @@ python3 -m py_compile api/application/balance_idempotency.py admin/application/b
 PYTHONPATH=api python3 -m pytest api/tests/test_fund_integrity_contract.py -q
 ```
 
+## JazzCashBusiness 账单与代付状态机检查
+
+D7pay 的 JazzCashBusiness 账单扫描和代付状态机需要跟随 `/Users/tear/pk_project` 当前业务口径：
+
+- CREDIT 账单必须匹配本轮 MySQL 待确认代收订单后才回调。
+- PAY 账单只做代付未知订单观测，不走代收回调。
+- 代付订单先抢单并绑定账号，再调用官方转账，成功后在同一链路扣减 `payment.balance` 并结算。
+- 抢单失败不能调用官方转账；未知、超时和异常进入人工待确认；首次 402 回待处理重试。
+
+```bash
+python3 -m py_compile api/jobs/Jazzcashpay_v2.py api/jobs/jazzcash/payout/account_selector.py api/jobs/jazzcash/payout/order_lifecycle.py api/jobs/jazzcash/payout/transfer_executor.py
+PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_mysql_statement_scheduler.py api/tests/test_jazzcash_payout_state_machine.py api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_jazzcash_monitor_final_state.py api/tests/test_jazzcash_bill_worker_final_state.py -q
+```
+
 ## PK 模块化业务同步检查
 
 D7pay 已同步 `/Users/tear/pk_project` 的 API pay 模块拆分、EasyPaisa/JazzCash 代付 worker 拆分和旧 HTTP 兼容层清理。同步后必须保留 D7pay 租户配置，不允许覆盖 `ops/tenants/d7pay`、K8s、Jenkins、APK 下载站和 `config.example.py`。
