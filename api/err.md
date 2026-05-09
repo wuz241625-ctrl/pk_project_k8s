@@ -155,3 +155,37 @@ PYTHONPATH=api python3 -m unittest api.tests.easypaisa_runtime.test_statement_or
 PYTHONPATH=api python3 -m unittest api.tests.test_legacy_india_bank_code_retirement -v
 rg -n "async def (indusind|freecharge|mobikwik|maharastra)|导入所有银行模块|jio_bank|payment_online_ds|payment_online_df" api/application admin/application merchant/application --glob '!**/__pycache__/**' --glob '!*.md'
 ```
+
+## 0.8 资金约束迁移被重复数据拦截
+
+现象：
+
+- 执行 `api/sql/20260509_add_fund_integrity_constraints.sql` 时，`orders_df`、`orders_ds` 或 `bank_record` 的唯一索引没有新增。
+- 迁移输出提示存在重复业务键。
+- 余额流水重复执行，导致同一业务单号多次加减余额。
+
+原因：
+
+- `orders_df` 需要以 `merchant_id + merchant_code` 保证商户代付单唯一。
+- `orders_ds` 需要以非空 `trans_id` 保证上游/系统交易号唯一。
+- `bank_record` 的 `utr` 可能是手机号或付款方引用，不适合作为唯一真相源；巴基斯坦账单流水应优先使用 `payment_id + trade_type + trans_id`。
+- `balance_record` 历史上只有流水展示意义，没有独立幂等键，所以需要新增 `balance_record_idempotency` 表拦截重复资金变更。
+
+处理：
+
+- 上线前先只读检查重复数据，确认是否需要业务清理。
+- 有重复时先按业务订单、账单源和回调来源确认保留哪一条，不允许直接删除资金流水。
+- 清理后重新执行迁移，确认唯一索引已存在。
+- 应用代码已在 API、Admin、Merchant 和代付 worker 的余额变更入口预占幂等键；如果 SQL 表未创建，会降级放行并记录日志，因此正式上线必须先跑迁移。
+
+验证：
+
+```sql
+SELECT merchant_id, merchant_code, COUNT(*) c FROM orders_df WHERE merchant_code IS NOT NULL AND merchant_code <> '' GROUP BY merchant_id, merchant_code HAVING c > 1;
+SELECT trans_id, COUNT(*) c FROM orders_ds WHERE trans_id IS NOT NULL AND trans_id <> '' GROUP BY trans_id HAVING c > 1;
+SELECT payment_id, trade_type, trans_id, COUNT(*) c FROM bank_record WHERE trans_id IS NOT NULL AND trans_id <> '' GROUP BY payment_id, trade_type, trans_id HAVING c > 1;
+SHOW INDEX FROM orders_df WHERE Key_name = 'uk_orders_df_merchant_code';
+SHOW INDEX FROM orders_ds WHERE Key_name = 'uk_orders_ds_trans_id_unique';
+SHOW INDEX FROM bank_record WHERE Key_name = 'uk_bank_record_payment_trade_trans';
+SHOW CREATE TABLE balance_record_idempotency;
+```

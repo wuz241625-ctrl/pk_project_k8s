@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Dict
 
 from config import get_config
+from application.balance_idempotency import build_balance_idempotency_key, reserve_balance_idempotency_sync
 from jobs.common.db import DBConnection
 from application.jazzcash_gateway import build_form_body
 
@@ -68,6 +69,15 @@ class Settlement:
         sql_select_orders = f"SELECT merchant_code FROM orders_df WHERE code = '{code}' UNION SELECT merchant_code FROM orders_ds WHERE code = '{code}'"
 
         try:
+            user_type = 0 if table == 'partner' else 1
+            idempotency_key = build_balance_idempotency_key(code, user_type, user_id, amount, record_type)
+            if idempotency_key and not reserve_balance_idempotency_sync(
+                cur, idempotency_key, code, user_type, user_id, amount, record_type, self.logger
+            ):
+                self.logger.info(
+                    f"余额流水幂等命中，跳过重复变更 code={code} user_type={user_type} user_id={user_id} record_type={record_type}"
+                )
+                return True
             # 步骤1: 获取变更前余额
             params_1 = (user_id,)
             self.logger.info(f"步骤1: 准备查询{table}用户{user_id}的变更前余额")
@@ -113,7 +123,6 @@ class Settlement:
             self.logger.info(f"步骤4成功: 余额检查通过")
 
             # 步骤5: 确定用户类型
-            user_type = 0 if table == 'partner' else 1
             self.logger.info(f"步骤5: 用户类型确定为 {user_type} ({'码商' if user_type == 0 else '商户'})")
 
             # 步骤6: 获取商户订单号

@@ -23,6 +23,7 @@ import traceback
 from decimal import Decimal
 from aiomysql import DictCursor
 from tornado.options import define, options
+from application.balance_idempotency import build_balance_idempotency_key, reserve_balance_idempotency
 from application.client_ip import resolve_client_ip, sanitize_request_body
 from application.message import msg
 from config import get_config
@@ -663,6 +664,13 @@ class BaseHandler(tornado.web.RequestHandler):
         sql_select_orders = """SELECT  merchant_code FROM orders_df WHERE code = '{code}' UNION SELECT merchant_code  FROM orders_ds WHERE code = '{code}'""".format(code=code)
         # sql_select_vip_one = """select vip,conditions,deposit_ratio from vip where vip=%s"""
         try:
+            user_type = 0 if table == 'partner' else 1
+            idempotency_key = build_balance_idempotency_key(code, user_type, user_id, amount, record_type)
+            if idempotency_key and not await reserve_balance_idempotency(
+                cur, idempotency_key, code, user_type, user_id, amount, record_type, self.logger
+            ):
+                self.logger.info('余额流水幂等命中，跳过重复变更 code=%s user_type=%s user_id=%s record_type=%s', code, user_type, user_id, record_type)
+                return True
             if not await cur.execute(sql_select, user_id):
                 await conn.rollback()
                 self.logger.warning(cur._last_executed)
@@ -692,7 +700,6 @@ class BaseHandler(tornado.web.RequestHandler):
             if _after < partnerBalance:
                 await conn.rollback()
                 return False
-            user_type = 0 if table == 'partner' else 1
             merchant_code = None
             if await cur.execute(sql_select_orders):
                 merchant_code = (await cur.fetchall())[0]['merchant_code']

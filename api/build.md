@@ -18,6 +18,29 @@
 PYTHONPATH=api python3 -m py_compile main.py router.py router_lakshmi.py application/jazzcash_gateway.py application/pay/pay.py application/pay/order.py application/pay/thirdPart.py application/app/login/banks/easypaisa.py application/app/login/banks/jazzcash.py jobs/pakistanpay_v2.py jobs/easypaisa/auto_payout.py jobs/easypaisa/easypaisa_monitor.py jobs/jazzcash/jazzcash_auto_payout.py jobs/jazzcash/jazzcash_monitor.py jobs/Jazzcashpay_v2.py
 ```
 
+## 资金一致性约束检查
+
+D7pay 资金链路必须先执行 SQL 约束迁移，再发布应用镜像。迁移文件：
+
+```bash
+api/sql/20260509_add_fund_integrity_constraints.sql
+```
+
+上线前只读检查重复数据；如果重复数不为 0，先清理业务脏数据，再执行迁移：
+
+```sql
+SELECT merchant_id, merchant_code, COUNT(*) c FROM orders_df WHERE merchant_code IS NOT NULL AND merchant_code <> '' GROUP BY merchant_id, merchant_code HAVING c > 1;
+SELECT trans_id, COUNT(*) c FROM orders_ds WHERE trans_id IS NOT NULL AND trans_id <> '' GROUP BY trans_id HAVING c > 1;
+SELECT payment_id, trade_type, trans_id, COUNT(*) c FROM bank_record WHERE trans_id IS NOT NULL AND trans_id <> '' GROUP BY payment_id, trade_type, trans_id HAVING c > 1;
+```
+
+代码验收：
+
+```bash
+python3 -m py_compile api/application/balance_idempotency.py admin/application/balance_idempotency.py merchant/application/balance_idempotency.py api/application/base.py admin/application/base.py merchant/application/base.py api/jobs/easypaisa/payout/settlement.py api/jobs/jazzcash/payout/settlement.py
+PYTHONPATH=api python3 -m pytest api/tests/test_fund_integrity_contract.py -q
+```
+
 ## PK 模块化业务同步检查
 
 D7pay 已同步 `/Users/tear/pk_project` 的 API pay 模块拆分、EasyPaisa/JazzCash 代付 worker 拆分和旧 HTTP 兼容层清理。同步后必须保留 D7pay 租户配置，不允许覆盖 `ops/tenants/d7pay`、K8s、Jenkins、APK 下载站和 `config.example.py`。

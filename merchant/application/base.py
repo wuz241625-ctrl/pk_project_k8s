@@ -18,6 +18,7 @@ from decimal import Decimal
 from aiomysql import DictCursor
 from tornado.options import define, options
 
+from application.balance_idempotency import build_balance_idempotency_key, reserve_balance_idempotency
 from application.client_ip import resolve_client_ip
 from application.message import msg
 
@@ -438,6 +439,13 @@ class BaseHandler(tornado.web.RequestHandler):
         sql_select = """select balance from merchant where id = %s"""
         sql_insert = """insert into balance_record (code,user_type,user_id,change_before,amount,change_after,record_type) value (%s,%s,%s,%s,%s,%s,%s)"""
         try:
+            user_type = 1
+            idempotency_key = build_balance_idempotency_key(code, user_type, self.current_user['id'], amount, record_type)
+            if idempotency_key and not await reserve_balance_idempotency(
+                cur, idempotency_key, code, user_type, self.current_user['id'], amount, record_type, self.logger
+            ):
+                self.logger.info('余额流水幂等命中，跳过重复变更 code=%s user_type=%s user_id=%s record_type=%s', code, user_type, self.current_user['id'], record_type)
+                return True
             if not await cur.execute(sql_select, self.current_user['id']):
                 await conn.rollback()
                 self.logger.warning(cur._last_executed)
@@ -457,7 +465,7 @@ class BaseHandler(tornado.web.RequestHandler):
             if _after < 0:
                 await conn.rollback()
                 return False
-            if not await cur.execute(sql_insert, (code, 1, self.current_user['id'], _before, amount, _after, record_type)):
+            if not await cur.execute(sql_insert, (code, user_type, self.current_user['id'], _before, amount, _after, record_type)):
                 await conn.rollback()
                 self.logger.warning(cur._last_executed)
                 return False
