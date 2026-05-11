@@ -30,7 +30,44 @@ chmod 600 /opt/cicd/secrets/d7pay.env
 
 `D7PAY_ENV` 不执行 shell 变量展开，不能写 `${API_DOMAIN}`；所有 URL 都要写完整值。
 
-当前线上发布只走 Jenkins。Makefile 目标只作为本地合同检查或旧兼容入口，不作为线上发布入口；不要用 Makefile 代替 Jenkins 发布 `api/admin/merchant`。
+当前线上发布只走 Jenkins 触发的宿主机脚本，脚本目录是：
+
+```text
+/opt/cicd/k8s_d7pay/sh/
+```
+
+线上真实脚本包括：
+
+- `/opt/cicd/k8s_d7pay/sh/deploy-api.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-admin.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-merchant.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-admin-h5.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-merchant-h5.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-apkdownload.sh`
+- `/opt/cicd/k8s_d7pay/sh/check_conf.sh`
+
+这些脚本会进入 `/opt/cicd/k8s_d7pay/pk_project_k8s`，执行 `git reset --hard origin/d7pay` 和 `git clean -fd`，再复制对应目录到 `/opt/cicd/k8s_d7pay/<service>/pk_dockerfile/`，构建 `10.170.0.18:30086/lib/<service>-d7pay:<timestamp>`，推送镜像，改写对应 deployment yaml 的 image，然后 `kubectl apply` 并等待 rollout。
+
+Makefile 目标只作为本地合同检查、配置渲染、配置修复和旧兼容入口，不作为线上业务发布入口；不要用 Makefile 代替 Jenkins 发布 `api/admin/merchant/admin-h5/merchant-h5/apkdownload`。
+
+## 当前 API 后台任务
+
+当前线上 API 镜像由 `/opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh` 启动，仍然是 API Web 服务加 Python jobs，不是 Go worker：
+
+- `nginx`
+- `python main.py --port=9000 --logfile=api.log`
+- `jobs/easypaisa/auto_payout.py`
+- `jobs/jazzcash/jazzcash_auto_payout.py`
+- `jobs/jazzcash/jazzcash_monitor.py`
+- `jobs/Jazzcashpay_v2.py`
+- `jobs/notify_df.py`
+- `jobs/notify.py`
+- `jobs/time_out.py`
+- `jobs/pakistanpay_v2.py`
+
+Go worker 不属于当前线上发布入口。后续如果切 Go worker，必须先单独更新 Jenkins、API start 脚本、worker deployment、数据库 schema 和回滚文档；不能只改本地 D7pay 文档或 Makefile 就认为线上已经切流。
+
+时区规则保持不变：MySQL、Redis、Pod 系统时间和业务判断都按 UTC；EasyPaisa/JazzCash 上游返回的无时区 `tradeTime/TRX_DTTM` 按巴基斯坦时间解析，应用层转换后与订单窗口匹配。
 
 ## 发布前检查配置
 
@@ -43,7 +80,7 @@ make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-D7pay 侧只负责配置检查、配置渲染、配置应用和健康检查。应用打包、镜像构建、推送和 rollout 继续走现有发布脚本，不走 D7pay Makefile。
+D7pay 侧只负责配置检查、配置渲染、配置应用和健康检查。应用打包、镜像构建、推送和 rollout 继续走线上 Jenkins 脚本，不走 D7pay Makefile。
 
 `make d7pay-render-config` 会生成：
 
@@ -74,7 +111,7 @@ make d7pay-build-app D7PAY_ENV=/opt/cicd/secrets/d7pay.env \
 git add apkdownload/public/files/android/appInfo.d7pay.json apkdownload/public/files/android/d7pay/
 git commit -m "chore: publish d7pay merchant apk"
 git push origin d7pay
-# 后续由现有发布脚本发布 apkdownload
+# 后续由 Jenkins 执行 /opt/cicd/k8s_d7pay/sh/deploy-apkdownload.sh
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 

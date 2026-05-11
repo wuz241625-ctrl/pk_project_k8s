@@ -29,16 +29,63 @@ make d7pay-apply-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 make d7pay-deploy D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 
-## 你的发布脚本负责的构建模式
+## 线上 Jenkins 发布入口
 
-现有 Dockerfile/发布脚本继续负责应用打包、镜像构建、推送和 rollout。D7pay 只规定这些构建模式：
+当前线上发布以宿主机 `/opt/cicd/k8s_d7pay/sh/` 下的 Jenkins 脚本为准，不以本仓库 Makefile 为准：
+
+- `/opt/cicd/k8s_d7pay/sh/deploy-api.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-admin.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-merchant.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-admin-h5.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-merchant-h5.sh`
+- `/opt/cicd/k8s_d7pay/sh/deploy-apkdownload.sh`
+- `/opt/cicd/k8s_d7pay/sh/check_conf.sh`
+
+业务发布脚本的固定流程是：
+
+1. 进入 `/opt/cicd/k8s_d7pay/pk_project_k8s`。
+2. `git fetch --all`。
+3. `git reset --hard origin/d7pay`。
+4. `git clean -fd`。
+5. 复制对应服务目录到 `/opt/cicd/k8s_d7pay/<service>/pk_dockerfile/`。
+6. `docker build` 为 `10.170.0.18:30086/lib/<service>-d7pay:<timestamp>`。
+7. `docker push`。
+8. `sed -i` 更新对应 K8s deployment yaml 的 image。
+9. `kubectl apply -f <deployment.yaml>`。
+10. `kubectl rollout status deployment/<deployment> -n pk-d7pay --timeout=180s`。
+
+D7pay Makefile 只能用于检查配置、渲染配置、应用公共配置、构建 Flutter APK 本地制品、健康检查和回滚辅助；不要把 `make d7pay-deploy` 当成线上发布。
+
+## 线上构建模式
+
+现有 Dockerfile/Jenkins 脚本继续负责应用打包、镜像构建、推送和 rollout。D7pay 只规定这些构建模式：
 
 - `api/admin/merchant`：镜像内运行配置必须来自 `config.example.py` + K8s `d7pay-config` / `d7pay-secret`
+- `api`：当前线上 start 脚本启动 API Web 服务和 Python jobs；Go worker 不属于当前线上发布入口。
 - `api`：JCB 业务默认 `JAZZCASH_API_VERSION=v1.6`，由 `d7pay-config` 注入；不要改回代码内硬编码旧版本。
-- `admin-h5`：使用 `pnpm run d7pay:prod`
+- `admin-h5`：线上 Dockerfile 当前使用 `pnpm d7pay:prod`
 - `merchant-h5`：使用 `pnpm run d7pay:prod`
 - `apkdownload`：使用 `pnpm run build:d7pay`，并发布 D7pay 专属 `appInfo.d7pay.json`
 - Flutter：正式包使用 `com.d7pay.merchant`、`D7pay Merchant`、`@mipmap/ic_launcher_d7pay`、`APP_API_BASE_URL=https://api.d7pay.net`
+
+当前 API 后台任务由 `/opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh` 拉起，验收命令：
+
+当前脚本应能看到：
+
+- `jobs/easypaisa/auto_payout.py`
+- `jobs/jazzcash/jazzcash_auto_payout.py`
+- `jobs/jazzcash/jazzcash_monitor.py`
+- `jobs/Jazzcashpay_v2.py`
+- `jobs/notify_df.py`
+- `jobs/notify.py`
+- `jobs/time_out.py`
+- `jobs/pakistanpay_v2.py`
+
+```bash
+kubectl -n pk-d7pay exec deploy/api-deploy -- pgrep -af 'main.py|pakistanpay_v2|Jazzcashpay_v2|auto_payout|jazzcash_auto_payout|notify_df|notify.py|time_out' || true
+```
+
+预期：能看到 `main.py` 和上述 Python jobs。不要用“没有 Python jobs”作为当前线上验收标准。
 
 ## Flutter App 发布
 
@@ -77,7 +124,7 @@ git push origin d7pay
 最后只发布下载页：
 
 ```bash
-# 由现有发布脚本发布 apkdownload
+# 由 Jenkins 执行 /opt/cicd/k8s_d7pay/sh/deploy-apkdownload.sh
 make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 ```
 

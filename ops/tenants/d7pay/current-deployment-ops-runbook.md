@@ -8,7 +8,7 @@
 ops/tenants/d7pay/README_OPERATIONS.md
 ```
 
-运维只需要按 SOP 跑下面几个命令：
+运维只需要按 SOP 跑下面几个命令做配置检查和配置修复：
 
 ```bash
 make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env
@@ -27,6 +27,51 @@ make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env
 
 运维不要从 `tenant.yaml`、`app-configmap.yaml` 或某个单独 patch 文件开始操作，因为这些文件只是发布合同的一部分，缺少当前线上状态、备份、域名、回滚和验收顺序。
 
+## 2026-05-11 当前线上发布事实源
+
+检查对象：`root@34.92.65.29:/opt/cicd/k8s_d7pay`。
+
+当前线上发布由 Jenkins 执行宿主机脚本，不由本仓库 Makefile 直接发布业务服务。事实源如下：
+
+```text
+/opt/cicd/k8s_d7pay/sh/deploy-api.sh
+/opt/cicd/k8s_d7pay/sh/deploy-admin.sh
+/opt/cicd/k8s_d7pay/sh/deploy-merchant.sh
+/opt/cicd/k8s_d7pay/sh/deploy-admin-h5.sh
+/opt/cicd/k8s_d7pay/sh/deploy-merchant-h5.sh
+/opt/cicd/k8s_d7pay/sh/deploy-apkdownload.sh
+/opt/cicd/k8s_d7pay/sh/check_conf.sh
+```
+
+这些脚本统一使用：
+
+```text
+PROJECT_DIR=/opt/cicd/k8s_d7pay/pk_project_k8s
+NAMESPACE=pk-d7pay
+REGISTRY=10.170.0.18:30086/lib
+BRANCH=origin/d7pay
+```
+
+发布时脚本会 `git reset --hard origin/d7pay` 和 `git clean -fd`，再复制对应源码到 `/opt/cicd/k8s_d7pay/<service>/pk_dockerfile/` 构建镜像，推送到 Harbor，改写对应 deployment yaml 的 image 并等待 rollout。
+
+当前 API Dockerfile 会把 `api/config.example.py` 复制为镜像内 `api/config.py`。运行时配置由 K8s env/envFrom 覆盖，D7pay 不应手工维护镜像内 `config.py`。
+
+当前 API start 脚本仍启动 Python jobs，不是 Go worker：
+
+```text
+main.py
+jobs/easypaisa/auto_payout.py
+jobs/jazzcash/jazzcash_auto_payout.py
+jobs/jazzcash/jazzcash_monitor.py
+jobs/Jazzcashpay_v2.py
+jobs/notify_df.py
+jobs/notify.py
+jobs/time_out.py
+jobs/pakistanpay_v2.py
+```
+
+因此当前验收标准是“API Web 服务和 Python jobs 正常运行”。Go worker 不属于当前线上发布入口。不要把 Go worker 文档、Makefile 或未来草稿当成当前线上发布依据；后续如果切 Go worker，必须另写切流步骤并同步 Jenkins。
+
 ## 2026-05-03 当前收口结果
 
 检查时间：2026-05-03 09:48 UTC。
@@ -38,12 +83,12 @@ D7pay 已从临时混合部署收口到独立租户合同：
 - `d7pay-config` 和 `d7pay-secret` 已存在于 `pk-d7pay`。
 - `d7pay-fingerprint-pvc` 绑定 `/data/pk-d7pay/fingerprint`，容器内挂载 `/fingerprint`。
 - `d7pay-apkdownload-pvc` 绑定 `/data/pk-d7pay/apkdownload/d7pay`。
-- D7pay NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`。
+- D7pay 早期规划 NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`；当前线上已由 `/opt/cicd/k8s_d7pay/*/k8s/*.yaml` 管理，发布前以服务器 yaml 和 `kubectl -n pk-d7pay get svc -o wide` 为准，不按旧文档硬改 NodePort。
 - 宿主机 nginx 的 `admin.d7pay.net`、`merchant.d7pay.net`、`apkdownload.d7pay.net`、`api.d7pay.net` 已指向 D7pay 专属 NodePort。
 - `app.d7pay.net` 不作为 D7pay 交付入口，不应代理到旧 `旧移动 H5`。
 - D7pay APK 当前文件名为 `d7pay_merchant_universal_v0.1.8_202605031855.apk`，内置 `API_BASE_URL=https://api.d7pay.net`，同时包含 `armeabi-v7a` 和 `arm64-v8a`，使用共享正式 release keystore 签名。
 - `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 已通过。
-- D7pay 运维脚本当前只负责配置检查/应用和健康检查；应用构建、镜像推送和 rollout 由现有发布脚本处理。
+- D7pay 运维脚本当前只负责配置检查/应用和健康检查；应用构建、镜像推送和 rollout 由 `/opt/cicd/k8s_d7pay/sh/deploy-*.sh` 处理。
 
 注意：D7pay 后端上游 EasyPaisa/JazzCash 凭据当前沿用现有可用上游配置；如果客户提供独立上游凭据，只替换 `/opt/cicd/secrets/d7pay-secret.yaml` 并 rollout `api/admin/merchant`，不要改代码或复制 pk 数据。
 

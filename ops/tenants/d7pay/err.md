@@ -1,5 +1,43 @@
 # D7pay 运维排错
 
+## 误用 Makefile 当线上发布入口
+
+现象：
+
+- 运维执行了 `make d7pay-deploy`，但线上镜像没有变化。
+- 文档写着“切 Go worker”或“Web-only API”，但 `api` Pod 里仍能看到 Python jobs。
+- Jenkins 发布后又被本地手工操作覆盖，导致 `/opt/cicd/k8s_d7pay` 下的 deployment yaml、Docker 构建目录或 `config.py` 状态混乱。
+
+原因：
+
+- 当前线上事实源是 Jenkins 执行 `/opt/cicd/k8s_d7pay/sh/deploy-*.sh`。
+- D7pay Makefile 只做配置检查、配置渲染、配置应用、健康检查和旧入口兼容，不做业务镜像构建、推送和 rollout。
+- 当前 API 线上仍由 `/opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh` 启动 Web 服务和 Python jobs；Go worker 不属于当前线上发布入口。
+
+处理：
+
+```bash
+cd /opt/cicd/k8s_d7pay/pk_project_k8s
+git fetch --all
+git reset --hard origin/d7pay
+git clean -fd
+bash ops/tenants/d7pay/scripts/apply-config.sh
+# 然后在 Jenkins 里只发布需要更新的单个服务
+```
+
+验收：
+
+```bash
+kubectl -n pk-d7pay get deploy -o wide
+kubectl -n pk-d7pay exec deploy/api-deploy -- pgrep -af 'main.py|pakistanpay_v2|Jazzcashpay_v2|auto_payout|jazzcash_auto_payout|notify_df|notify.py|time_out' || true
+```
+
+预期：
+
+- deployment 镜像 tag 来自 Jenkins 本次发布。
+- 当前版本能看到 API Web 服务和 Python jobs。
+- 如果后续要切 Go worker，必须先同步 Jenkins 脚本、API start 脚本、worker deployment、schema 和回滚文档，不能只改本地文档。
+
 ## 时区误改成巴基斯坦系统时区
 
 现象：

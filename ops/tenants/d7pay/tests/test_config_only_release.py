@@ -82,6 +82,20 @@ class D7payConfigOnlyReleaseTest(unittest.TestCase):
         for filename in forbidden_manifests:
             self.assertFalse((D7PAY_K8S_DIR / filename).exists(), filename)
 
+    def test_operations_docs_match_current_online_jenkins_release(self):
+        operations = (ROOT / "ops/tenants/d7pay/README_OPERATIONS.md").read_text(encoding="utf-8")
+        build_doc = (ROOT / "ops/tenants/d7pay/build.md").read_text(encoding="utf-8")
+        runbook = (ROOT / "ops/tenants/d7pay/current-deployment-ops-runbook.md").read_text(encoding="utf-8")
+
+        for doc in (operations, build_doc, runbook):
+            self.assertIn("/opt/cicd/k8s_d7pay/sh/deploy-api.sh", doc)
+            self.assertIn("/opt/cicd/k8s_d7pay/pk_project_k8s", doc)
+            self.assertIn("git reset --hard origin/d7pay", doc)
+            self.assertIn("Go worker 不属于当前线上发布入口", doc)
+            self.assertIn("pakistanpay_v2.py", doc)
+            self.assertIn("Jazzcashpay_v2.py", doc)
+            self.assertIn("notify_df.py", doc)
+
     def test_jenkins_env_points_to_d7pay_workspace_and_timezone_contract(self):
         text = JENKINS_ENV_EXAMPLE.read_text(encoding="utf-8")
 
