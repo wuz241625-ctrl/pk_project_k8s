@@ -88,9 +88,10 @@ d7pay-go-worker-ops        -mode=ops-scheduler
 发布边界：
 
 1. `pk-go-worker` 单独构建镜像，镜像名为 `10.170.0.18:30086/lib/pk-go-worker-d7pay:<tag>`。
-2. `api` 镜像发布前，线上启动路径仍是 Docker 构建目录里的 `start.sh`；Jenkins 只用 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖现有 `start.sh` 内容，删除 jobs 启动段。
-3. `ops/tenants/d7pay/k8s/go-worker-deployments.yaml` 必须只发布到 `pk-d7pay` namespace，并引用线上实际的 `d7pay-runtime-config`、`d7pay-runtime-secret`。
-4. 切流后，`api` Pod 内不得再启动 `pakistanpay_v2.py`、`Jazzcashpay_v2.py`、`auto_payout.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py`、`notify.py`、`notify_df.py`、`time_out.py`。
+2. 线上 `pk-go-worker` 源码路径为 `/opt/cicd/k8s_d7pay/pk-go-worker`，从 GitHub 私库 `VANS8888/pk-go-worker` 的 `d7pay` 分支拉取；GitHub token 只放在服务器 `.netrc`，不要写入 Jenkins shell 或仓库文件。
+3. `api` 镜像发布前，线上启动路径仍是 Docker 构建目录里的 `start.sh`；Jenkins 只用 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖现有 `start.sh` 内容，删除 jobs 启动段。
+4. `ops/tenants/d7pay/k8s/go-worker-deployments.yaml` 必须只发布到 `pk-d7pay` namespace，并引用线上实际的 `d7pay-runtime-config`、`d7pay-runtime-secret`。
+5. 切流后，`api` Pod 内不得再启动 `pakistanpay_v2.py`、`Jazzcashpay_v2.py`、`auto_payout.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py`、`notify.py`、`notify_df.py`、`time_out.py`。
 
 数据库前置：
 
