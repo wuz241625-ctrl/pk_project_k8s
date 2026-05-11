@@ -22,7 +22,22 @@ spec:
         - name: worker
           image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
           imagePullPolicy: IfNotPresent
-          args: ["-mode=worker"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /app/logs
+              rm -f /tmp/d7pay-worker.log.pipe
+              mkfifo /tmp/d7pay-worker.log.pipe
+              tee -a /app/logs/worker.log < /tmp/d7pay-worker.log.pipe &
+              TEE_PID=$!
+              /usr/local/bin/pk-go-worker -mode=worker > /tmp/d7pay-worker.log.pipe 2>&1 &
+              WORKER_PID=$!
+              trap 'kill -TERM "${WORKER_PID}" 2>/dev/null || true; wait "${WORKER_PID}" 2>/dev/null || true; exit 143' TERM INT
+              wait "${WORKER_PID}"
+              STATUS=$?
+              wait "${TEE_PID}" || true
+              exit "${STATUS}"
           envFrom:
             - configMapRef:
                 name: d7pay-runtime-config
@@ -48,6 +63,13 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
+          volumeMounts:
+            - name: worker-log
+              mountPath: /app/logs
+      volumes:
+        - name: worker-log
+          persistentVolumeClaim:
+            claimName: d7pay-workerlog-worker-pvc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,7 +95,22 @@ spec:
         - name: relay
           image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
           imagePullPolicy: IfNotPresent
-          args: ["-mode=relay"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /app/logs
+              rm -f /tmp/d7pay-worker.log.pipe
+              mkfifo /tmp/d7pay-worker.log.pipe
+              tee -a /app/logs/relay.log < /tmp/d7pay-worker.log.pipe &
+              TEE_PID=$!
+              /usr/local/bin/pk-go-worker -mode=relay > /tmp/d7pay-worker.log.pipe 2>&1 &
+              WORKER_PID=$!
+              trap 'kill -TERM "${WORKER_PID}" 2>/dev/null || true; wait "${WORKER_PID}" 2>/dev/null || true; exit 143' TERM INT
+              wait "${WORKER_PID}"
+              STATUS=$?
+              wait "${TEE_PID}" || true
+              exit "${STATUS}"
           envFrom:
             - configMapRef:
                 name: d7pay-runtime-config
@@ -101,6 +138,13 @@ spec:
             limits:
               cpu: 300m
               memory: 256Mi
+          volumeMounts:
+            - name: worker-log
+              mountPath: /app/logs
+      volumes:
+        - name: worker-log
+          persistentVolumeClaim:
+            claimName: d7pay-workerlog-relay-pvc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -126,7 +170,22 @@ spec:
         - name: scheduler
           image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
           imagePullPolicy: IfNotPresent
-          args: ["-mode=scheduler"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /app/logs
+              rm -f /tmp/d7pay-worker.log.pipe
+              mkfifo /tmp/d7pay-worker.log.pipe
+              tee -a /app/logs/scheduler.log < /tmp/d7pay-worker.log.pipe &
+              TEE_PID=$!
+              /usr/local/bin/pk-go-worker -mode=scheduler > /tmp/d7pay-worker.log.pipe 2>&1 &
+              WORKER_PID=$!
+              trap 'kill -TERM "${WORKER_PID}" 2>/dev/null || true; wait "${WORKER_PID}" 2>/dev/null || true; exit 143' TERM INT
+              wait "${WORKER_PID}"
+              STATUS=$?
+              wait "${TEE_PID}" || true
+              exit "${STATUS}"
           envFrom:
             - configMapRef:
                 name: d7pay-runtime-config
@@ -150,6 +209,13 @@ spec:
             limits:
               cpu: 300m
               memory: 256Mi
+          volumeMounts:
+            - name: worker-log
+              mountPath: /app/logs
+      volumes:
+        - name: worker-log
+          persistentVolumeClaim:
+            claimName: d7pay-workerlog-scheduler-pvc
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -175,7 +241,22 @@ spec:
         - name: ops-scheduler
           image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
           imagePullPolicy: IfNotPresent
-          args: ["-mode=ops-scheduler"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              mkdir -p /app/logs
+              rm -f /tmp/d7pay-worker.log.pipe
+              mkfifo /tmp/d7pay-worker.log.pipe
+              tee -a /app/logs/ops.log < /tmp/d7pay-worker.log.pipe &
+              TEE_PID=$!
+              /usr/local/bin/pk-go-worker -mode=ops-scheduler > /tmp/d7pay-worker.log.pipe 2>&1 &
+              WORKER_PID=$!
+              trap 'kill -TERM "${WORKER_PID}" 2>/dev/null || true; wait "${WORKER_PID}" 2>/dev/null || true; exit 143' TERM INT
+              wait "${WORKER_PID}"
+              STATUS=$?
+              wait "${TEE_PID}" || true
+              exit "${STATUS}"
           envFrom:
             - configMapRef:
                 name: d7pay-runtime-config
@@ -199,3 +280,10 @@ spec:
             limits:
               cpu: 300m
               memory: 256Mi
+          volumeMounts:
+            - name: worker-log
+              mountPath: /app/logs
+      volumes:
+        - name: worker-log
+          persistentVolumeClaim:
+            claimName: d7pay-workerlog-ops-pvc
