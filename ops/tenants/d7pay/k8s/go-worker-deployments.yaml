@@ -37,6 +37,8 @@ spec:
               value: pakistan_d7pay
             - name: APP_REDIS_DB
               value: "0"
+            - name: APP_REDIS_ADDR
+              value: redis:6379
             - name: QUERY_BILL_TIMEOUT_SECONDS
               value: "20"
           resources:
@@ -86,6 +88,8 @@ spec:
               value: pakistan_d7pay
             - name: APP_REDIS_DB
               value: "0"
+            - name: APP_REDIS_ADDR
+              value: redis:6379
             - name: OUTBOX_CLAIM_BATCH_SIZE
               value: "20"
             - name: OUTBOX_RELAY_INTERVAL_SECONDS
@@ -137,6 +141,8 @@ spec:
               value: pakistan_d7pay
             - name: APP_REDIS_DB
               value: "0"
+            - name: APP_REDIS_ADDR
+              value: redis:6379
           resources:
             requests:
               cpu: 50m
@@ -184,6 +190,8 @@ spec:
               value: pakistan_d7pay
             - name: APP_REDIS_DB
               value: "0"
+            - name: APP_REDIS_ADDR
+              value: redis:6379
           resources:
             requests:
               cpu: 50m
