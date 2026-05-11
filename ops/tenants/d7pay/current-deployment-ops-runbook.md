@@ -121,7 +121,7 @@ D7pay 已从临时混合部署收口到独立租户合同：
 - `d7pay-runtime-config` 和 `d7pay-runtime-secret` 已存在于 `pk-d7pay`，Go worker 直接引用这两个运行时配置对象。
 - `d7pay-fingerprint-pvc` 绑定 `/data/pk-d7pay/fingerprint`，容器内挂载 `/fingerprint`。
 - `d7pay-apkdownload-pvc` 绑定 `/data/pk-d7pay/apkdownload/d7pay`。
-- `d7pay-workerlog-*-pvc` 绑定 `/data/pk-d7pay/workerlog/{worker,relay,scheduler,ops}`，容器内挂载 `/app/logs`。
+- `d7pay-workerlog-*-pvc` 绑定 `/opt/cicd/k8s_d7pay/workerlog/{worker,relay,scheduler,ops}`，容器内挂载 `/app/logs`。
 - D7pay 早期规划 NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`；当前线上已由 `/opt/cicd/k8s_d7pay/*/k8s/*.yaml` 管理，发布前以服务器 yaml 和 `kubectl -n pk-d7pay get svc -o wide` 为准，不按旧文档硬改 NodePort。
 - 宿主机 nginx 的 `admin.d7pay.net`、`merchant.d7pay.net`、`apkdownload.d7pay.net`、`api.d7pay.net` 已指向 D7pay 专属 NodePort。
 - `app.d7pay.net` 不作为 D7pay 交付入口，不应代理到旧 `旧移动 H5`。

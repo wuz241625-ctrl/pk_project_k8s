@@ -520,8 +520,8 @@ make d7pay-rollback D7PAY_ENV=/opt/cicd/secrets/d7pay.env CONFIRM_D7PAY_ROLLBACK
 1. 在宿主机创建日志目录：
 
 ```bash
-mkdir -p /data/pk-d7pay/workerlog/{worker,relay,scheduler,ops}
-chmod 755 /data/pk-d7pay/workerlog /data/pk-d7pay/workerlog/{worker,relay,scheduler,ops}
+mkdir -p /opt/cicd/k8s_d7pay/workerlog/{worker,relay,scheduler,ops}
+chmod 755 /opt/cicd/k8s_d7pay/workerlog /opt/cicd/k8s_d7pay/workerlog/{worker,relay,scheduler,ops}
 ```
 
 2. 先应用日志 PV/PVC，再发布 worker：
@@ -536,7 +536,7 @@ kubectl apply -f /tmp/d7pay-go-worker-deployments.yaml
 ```bash
 kubectl -n pk-d7pay get pvc | grep d7pay-workerlog
 kubectl -n pk-d7pay logs deploy/d7pay-go-worker-relay --tail=20
-ls -lh /data/pk-d7pay/workerlog/*/*.log
+ls -lh /opt/cicd/k8s_d7pay/workerlog/*/*.log
 ```
 
 说明：四个 worker 组件不能共用一个 RWO PVC；必须分别使用独立 PVC，避免跨节点调度时挂载冲突。

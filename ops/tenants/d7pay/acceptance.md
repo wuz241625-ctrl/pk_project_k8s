@@ -56,7 +56,7 @@
 - 应用层展示时区使用 `APP_DISPLAY_TIMEZONE=Asia/Karachi`，上游查询参数和客户可见时间由应用层转换。
 - API 容器内指纹目录使用唯一真相源 `/fingerprint`，宿主机目录使用 `/data/pk-d7pay/fingerprint`。
 - APK 下载目录宿主机使用 `/data/pk-d7pay/apkdownload/d7pay`，容器挂载到 `/usr/share/nginx/html/files/android/d7pay`。
-- Go worker 四个组件必须有独立持久化日志目录：宿主机 `/data/pk-d7pay/workerlog/worker`、`/data/pk-d7pay/workerlog/relay`、`/data/pk-d7pay/workerlog/scheduler`、`/data/pk-d7pay/workerlog/ops`；容器内统一挂载到 `/app/logs`。
+- Go worker 四个组件必须有独立持久化日志目录：宿主机 `/opt/cicd/k8s_d7pay/workerlog/worker`、`/opt/cicd/k8s_d7pay/workerlog/relay`、`/opt/cicd/k8s_d7pay/workerlog/scheduler`、`/opt/cicd/k8s_d7pay/workerlog/ops`；容器内统一挂载到 `/app/logs`。
 - Go worker 日志必须同时满足：`kubectl logs deploy/d7pay-go-worker-*` 可查看实时 stdout；宿主机日志文件 `worker.log`、`relay.log`、`scheduler.log`、`ops.log` 有新增内容且 Pod 重启后不丢失旧文件。
 - 客户不拿 SSH、K8s、MySQL、Redis、源码仓库权限。
 

@@ -14,7 +14,7 @@ spec:
   storageClassName: manual
   volumeMode: Filesystem
   local:
-    path: /data/pk-d7pay/workerlog/worker
+    path: /opt/cicd/k8s_d7pay/workerlog/worker
   nodeAffinity:
     required:
       nodeSelectorTerms:
@@ -57,7 +57,7 @@ spec:
   storageClassName: manual
   volumeMode: Filesystem
   local:
-    path: /data/pk-d7pay/workerlog/relay
+    path: /opt/cicd/k8s_d7pay/workerlog/relay
   nodeAffinity:
     required:
       nodeSelectorTerms:
@@ -100,7 +100,7 @@ spec:
   storageClassName: manual
   volumeMode: Filesystem
   local:
-    path: /data/pk-d7pay/workerlog/scheduler
+    path: /opt/cicd/k8s_d7pay/workerlog/scheduler
   nodeAffinity:
     required:
       nodeSelectorTerms:
@@ -143,7 +143,7 @@ spec:
   storageClassName: manual
   volumeMode: Filesystem
   local:
-    path: /data/pk-d7pay/workerlog/ops
+    path: /opt/cicd/k8s_d7pay/workerlog/ops
   nodeAffinity:
     required:
       nodeSelectorTerms:
