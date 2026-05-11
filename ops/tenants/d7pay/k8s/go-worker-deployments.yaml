@@ -25,9 +25,9 @@ spec:
           args: ["-mode=worker"]
           envFrom:
             - configMapRef:
-                name: d7pay-config
+                name: d7pay-runtime-config
             - secretRef:
-                name: d7pay-secret
+                name: d7pay-runtime-secret
           env:
             - name: WORKER_ID
               value: d7pay-go-worker
@@ -74,9 +74,9 @@ spec:
           args: ["-mode=relay"]
           envFrom:
             - configMapRef:
-                name: d7pay-config
+                name: d7pay-runtime-config
             - secretRef:
-                name: d7pay-secret
+                name: d7pay-runtime-secret
           env:
             - name: WORKER_ID
               value: d7pay-go-worker-relay
@@ -125,9 +125,9 @@ spec:
           args: ["-mode=scheduler"]
           envFrom:
             - configMapRef:
-                name: d7pay-config
+                name: d7pay-runtime-config
             - secretRef:
-                name: d7pay-secret
+                name: d7pay-runtime-secret
           env:
             - name: WORKER_ID
               value: d7pay-go-worker-scheduler
@@ -172,9 +172,9 @@ spec:
           args: ["-mode=ops-scheduler"]
           envFrom:
             - configMapRef:
-                name: d7pay-config
+                name: d7pay-runtime-config
             - secretRef:
-                name: d7pay-secret
+                name: d7pay-runtime-secret
           env:
             - name: WORKER_ID
               value: d7pay-go-worker-ops

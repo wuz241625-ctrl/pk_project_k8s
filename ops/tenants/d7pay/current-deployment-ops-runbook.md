@@ -89,7 +89,7 @@ d7pay-go-worker-ops        -mode=ops-scheduler
 
 1. `pk-go-worker` 单独构建镜像，镜像名为 `10.170.0.18:30086/lib/pk-go-worker-d7pay:<tag>`。
 2. `api` 镜像发布前，线上启动路径仍是 Docker 构建目录里的 `start.sh`；Jenkins 只用 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖现有 `start.sh` 内容，删除 jobs 启动段。
-3. `ops/tenants/d7pay/k8s/go-worker-deployments.yaml` 必须只发布到 `pk-d7pay` namespace，并引用 `d7pay-config`、`d7pay-secret`。
+3. `ops/tenants/d7pay/k8s/go-worker-deployments.yaml` 必须只发布到 `pk-d7pay` namespace，并引用线上实际的 `d7pay-runtime-config`、`d7pay-runtime-secret`。
 4. 切流后，`api` Pod 内不得再启动 `pakistanpay_v2.py`、`Jazzcashpay_v2.py`、`auto_payout.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py`、`notify.py`、`notify_df.py`、`time_out.py`。
 
 数据库前置：
@@ -116,7 +116,7 @@ D7pay 已从临时混合部署收口到独立租户合同：
 
 - 服务器仓库使用 `origin/d7pay`。
 - `api/admin/merchant` 容器 `RUN_ENV=PROD`，`TENANT_CODE=d7pay`，`MYSQL_DATABASE=pakistan_d7pay`，`MYSQL_USER=d7pay_app`。
-- `d7pay-config` 和 `d7pay-secret` 已存在于 `pk-d7pay`。
+- `d7pay-runtime-config` 和 `d7pay-runtime-secret` 已存在于 `pk-d7pay`，Go worker 直接引用这两个运行时配置对象。
 - `d7pay-fingerprint-pvc` 绑定 `/data/pk-d7pay/fingerprint`，容器内挂载 `/fingerprint`。
 - `d7pay-apkdownload-pvc` 绑定 `/data/pk-d7pay/apkdownload/d7pay`。
 - D7pay 早期规划 NodePort 使用 `admin-h5:31081`、`merchant-h5:31082`、`apkdownload:31080`、`api-public:31085`；当前线上已由 `/opt/cicd/k8s_d7pay/*/k8s/*.yaml` 管理，发布前以服务器 yaml 和 `kubectl -n pk-d7pay get svc -o wide` 为准，不按旧文档硬改 NodePort。
