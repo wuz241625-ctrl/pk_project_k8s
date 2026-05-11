@@ -96,6 +96,54 @@ class D7payConfigOnlyReleaseTest(unittest.TestCase):
             self.assertIn("Jazzcashpay_v2.py", doc)
             self.assertIn("notify_df.py", doc)
 
+    def test_go_worker_cutover_contract_runs_in_d7pay_namespace_and_retires_python_jobs(self):
+        manifest = (D7PAY_K8S_DIR / "go-worker-deployments.yaml").read_text(encoding="utf-8")
+        api_start = (ROOT / "ops/tenants/d7pay/runtime/api-start-web-only.sh").read_text(encoding="utf-8")
+        phase0_sql = (ROOT / "api/sql/20260510_go_worker_phase0_schema.sql").read_text(encoding="utf-8")
+
+        for name in (
+            "d7pay-go-worker",
+            "d7pay-go-worker-relay",
+            "d7pay-go-worker-scheduler",
+            "d7pay-go-worker-ops",
+        ):
+            self.assertIn(name, manifest)
+        for mode in (
+            'args: ["-mode=worker"]',
+            'args: ["-mode=relay"]',
+            'args: ["-mode=scheduler"]',
+            'args: ["-mode=ops-scheduler"]',
+        ):
+            self.assertIn(mode, manifest)
+        self.assertIn("namespace: pk-d7pay", manifest)
+        self.assertIn("name: d7pay-config", manifest)
+        self.assertIn("name: d7pay-secret", manifest)
+        self.assertIn("APP_MYSQL_DATABASE", manifest)
+        self.assertIn("pakistan_d7pay", manifest)
+        self.assertNotIn("TZ: Asia/Karachi", manifest)
+
+        self.assertIn("python main.py --port=9000", api_start)
+        for retired_job in (
+            "pakistanpay_v2.py",
+            "Jazzcashpay_v2.py",
+            "easypaisa/auto_payout.py",
+            "jazzcash/jazzcash_auto_payout.py",
+            "jazzcash/jazzcash_monitor.py",
+            "notify.py",
+            "notify_df.py",
+            "time_out.py",
+        ):
+            self.assertNotIn(retired_job, api_start)
+
+        for table in (
+            "`worker_task_outbox`",
+            "`worker_task_outbox_ref`",
+            "`worker_statement_scan_audit`",
+            "`worker_payment_balance_snapshot`",
+            "`worker_transfer_intent`",
+        ):
+            self.assertIn(table, phase0_sql)
+
     def test_jenkins_env_points_to_d7pay_workspace_and_timezone_contract(self):
         text = JENKINS_ENV_EXAMPLE.read_text(encoding="utf-8")
 

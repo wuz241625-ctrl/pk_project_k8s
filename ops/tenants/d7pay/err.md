@@ -38,6 +38,62 @@ kubectl -n pk-d7pay exec deploy/api-deploy -- pgrep -af 'main.py|pakistanpay_v2|
 - 当前版本能看到 API Web 服务和 Python jobs。
 - 如果后续要切 Go worker，必须先同步 Jenkins 脚本、API start 脚本、worker deployment、schema 和回滚文档，不能只改本地文档。
 
+## Go Worker 切流后 API 仍在跑 Python jobs
+
+现象：
+
+```bash
+kubectl -n pk-d7pay exec deploy/api-deploy -- pgrep -af 'pakistanpay_v2|Jazzcashpay_v2|auto_payout|notify_df|time_out'
+```
+
+还能看到旧 Python jobs。
+
+原因：
+
+- Jenkins 发布 API 时没有用 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖 `/opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh` 的内容，旧 jobs 启动段仍存在。
+- 或者 API 镜像已经替换，但 deployment 没有 rollout 到新镜像。
+
+处理：
+
+```bash
+cd /opt/cicd/k8s_d7pay/pk_project_k8s
+cp ops/tenants/d7pay/runtime/api-start-web-only.sh /opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh
+chmod +x /opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh
+# 然后只重新跑 Jenkins 的 api-d7pay 发布
+```
+
+验收：
+
+```bash
+kubectl -n pk-d7pay rollout status deploy/api-deploy --timeout=180s
+kubectl -n pk-d7pay exec deploy/api-deploy -- pgrep -af 'pakistanpay_v2|Jazzcashpay_v2|auto_payout|jazzcash_auto_payout|jazzcash_monitor|notify_df|notify.py|time_out' && exit 1 || true
+```
+
+预期：API 只保留 `main.py` Web 服务，Python jobs 全部退役。
+
+## Go Worker tradeTime 被当成 UTC 导致匹配不到订单
+
+现象：
+
+- 上游账单存在，订单窗口也正确，但 Go worker 写入 `worker_statement_scan_audit.result=not_matched`。
+- 订单时间是 UTC，账单 `tradeTime/TRX_DTTM` 是巴基斯坦本地时间。
+
+原因：
+
+- 上游无时区时间直接当 UTC 比较，导致差 5 小时。
+
+处理：
+
+- Go worker 中无时区 `tradeTime/TRX_DTTM` 必须按 `Asia/Karachi` 解析，再转 UTC。
+- MySQL、Redis、Pod 系统时区仍保持 UTC，不能通过改系统时区掩盖问题。
+
+验收：
+
+```bash
+cd /Users/tear/pk-go-worker
+go test ./internal/collect -run TestParseStatementTimeTreatsNaiveTradeTimeAsPakistanAndReturnsUTC -v
+```
+
 ## 时区误改成巴基斯坦系统时区
 
 现象：

@@ -1,0 +1,193 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d7pay-go-worker
+  namespace: pk-d7pay
+  labels:
+    app: d7pay-go-worker
+    tenant: d7pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: d7pay-go-worker
+      tenant: d7pay
+  template:
+    metadata:
+      labels:
+        app: d7pay-go-worker
+        tenant: d7pay
+    spec:
+      containers:
+        - name: worker
+          image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
+          imagePullPolicy: IfNotPresent
+          args: ["-mode=worker"]
+          envFrom:
+            - configMapRef:
+                name: d7pay-config
+            - secretRef:
+                name: d7pay-secret
+          env:
+            - name: WORKER_ID
+              value: d7pay-go-worker
+            - name: ASYNQ_QUEUE
+              value: default
+            - name: APP_MYSQL_DATABASE
+              value: pakistan_d7pay
+            - name: APP_REDIS_DB
+              value: "0"
+            - name: QUERY_BILL_TIMEOUT_SECONDS
+              value: "20"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d7pay-go-worker-relay
+  namespace: pk-d7pay
+  labels:
+    app: d7pay-go-worker-relay
+    tenant: d7pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: d7pay-go-worker-relay
+      tenant: d7pay
+  template:
+    metadata:
+      labels:
+        app: d7pay-go-worker-relay
+        tenant: d7pay
+    spec:
+      containers:
+        - name: relay
+          image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
+          imagePullPolicy: IfNotPresent
+          args: ["-mode=relay"]
+          envFrom:
+            - configMapRef:
+                name: d7pay-config
+            - secretRef:
+                name: d7pay-secret
+          env:
+            - name: WORKER_ID
+              value: d7pay-go-worker-relay
+            - name: ASYNQ_QUEUE
+              value: default
+            - name: APP_MYSQL_DATABASE
+              value: pakistan_d7pay
+            - name: APP_REDIS_DB
+              value: "0"
+            - name: OUTBOX_CLAIM_BATCH_SIZE
+              value: "20"
+            - name: OUTBOX_RELAY_INTERVAL_SECONDS
+              value: "5"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d7pay-go-worker-scheduler
+  namespace: pk-d7pay
+  labels:
+    app: d7pay-go-worker-scheduler
+    tenant: d7pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: d7pay-go-worker-scheduler
+      tenant: d7pay
+  template:
+    metadata:
+      labels:
+        app: d7pay-go-worker-scheduler
+        tenant: d7pay
+    spec:
+      containers:
+        - name: scheduler
+          image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
+          imagePullPolicy: IfNotPresent
+          args: ["-mode=scheduler"]
+          envFrom:
+            - configMapRef:
+                name: d7pay-config
+            - secretRef:
+                name: d7pay-secret
+          env:
+            - name: WORKER_ID
+              value: d7pay-go-worker-scheduler
+            - name: ASYNQ_QUEUE
+              value: default
+            - name: APP_MYSQL_DATABASE
+              value: pakistan_d7pay
+            - name: APP_REDIS_DB
+              value: "0"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: d7pay-go-worker-ops
+  namespace: pk-d7pay
+  labels:
+    app: d7pay-go-worker-ops
+    tenant: d7pay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: d7pay-go-worker-ops
+      tenant: d7pay
+  template:
+    metadata:
+      labels:
+        app: d7pay-go-worker-ops
+        tenant: d7pay
+    spec:
+      containers:
+        - name: ops-scheduler
+          image: 10.170.0.18:30086/lib/pk-go-worker-d7pay:replace-by-jenkins
+          imagePullPolicy: IfNotPresent
+          args: ["-mode=ops-scheduler"]
+          envFrom:
+            - configMapRef:
+                name: d7pay-config
+            - secretRef:
+                name: d7pay-secret
+          env:
+            - name: WORKER_ID
+              value: d7pay-go-worker-ops
+            - name: ASYNQ_QUEUE
+              value: default
+            - name: APP_MYSQL_DATABASE
+              value: pakistan_d7pay
+            - name: APP_REDIS_DB
+              value: "0"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi

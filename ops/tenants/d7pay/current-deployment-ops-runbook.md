@@ -72,6 +72,42 @@ jobs/pakistanpay_v2.py
 
 因此当前验收标准是“API Web 服务和 Python jobs 正常运行”。Go worker 不属于当前线上发布入口。不要把 Go worker 文档、Makefile 或未来草稿当成当前线上发布依据；后续如果切 Go worker，必须另写切流步骤并同步 Jenkins。
 
+## 2026-05-11 Go Worker 切流目标
+
+本次切流目标不是在 API 容器里继续追加进程，而是在 `pk-d7pay` namespace 单独部署 Go worker，并退役 API 容器内的 Python jobs。
+
+目标组件：
+
+```text
+d7pay-go-worker            -mode=worker
+d7pay-go-worker-relay      -mode=relay
+d7pay-go-worker-scheduler  -mode=scheduler
+d7pay-go-worker-ops        -mode=ops-scheduler
+```
+
+发布边界：
+
+1. `pk-go-worker` 单独构建镜像，镜像名为 `10.170.0.18:30086/lib/pk-go-worker-d7pay:<tag>`。
+2. `api` 镜像发布前，线上启动路径仍是 Docker 构建目录里的 `start.sh`；Jenkins 只用 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖现有 `start.sh` 内容，删除 jobs 启动段。
+3. `ops/tenants/d7pay/k8s/go-worker-deployments.yaml` 必须只发布到 `pk-d7pay` namespace，并引用 `d7pay-config`、`d7pay-secret`。
+4. 切流后，`api` Pod 内不得再启动 `pakistanpay_v2.py`、`Jazzcashpay_v2.py`、`auto_payout.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py`、`notify.py`、`notify_df.py`、`time_out.py`。
+
+数据库前置：
+
+```bash
+kubectl -n pk-d7pay exec -i mysql-0 -- sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -D pakistan_d7pay' \
+  < api/sql/20260510_go_worker_phase0_schema.sql
+kubectl -n pk-d7pay exec -i mysql-0 -- sh -lc 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -D pakistan_d7pay' \
+  < api/sql/20260510_go_worker_balance_changed_scan.sql
+```
+
+时间规则：
+
+- MySQL、Redis、Pod 系统时间继续保持 UTC。
+- Go worker 中上游无时区 `tradeTime/TRX_DTTM` 按 `Asia/Karachi` 解析后转 UTC。
+- RFC3339 带时区的上游时间按原时区解析后转 UTC。
+- 所有订单窗口匹配都用 UTC 和 MySQL 中的 UTC 字段比较。
+
 ## 2026-05-03 当前收口结果
 
 检查时间：2026-05-03 09:48 UTC。

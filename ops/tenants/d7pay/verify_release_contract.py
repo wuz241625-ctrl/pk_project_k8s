@@ -78,6 +78,10 @@ def main():
         "ops/tenants/d7pay/scripts/render-config.sh",
         "ops/tenants/d7pay/scripts/healthcheck.sh",
         "ops/tenants/d7pay/scripts/rollback.sh",
+        "ops/tenants/d7pay/runtime/api-start-web-only.sh",
+        "ops/tenants/d7pay/k8s/go-worker-deployments.yaml",
+        "api/sql/20260510_go_worker_phase0_schema.sql",
+        "api/sql/20260510_go_worker_balance_changed_scan.sql",
         "ops/tenants/d7pay/tests/test_config_only_release.py",
         "api/application/timezone.py",
         "admin/application/timezone.py",
@@ -151,12 +155,16 @@ def main():
     require(jenkins, "RUN_ENV=PROD", "jenkins.env.example")
     require(jenkins, "BUSINESS_TIMEZONE=UTC", "jenkins.env.example")
     require(jenkins, "APP_DISPLAY_TIMEZONE=Asia/Karachi", "jenkins.env.example")
+    require(jenkins, "GO_WORKER_IMAGE=10.170.0.18:30086/lib/pk-go-worker-d7pay:${BUILD_NUMBER}", "jenkins.env.example")
+    require(jenkins, "GO_WORKER_REPLICAS=1", "jenkins.env.example")
+    require(jenkins, "APP_MYSQL_DATABASE=pakistan_d7pay", "jenkins.env.example")
     require(jenkins, "APP_APPLICATION_ID=com.d7pay.merchant", "jenkins.env.example")
     require(jenkins, "APP_ICON=@mipmap/ic_launcher_d7pay", "jenkins.env.example")
     require(jenkins, "APP_SIGNING_MODE=shared_release_keystore", "jenkins.env.example")
     require(jenkins, "REQUIRE_RELEASE_SIGNING=true", "jenkins.env.example")
     require(jenkins, "D7PAY_GIT_BRANCH=d7pay", "jenkins.env.example")
     require(jenkins, "D7PAY_SECRET_YAML=", "jenkins.env.example")
+    require(jenkins, "D7PAY_API_START_TEMPLATE=ops/tenants/d7pay/runtime/api-start-web-only.sh", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_NODEPORT=31085", "jenkins.env.example")
     require(jenkins, "API_PUBLIC_SCHEME=http", "jenkins.env.example")
     require(jenkins, "API_WEBSOCKET_ALLOW_HOST=api.d7pay.example.com", "jenkins.env.example")
@@ -261,6 +269,7 @@ def main():
     require(preflight_script, "build-flutter-app.sh", "preflight.sh")
     require(preflight_script, "D7PAY_SECRET_YAML", "preflight.sh")
     require(preflight_script, "replace-in-jenkins", "preflight.sh")
+    require(preflight_script, "runtime/api-start-web-only.sh", "preflight.sh")
 
     render_script = read("ops/tenants/d7pay/scripts/render-config.sh")
     require(render_script, "nginx-d7pay.conf", "render-config.sh")
@@ -329,6 +338,52 @@ def main():
     api_patch = read("ops/tenants/d7pay/k8s/api-deployment-env.patch.yaml")
     require(api_patch, "mountPath: /fingerprint", "api patch")
     require(api_patch, "claimName: d7pay-fingerprint-pvc", "api patch")
+
+    go_worker_manifest = read("ops/tenants/d7pay/k8s/go-worker-deployments.yaml")
+    for worker_name in (
+        "d7pay-go-worker",
+        "d7pay-go-worker-relay",
+        "d7pay-go-worker-scheduler",
+        "d7pay-go-worker-ops",
+    ):
+        require(go_worker_manifest, worker_name, "go-worker-deployments.yaml")
+    for mode in (
+        'args: ["-mode=worker"]',
+        'args: ["-mode=relay"]',
+        'args: ["-mode=scheduler"]',
+        'args: ["-mode=ops-scheduler"]',
+    ):
+        require(go_worker_manifest, mode, "go-worker-deployments.yaml")
+    require(go_worker_manifest, "namespace: pk-d7pay", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "name: d7pay-config", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "name: d7pay-secret", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "APP_MYSQL_DATABASE", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "pakistan_d7pay", "go-worker-deployments.yaml")
+    forbid(go_worker_manifest, "TZ: Asia/Karachi", "go-worker-deployments.yaml")
+
+    api_web_only_start = read("ops/tenants/d7pay/runtime/api-start-web-only.sh")
+    require(api_web_only_start, "python main.py --port=9000", "api-start-web-only.sh")
+    for retired_job in (
+        "pakistanpay_v2.py",
+        "Jazzcashpay_v2.py",
+        "easypaisa/auto_payout.py",
+        "jazzcash/jazzcash_auto_payout.py",
+        "jazzcash/jazzcash_monitor.py",
+        "notify.py",
+        "notify_df.py",
+        "time_out.py",
+    ):
+        forbid(api_web_only_start, retired_job, "api-start-web-only.sh")
+
+    worker_schema = read("api/sql/20260510_go_worker_phase0_schema.sql")
+    for table_name in (
+        "`worker_task_outbox`",
+        "`worker_task_outbox_ref`",
+        "`worker_statement_scan_audit`",
+        "`worker_payment_balance_snapshot`",
+        "`worker_transfer_intent`",
+    ):
+        require(worker_schema, table_name, "20260510_go_worker_phase0_schema.sql")
 
     apk_patch = read("ops/tenants/d7pay/k8s/apkdownload-deployment-env.patch.yaml")
     require(apk_patch, "claimName: d7pay-apkdownload-pvc", "apkdownload patch")

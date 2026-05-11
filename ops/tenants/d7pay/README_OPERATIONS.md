@@ -69,6 +69,21 @@ Go worker 不属于当前线上发布入口。后续如果切 Go worker，必须
 
 时区规则保持不变：MySQL、Redis、Pod 系统时间和业务判断都按 UTC；EasyPaisa/JazzCash 上游返回的无时区 `tradeTime/TRX_DTTM` 按巴基斯坦时间解析，应用层转换后与订单窗口匹配。
 
+## Go Worker 切流发布
+
+切流目标是：Go worker 在 `pk-d7pay` namespace 单独部署，API 容器只跑 Web 服务，Python jobs 退役。
+
+切流必须同时满足：
+
+- `pk-go-worker` 使用 `d7pay` 分支构建镜像，镜像推送为 `10.170.0.18:30086/lib/pk-go-worker-d7pay:<tag>`。
+- D7pay MySQL 先执行 `api/sql/20260510_go_worker_phase0_schema.sql`，已跑过 Phase 0 的环境再执行 `api/sql/20260510_go_worker_balance_changed_scan.sql`。
+- Jenkins API 发布前，线上启动路径仍是 `/opt/cicd/k8s_d7pay/api/pk_dockerfile/start.sh`；只用仓库模板 `ops/tenants/d7pay/runtime/api-start-web-only.sh` 覆盖这个现有文件的内容，删除 jobs 启动段。
+- Jenkins 单独发布 `ops/tenants/d7pay/k8s/go-worker-deployments.yaml`，并把镜像占位 `replace-by-jenkins` 替换为本次 Go worker 镜像 tag。
+- 四个 Deployment 必须都在 `pk-d7pay`：`d7pay-go-worker`、`d7pay-go-worker-relay`、`d7pay-go-worker-scheduler`、`d7pay-go-worker-ops`。
+- 切流后 `api` Pod 内不得再出现 `pakistanpay_v2.py`、`Jazzcashpay_v2.py`、`auto_payout.py`、`jazzcash_auto_payout.py`、`jazzcash_monitor.py`、`notify.py`、`notify_df.py`、`time_out.py`。
+
+Go worker 的 `tradeTime/TRX_DTTM` 规则固定为：上游无时区字符串按 `Asia/Karachi` 解析，再转 UTC 与 MySQL UTC 时间比较；RFC3339 带时区字符串按原时区解析后转 UTC。不能把 Pod、MySQL 或 Redis 系统时区改成巴基斯坦时间。
+
 ## 发布前检查配置
 
 ```bash
@@ -159,6 +174,7 @@ curl -k -I https://api.d7pay.net/static/v2/plugins/jquery/jquery-2.1.4.min.js
 - API、数据库、Redis、指纹目录和 APK 目录都只属于 D7pay。
 - D7pay 业务时间保持 UTC：不修改 MySQL、Redis、Pod 系统时区；`d7pay-config` 必须包含 `BUSINESS_TIMEZONE=UTC` 和 `APP_DISPLAY_TIMEZONE=Asia/Karachi`。
 - 面向客户展示、报表边界和上游接口参数由应用层转换为巴基斯坦时间。
+- Go worker 切流后，四个 `d7pay-go-worker*` Deployment Running，API Pod 只剩 `main.py` Web 进程，Python jobs 全部退役。
 
 时区验收命令：
 

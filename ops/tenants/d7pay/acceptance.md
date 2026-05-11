@@ -65,6 +65,8 @@
 - Jenkins 发布前必须读取 `/opt/cicd/secrets/d7pay.env`，且其中 `PROJECT_DIR=/opt/cicd/k8s_d7pay/pk_project_k8s`。
 - D7pay 公共配置可以由 Jenkins 配置步骤应用；线上不能用 Makefile 代替 Jenkins 发布 `api/admin/merchant`。
 - 应用构建、镜像推送和 deployment rollout 必须走现有发布脚本，不能由 D7pay 运维脚本接管。
+- Go worker 切流后，Go worker 必须作为 `pk-d7pay` namespace 下的独立 Deployment 发布，不能塞进 API 容器。
+- Go worker 切流后，API 容器必须使用 Web-only start 模板，不能再启动 Python jobs。
 - Jenkins 必须设置 `RUN_ENV=PROD`，不能让 api/admin/merchant 回落到 DEV。
 - Jenkins 构建 D7pay App 时必须设置 `ORG_GRADLE_PROJECT_appApplicationId=com.d7pay.merchant`。
 - Jenkins 构建 release App 时必须设置 `ORG_GRADLE_PROJECT_requireReleaseSigning=true`。
@@ -77,6 +79,7 @@
 - `PYTHONPATH=api python3 -m unittest api.tests.test_timezone_policy` 必须通过。
 - `PYTHONPATH=admin python3 -m unittest admin.tests.test_timezone_policy` 必须通过。
 - `PYTHONPATH=merchant python3 -m unittest merchant.tests.test_timezone_policy` 必须通过。
+- `cd /Users/tear/pk-go-worker && go test ./... && go vet ./... && go build ./cmd/worker` 必须通过。
 - 首次部署前必须按 `make d7pay-preflight D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 检查合同、域名、Secret、语法、YAML 和现有集群可读性。
 - 发布前必须按 `make d7pay-render-config D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 生成 nginx 与 应用 ConfigMap 预览。
 - 发布后必须按 `make d7pay-healthcheck D7PAY_ENV=/opt/cicd/secrets/d7pay.env` 验证 rollout 和四个客户域名。
@@ -109,3 +112,4 @@
 - D7pay 客户自有的 admin、merchant、api、apkdownload 域名均解析并代理到 D7pay 专属 NodePort；`*.d7pay.example.com` 只能作为占位，不能作为正式发布域名。
 - `api.d7pay.net` 必须提供 `/static/` 到 API 静态资源的代理；`/static/css/reset.css`、`/static/js/qrcode.min.js`、`/static/js/layer3.js`、`/static/v2/plugins/jquery/jquery-2.1.4.min.js` 均返回 `200`。
 - 扫码页不应出现 `reset.css`、`qrcode.min.js`、`jquery-2.1.4.min.js`、`layer3.js` 静态资源 `404`，也不应因 jQuery 缺失出现 `$ is not defined`。
+- Go worker 中 EasyPaisa/JazzCash 上游无时区 `tradeTime/TRX_DTTM` 必须按 `Asia/Karachi` 解析后转 UTC，与 MySQL UTC 订单时间比较。

@@ -33,7 +33,8 @@ for script in \
   ops/tenants/d7pay/scripts/preflight.sh \
   ops/tenants/d7pay/scripts/render-config.sh \
   ops/tenants/d7pay/scripts/healthcheck.sh \
-  ops/tenants/d7pay/scripts/rollback.sh
+  ops/tenants/d7pay/scripts/rollback.sh \
+  ops/tenants/d7pay/runtime/api-start-web-only.sh
 do
   bash -n "${script}"
 done
