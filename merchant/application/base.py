@@ -21,6 +21,7 @@ from tornado.options import define, options
 from application.balance_idempotency import build_balance_idempotency_key, reserve_balance_idempotency
 from application.client_ip import resolve_client_ip
 from application.message import msg
+from application.timezone import format_for_display
 
 # 定义全局 TRACE_ID
 define('TRACE_ID', default=None, help='trace id')
@@ -506,7 +507,7 @@ class RewriteJsonEncoder(json.JSONEncoder):
     """重写json类，为了解决datetime类型的数据无法被json格式化"""
     def default(self, obj):
         if isinstance(obj, datetime.datetime):
-            return obj.strftime('%Y-%m-%d %H:%M:%S')
+            return format_for_display(obj)
         elif isinstance(obj, datetime.date):
             return obj.strftime("%Y-%m-%d")
         elif isinstance(obj, Decimal):

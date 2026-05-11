@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 import sys
 import unittest
@@ -50,6 +51,16 @@ class MerchantTimezonePolicyTests(unittest.TestCase):
         self.assertEqual(result["key"], "time_create")
         self.assertEqual(result["start"], datetime(2026, 5, 4, 19, 0, 0))
         self.assertEqual(result["end"], datetime(2026, 5, 5, 18, 59, 59))
+
+    def test_json_encoder_formats_datetime_for_merchant_display_timezone(self):
+        base = importlib.import_module("application.base")
+
+        payload = json.dumps(
+            {"time_create": datetime(2026, 5, 11, 6, 35, 2)},
+            cls=base.RewriteJsonEncoder,
+        )
+
+        self.assertEqual(payload, '{"time_create": "2026-05-11 11:35:02"}')
 
 
 if __name__ == "__main__":

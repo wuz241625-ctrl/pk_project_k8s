@@ -540,3 +540,25 @@ ls -lh /opt/cicd/k8s_d7pay/workerlog/*/*.log
 ```
 
 说明：四个 worker 组件不能共用一个 RWO PVC；必须分别使用独立 PVC，避免跨节点调度时挂载冲突。
+
+## 后台订单时间仍显示 UTC
+
+现象：MySQL 中代收订单 `time_create=2026-05-11 06:35:02`，后台订单列表也显示 `2026-05-11 06:35:02`，没有按巴基斯坦时间显示为 `2026-05-11 11:35:02`。
+
+原因：
+
+- D7pay 的正确时区策略是 MySQL、Redis、Pod 系统时间和业务判断保持 UTC。
+- 查询范围已通过 `display_today_between()` 按巴基斯坦展示日界转换成 UTC 查询。
+- 但 admin/merchant 的 `RewriteJsonEncoder` 原来对 `datetime` 直接 `strftime('%Y-%m-%d %H:%M:%S')`，导致接口响应把 UTC 原样返回给前端。
+
+处理：
+
+- admin/merchant 响应层的 `RewriteJsonEncoder` 对 `datetime` 使用 `application.timezone.format_for_display()`。
+- API 对外接口不跟随改动，避免影响商户对接字段语义。
+
+验证：
+
+```bash
+python3 -m pytest admin/tests/test_timezone_policy.py admin/tests/test_order_ds_default_filter.py -q
+python3 -m pytest merchant/tests/test_timezone_policy.py merchant/tests/test_order_query_helpers.py -q
+```
