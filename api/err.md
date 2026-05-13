@@ -216,3 +216,22 @@ SHOW CREATE TABLE balance_record_idempotency;
 PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_mysql_statement_scheduler.py api/tests/test_jazzcash_payout_state_machine.py -q
 PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/tests/test_jazzcash_monitor_final_state.py api/tests/test_jazzcash_bill_worker_final_state.py -q
 ```
+
+## 0.10 本地环境没有 `python` 命令
+
+现象：
+
+- 执行 `python -c "import ast; ast.parse(...)"` 时返回 `zsh:1: command not found: python`。
+- 项目既有构建与排错命令统一使用 `python3`。
+
+处理：
+
+- 本地语法、AST、unittest 和 py_compile 验证改用 `python3`。
+- 不在仓库内新增 Python 软链或修改系统解释器。
+
+验证：
+
+```bash
+python3 -c "import ast; ast.parse(open('api/application/app/login/banks/easypaisa.py').read())"
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```

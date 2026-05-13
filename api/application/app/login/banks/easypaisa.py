@@ -1,5 +1,6 @@
 import json
 import time
+import asyncio
 import hashlib
 import base64
 import random
@@ -2095,16 +2096,27 @@ class EasyPaisa:
                     }
                 }
 
-            session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}
-            await self._persist_session_data(redis_key, session_data)
-            return {
-                'status': 'error',
-                'message': second_login_result.get('message') or '上游错误',
-                'data': {
-                    'code': 'SL_UPSTREAM_ERROR',
-                    'phase': 'failed',
-                }
-            }
+            # upstream_error: 501/503/网络错误时回退到 loginStep1
+            message = second_login_result.get('message', '')
+
+            # 423 ServerBusy：等待 2 秒后重试一次
+            if self._is_server_busy(message):
+                await asyncio.sleep(2)
+                retry_result = await self._perform_second_login(session_data)
+                if retry_result.get('outcome') == 'success':
+                    session_data['status'] = 'secondLoginPassed'
+                    await self._persist_session_data(redis_key, session_data)
+                    return {
+                        'status': 'success',
+                        'message': 'Second login passed',
+                        'data': {
+                            'code': 'SL_OK',
+                            'phase': 'secondLoginPassed',
+                        }
+                    }
+
+            # 501/503/网络错误/423 重试失败：回退到 loginStep1
+            return await self._fallback_to_first_login(session_data, redis_key, reason=message)
         except NewApiError:
             raise
         except Exception as e:
@@ -3454,6 +3466,93 @@ class EasyPaisa:
         if message in ['URM20008', 'URM20017']:
             return {'outcome': 'needs_pin_change', 'message': message}
         return {'outcome': 'upstream_error', 'message': message or response.text}
+
+    def _is_server_busy(self, message: str) -> bool:
+        return '423' in str(message) or 'ServerBusy' in str(message)
+
+    async def _fallback_to_first_login(self, session_data: dict, redis_key: str, reason: str) -> dict:
+        """secondLogin失败后回退到loginStep1，重新发送OTP"""
+        phone = session_data.get('phone', '')
+        payment_id = session_data.get('payment_id') or session_data.get('id', '')
+
+        self.logger.warning(
+            f'{self._log_key("_fallback_to_first_login")} secondLogin失败({reason})，'
+            f'回退到loginStep1, phone={phone}, payment_id={payment_id}'
+        )
+
+        try:
+            # 先尝试 loginStep1，成功前不清理旧 session。
+            otp_result = await self._send_otp(session_data)
+
+            otp_status = otp_result.get('outcome') or otp_result.get('status') if otp_result else ''
+            if otp_status != 'success':
+                # loginStep1 也失败时保留旧 session。
+                self.logger.warning(
+                    f'{self._log_key("_fallback_to_first_login")} loginStep1也失败，'
+                    f'保留旧session, phone={phone}'
+                )
+                return {
+                    'status': 'error',
+                    'message': f'secondLogin失败且loginStep1也失败: {reason}',
+                    'data': {
+                        'code': 'SL_UPSTREAM_ERROR',
+                        'phase': 'failed',
+                    }
+                }
+
+            # loginStep1 成功后，将同一个 Redis key 覆盖为 otpSent 状态。
+            new_session = {
+                'phone': phone,
+                'payment_id': payment_id,
+                'id': payment_id,
+                'bankname': session_data.get('bankname', ''),
+                'pinCode': session_data.get('pinCode', ''),
+                'partner_id': session_data.get('partner_id', ''),
+                'device_id': session_data.get('device_id', ''),
+                'app_version': session_data.get('app_version', ''),
+                'status': 'otpSent',
+                'fallback_from': 'secondLogin',
+                'fallback_reason': reason,
+            }
+
+            await self._persist_session_data(redis_key, new_session)
+            await self.redis.expire(redis_key, 300)
+
+            # 释放登录流程锁，允许用户按 OTP 流程重新注册。
+            if payment_id:
+                lock_key = self._login_lock_payment_key(payment_id)
+                await self.redis.delete(lock_key)
+            if phone:
+                lock_key = self._login_lock_phone_key(phone)
+                await self.redis.delete(lock_key)
+
+            self.logger.info(
+                f'{self._log_key("_fallback_to_first_login")} 回退成功，'
+                f'已发送OTP, phone={phone}, payment_id={payment_id}'
+            )
+
+            return {
+                'status': 'error',
+                'message': 'secondLogin失败，已回退到OTP验证',
+                'data': {
+                    'code': 'SL_RESTARTED',
+                    'phase': 'otpSent',
+                }
+            }
+
+        except Exception as e:
+            self.logger.error(
+                f'{self._log_key("_fallback_to_first_login")} 回退异常: {str(e)}, '
+                f'phone={phone}, payment_id={payment_id}'
+            )
+            return {
+                'status': 'error',
+                'message': f'回退失败: {str(e)}',
+                'data': {
+                    'code': 'SL_UPSTREAM_ERROR',
+                    'phase': 'failed',
+                }
+            }
 
     def _get_payment_fingerprint_path(self, payment_id):
         funcName = '读取 payment.fingerprint_path'
