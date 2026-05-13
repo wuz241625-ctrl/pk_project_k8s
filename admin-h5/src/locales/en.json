@@ -2447,7 +2447,7 @@
         "enter_qrid": "please input 6 qrID",
         "select_error": "orderCode is empty or undefined",
         "login_password_msg": "login password must contain letters, numbers and special characters, and its length must be between 8 and 20 characters",
-        "pay_password_msg": "pay password must contain letters, numbers and special characters, and its length must be between 8 and 20 characters",
+        "pay_password_msg": "pay password must be 6 digits",
         "get_success": "GET SUCCESS",
         "enter_payment_rate_fee": "Please Enter Payment Rate and Single Transaction Fee",
         "password_min_length": "Password Cannot Be Less Than 6 Digits",

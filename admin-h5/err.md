@@ -61,3 +61,26 @@ proxy_set_header CF-Connecting-IP "";
 kubectl apply -f /opt/cicd/k8s/admin-h5/k8s/admin-h5-cm.yaml
 kubectl rollout restart deployment/admin-h5-deploy -n pk
 ```
+
+## 全量 `npm run lint` 存量格式错误
+
+现象：
+
+- 在 `admin-h5` 执行 `VUE_APP_SYSTEM=d7pay npm run lint`
+- ESLint 扫描整个 `src` 后失败，输出约 `16052 problems`
+- 主要是历史文件缩进、分号、空行、属性换行等格式问题，例如 `src/App.vue`、`src/api/count.js`、`src/api/partner.js`、`src/views/system/operationLog/index.vue`
+
+处理：
+
+- 不在业务小改动中批量格式化整个 `src`，避免混入大规模无关 diff
+- 针对本次新增或修改文件单独跑 ESLint
+- 生产构建仍以 `npm run d7pay:prod` 验证
+
+本次命令：
+
+```bash
+cd /Users/tear/pk_project_k8s/admin-h5
+VUE_APP_SYSTEM=d7pay ./node_modules/.bin/eslint src/utils/partnerPassword.js
+VUE_APP_SYSTEM=d7pay npm run test:unit -- tests/unit/utils/partnerPassword.spec.js --runInBand
+npm run d7pay:prod
+```

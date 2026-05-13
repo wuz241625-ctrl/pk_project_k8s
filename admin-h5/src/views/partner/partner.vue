@@ -230,6 +230,7 @@ import {
     updatePartnerLock, getMigrate, migratePartner, handleClearBalance
 } from '@/api/partner'
 import { getDateTimePickerOptions } from '@/utils/pickerOptions';
+import { isValidPartnerPayPassword } from '@/utils/partnerPassword'
 
 export default {
     name: 'Mslb',
@@ -580,9 +581,7 @@ export default {
                     return;
                   }
 
-                  // 如果 hash_trade 不为空并且不是加密字符串，进行验证
-                  if (this.partner.hash_trade && !passwordPattern.test(this.partner.hash_trade)) {
-                    // this.passwordError = 'hash_trade 必须包含字母、数字和特殊字符，并且长度在 8 到 20 位之间';
+                  if (!isValidPartnerPayPassword(this.partner.hash_trade)) {
                     this.$message({
                         type: 'warning',
                         message: this.$t('method.pay_password_msg')

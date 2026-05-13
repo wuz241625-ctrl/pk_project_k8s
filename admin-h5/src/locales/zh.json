@@ -2515,7 +2515,7 @@
     "get_success": "操作成功",
     "fill_remark": "请填写备注信息",
     "login_password_msg": "登录密码 必须包含字母、数字和特殊字符，并且长度在 8 到 20 位之间",
-    "pay_password_msg": "支付密码 必须包含字母、数字和特殊字符，并且长度在 8 到 20 位之间",
+    "pay_password_msg": "支付密码 必须为 6 位数字",
     "partner_type": "外部/内部码商",
     "confirm_delete_payment": "确认删除该收款方式？",
     "warning": "警告",
