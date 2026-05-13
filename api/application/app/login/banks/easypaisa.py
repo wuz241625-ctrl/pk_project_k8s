@@ -2099,6 +2099,21 @@ class EasyPaisa:
             # upstream_error: 501/503/网络错误时回退到 loginStep1
             message = second_login_result.get('message', '')
 
+            # 防循环：如果本次 session 已经是 fallback 来的，不再二次回退
+            if session_data.get('fallback_from') == 'secondLogin':
+                self.logger.warning(
+                    f'{self._log_key(funcName)} 二次secondLogin仍失败，不再回退, '
+                    f'phone={session_data.get("phone")}'
+                )
+                return {
+                    'status': 'error',
+                    'message': f'secondLogin二次失败: {message}',
+                    'data': {
+                        'code': 'SL_UPSTREAM_ERROR',
+                        'phase': 'failed',
+                    }
+                }
+
             # 423 ServerBusy：等待 2 秒后重试一次
             if self._is_server_busy(message):
                 await asyncio.sleep(2)
