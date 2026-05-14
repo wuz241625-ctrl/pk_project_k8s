@@ -2154,18 +2154,18 @@ class EasyPaisa:
         self._log_response(funcName, response)
         if not response or response.status_code != 200:
             raise NewApiError(
-                'EP_REGISTER_CHECK_FAILED',
+                'SL_UPSTREAM_ERROR',
                 'Could not confirm EasyPaisa cloud registration; refusing to run loginStep1'
             )
         response_data = self._decode_indus_response(funcName, response.text)
         if not isinstance(response_data, dict):
             raise NewApiError(
-                'EP_REGISTER_CHECK_FAILED',
+                'SL_UPSTREAM_ERROR',
                 'Invalid EasyPaisa cloud registration response'
             )
         if response_data.get('code') != 200:
             raise NewApiError(
-                'EP_REGISTER_CHECK_FAILED',
+                'SL_UPSTREAM_ERROR',
                 response_data.get('msg') or 'EasyPaisa cloud registration check failed'
             )
         return response_data.get('data') is True
