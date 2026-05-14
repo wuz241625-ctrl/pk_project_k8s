@@ -1720,18 +1720,12 @@ class EasyPaisa:
             session_pin_times = session_data.get('pin_times', 0)
             session_pin_times = session_pin_times + 1
             if session_pin_times > PIN_CHANGE_ATTEMPTS_MAXIMUM:
-                session_data['last_error'] = {'code': 'PIN_CHANGE_LIMIT_EXCEEDED'}
-                await self._persist_session_data(redis_key, session_data)
-                return {
-                    'status': 'error',
-                    'message': 'PIN 修改次数已超限',
-                    'data': {
-                        'code': 'PIN_CHANGE_LIMIT_EXCEEDED',
-                        'phase': 'needsRelogin',
-                        'maximum': PIN_CHANGE_ATTEMPTS_MAXIMUM,
-                        'current': session_pin_times,
-                    }
-                }
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key,
+                    session_data=session_data,
+                    reason=f'Pin change limit exceeded ({session_pin_times})',
+                    error_code='PIN_CHANGE_LIMIT_EXCEEDED',
+                )
             try:
                 await self._change_pin(session_data, pin)
             except NewApiError as e:
