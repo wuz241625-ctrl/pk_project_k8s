@@ -120,3 +120,17 @@ async def test_u20_local_zip_missing_force_terminal(ep_mock):
     assert result['status'] == 'error'
     assert result['data']['code'] == 'EP_FP_FILE_MISSING'
     assert session['status'] == LoginStatus.NEEDS_RELOGIN
+
+
+@pytest.mark.asyncio
+async def test_u17_payment_status_returns_new_enum_strings(ep_mock):
+    """U17: payment_status_http 返回新 8 状态枚举字符串。"""
+    session = {'status': LoginStatus.FINGERPRINT_VERIFIED, 'phone': 'x', 'id': '1',
+               'last_error': None, 'cd_until': 0}
+    ep_mock._resolve_session_context = AsyncMock(return_value={
+        'session_data': session, 'resolved_payment_id': '1',
+    })
+    result = await ep_mock.payment_status_http({'bankname': 'easypaisa', 'payment_ids': '1'})
+    assert result['status'] == 'success'
+    assert result['datas'][0]['status'] == 'fingerprintVerified'
+    assert result['datas'][0]['next_action'] == 'second_login'
