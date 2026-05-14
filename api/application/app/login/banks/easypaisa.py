@@ -567,6 +567,45 @@ class EasyPaisa:
             },
         }
 
+    # spec §3.3.1：残留状态到下一步的映射
+    NEXT_STEP_MAP = {
+        LoginStatus.PRE_LOGIN_CREATED:          'send_otp',
+        LoginStatus.OTP_SENT:                   'verify_otp',
+        LoginStatus.OTP_VERIFIED:               'upload_fingerprint',
+        LoginStatus.FINGERPRINT_VERIFIED:       'second_login',
+        LoginStatus.AWAITING_PIN_CHANGE:        'change_pin',
+        LoginStatus.ACCOUNT_SELECTION_REQUIRED: 'select_accts',
+    }
+
+    async def _build_resumed_session_response(self, redis_key: str, session_data: dict) -> dict:
+        """spec §3.3.1：复用残留 session，引导 APP 接续上次进度。"""
+        funcName = '_build_resumed_session_response'
+        status = session_data.get('status', LoginStatus.PRE_LOGIN_CREATED)
+        next_step = self.NEXT_STEP_MAP.get(status, 'send_otp')
+        ttl_remaining = await self.redis.ttl(redis_key)
+        data = {
+            'resumed': True,
+            'phase': status,
+            'next_step': next_step,
+            'expires_in': max(0, int(ttl_remaining or 0)),
+            'id': session_data.get('id'),
+        }
+        # ACCOUNT_SELECTION_REQUIRED 时附上 accounts 让 APP 无需再调 query_accts
+        if status == LoginStatus.ACCOUNT_SELECTION_REQUIRED:
+            raw = session_data.get('account_entire')
+            if raw:
+                try:
+                    accounts = json.loads(raw) if isinstance(raw, str) else raw
+                    data['accounts'] = accounts
+                except (json.JSONDecodeError, TypeError):
+                    self.logger.warning(f'{self._log_key(funcName)} 解析 account_entire 失败: {raw}')
+        self.logger.info(f'{self._log_key(funcName)} 复用 session: phase={status} next_step={next_step} ttl={ttl_remaining}')
+        return {
+            'status': 'success',
+            'message': '复用残留 session',
+            'data': data,
+        }
+
     async def _read_prelogin_entry(self, redis_key):
         """读取 pre_login Redis 记录，可能是真实 session，也可能是 alias 文档。"""
         try:
