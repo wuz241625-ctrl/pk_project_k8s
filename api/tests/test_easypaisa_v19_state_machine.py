@@ -70,3 +70,38 @@ def test_removed_states_absent():
     assert not hasattr(LoginStatus, 'SECOND_LOGIN_PASSED')
     # LOGIN_SUCCESSFUL 是别名，也删
     assert not hasattr(LoginStatus, 'LOGIN_SUCCESSFUL')
+
+
+from unittest.mock import MagicMock
+from application.app.login.banks.easypaisa import EasyPaisa
+from application.lakshmi_api.exceptions.api_error import NewApiError
+
+
+@pytest.fixture
+def ep_for_transition():
+    handler = MagicMock()
+    return EasyPaisa(handler)
+
+
+def test_assert_transition_allows_valid(ep_for_transition):
+    session = {'status': LoginStatus.OTP_SENT}
+    ep_for_transition._assert_status_transition(
+        session, LoginStatus.OTP_SENT, LoginStatus.OTP_VERIFIED, 'test'
+    )
+
+
+def test_assert_transition_rejects_invalid(ep_for_transition):
+    session = {'status': LoginStatus.OTP_SENT}
+    with pytest.raises(NewApiError) as exc:
+        ep_for_transition._assert_status_transition(
+            session, LoginStatus.OTP_SENT, LoginStatus.ACTIVE_SUCCESSFUL, 'test'
+        )
+    assert exc.value.code == 'INVALID_TRANSITION'
+
+
+def test_assert_transition_pre_login_to_account_selection(ep_for_transition):
+    """二次上号跨步要被允许。"""
+    session = {'status': LoginStatus.PRE_LOGIN_CREATED}
+    ep_for_transition._assert_status_transition(
+        session, LoginStatus.PRE_LOGIN_CREATED, LoginStatus.ACCOUNT_SELECTION_REQUIRED, 'test'
+    )
