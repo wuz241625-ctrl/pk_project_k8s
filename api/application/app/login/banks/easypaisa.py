@@ -1057,13 +1057,62 @@ class EasyPaisa:
         }
 
     async def _call_upload_data(self, session_data, fingerprint_path):
-        """Task 11 will implement upload_data action call. Placeholder returns False for now."""
-        self.logger.warning('STUB: _call_upload_data not implemented')
-        return False
+        """二次上号续推用：从本地路径读 ZIP 推云机 upload_data。"""
+        try:
+            with open(fingerprint_path, 'rb') as f:
+                body = f.read()
+            return await self._call_upload_data_bytes(session_data, body)
+        except Exception as e:
+            self.logger.error(f'{self._log_key("_call_upload_data")} 读取失败: {e}')
+            return False
+
+    async def _call_upload_data_bytes(self, session_data, zip_body):
+        """spec v1.9 upload_data。返回 True/False。"""
+        funcName = '_call_upload_data_bytes'
+        try:
+            bankname = session_data.get('bankname')
+            phone = session_data.get('phone')
+            url = self.API_ENDPOINTS['fingerprint_upload_url']
+            proxies = await self._get_proxy_for_request(session_data)
+            files = {'file': ('fp.zip', zip_body, 'application/zip')}
+            data = {'app': bankname, 'phone': phone}
+            response = self.retry_make_request(method='UPLOAD', url=url, data=data, files=files, proxies=proxies)
+            if not response or response.status_code != 200:
+                self.logger.error(f'{self._log_key(funcName)} HTTP {response.status_code if response else "none"}')
+                return False
+            text = (response.text or '').strip().strip('"').lower()
+            return text == 'ok'
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            return False
 
     async def _call_verify_fingerprint(self, session_data):
-        """Task 12 placeholder."""
-        return {'outcome': 'rejected', 'message': 'STUB'}
+        """spec v1.9 verifyFingerprint action 调用。"""
+        funcName = '_call_verify_fingerprint'
+        try:
+            url = self.API_ENDPOINTS['base_url']
+            request_data = self._build_verify_fingerprint_request(session_data)
+            response = self.retry_make_request(method='POST', url=url, data=request_data)
+            if not response or response.status_code != 200:
+                return {'outcome': 'rejected', 'message': f'http {response.status_code if response else "none"}'}
+            body = self._decode_indus_response(funcName, response.text)
+            if not isinstance(body, dict):
+                return {'outcome': 'rejected', 'message': response.text}
+            code = body.get('code')
+            msg = body.get('msg', '')
+            data_field = body.get('data') or {}
+            msg_cd = data_field.get('msgCd') if isinstance(data_field, dict) else ''
+            if code in (100, 200):
+                return {'outcome': 'success'}
+            if msg_cd == 'URM10004':
+                return {'outcome': 'session_expired', 'message': msg_cd}
+            if msg_cd == 'URM40008':
+                cd_until = int(time.time()) + 60 * 60 * 2
+                return {'outcome': 'cooldown', 'cd_until': cd_until, 'message': msg_cd}
+            return {'outcome': 'rejected', 'message': msg_cd or msg}
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            return {'outcome': 'rejected', 'message': str(e)}
 
     async def _call_second_login(self, session_data):
         """Task 13 placeholder."""
@@ -1079,6 +1128,18 @@ class EasyPaisa:
             redis_key=redis_key, session_data=session_data,
             reason='URM90040 fallback stub', error_code='SL_NEEDS_RELOGIN',
         )
+
+    async def _update_payment_fingerprint_path(self, payment_id, full_path):
+        funcName = '_update_payment_fingerprint_path'
+        try:
+            with self.handler.db_orm.sessionmaker() as session:
+                session.execute(
+                    update(Payment).where(Payment.id == payment_id).values(fingerprint_path=full_path)
+                )
+                session.commit()
+            self.logger.info(f'{self._log_key(funcName)} payment_id={payment_id} path={full_path}')
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
 
     async def send_otp_http(self, data):
         """v1.9 重写：纯 loginStep1 + 20s 节流。spec §3.3.2。"""
@@ -1305,17 +1366,17 @@ class EasyPaisa:
         }
 
     async def verify_fingerprint_http(self, data):
-        """指纹验证。"""
+        """v1.9 重写：读 Redis pending → upload_data → verifyFingerprint → 全成功才落盘。spec §3.6。"""
         funcName = 'verify_fingerprint_http'
         lockName = 'verify_fingerprint'
         payment_lock_id = None
         payment_lock_value = None
         self.login_data = data
         try:
-            required_fields = ['bankname', 'payment_id']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
+            required = ['bankname', 'payment_id']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing: {', '.join(missing)}")
             bankname = data['bankname']
             requested_payment_id = self._normalize_payment_id(data['payment_id'])
             session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
@@ -1323,104 +1384,96 @@ class EasyPaisa:
             lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
             payment_lock_id = lock_result.get('lock_id')
             payment_lock_value = lock_result.get('lock_value')
-            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
             redis_key = session_ctx.get('redis_key')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call verify_otp_http first')
-            if session_ctx.get('is_aliased'):
-                self.logger.info(
-                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
-                )
-            self._assert_status_transition(
-                session_data,
-                LoginStatus.FINGERPRINT_UPLOADED,
-                LoginStatus.FINGERPRINT_VERIFIED,
-                funcName,
-            )
-            verify_result = await self._perform_verify_fingerprint(session_data)
-            if verify_result.get('outcome') == 'success':
-                se_until = await self._update_session_status(
-                    redis_key,
-                    session_data,
-                    LoginStatus.FINGERPRINT_VERIFIED,
-                    {'last_error': None},
-                )
-                return {
-                    'status': 'success',
-                    'message': '指纹验证成功',
-                    'data': {
-                        'phase': LoginStatus.FINGERPRINT_VERIFIED,
-                        'se_until': se_until,
-                    }
-                }
-            if verify_result.get('outcome') == 'session_expired':
-                session_data['last_error'] = {'code': 'FP_SESSION_EXPIRED'}
-                await self._persist_session_data(redis_key, session_data)
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
+            # spec §3.6.1 幂等：已过 FINGERPRINT_VERIFIED 直接返回 ok
+            cur_status = session_data.get('status')
+            if cur_status in (LoginStatus.FINGERPRINT_VERIFIED, LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                              LoginStatus.ACTIVE_SUCCESSFUL):
+                return {'status': 'success', 'message': '指纹已激活（幂等）',
+                        'data': {'ok': True, 'phase': 'fingerprintVerified'}}
+            if cur_status != LoginStatus.OTP_VERIFIED:
+                raise NewApiError('INVALID_TRANSITION',
+                                  f'verify_fingerprint expected OTP_VERIFIED, got {cur_status}')
+            pending_key = f'easypaisa:pending_fp:{resolved_payment_id}'
+            zip_body = await self.redis.get(pending_key)
+            if not zip_body:
                 return {
                     'status': 'error',
-                    'message': '会话已过期，请重新开始',
-                    'data': {
-                        'code': 'FP_SESSION_EXPIRED',
-                        'phase': 'needsRelogin',
-                    }
+                    'message': '请先上传指纹',
+                    'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
+                             'phase': LoginStatus.OTP_VERIFIED},
                 }
-            if verify_result.get('outcome') == 'cooldown':
-                session_data['last_error'] = {'code': 'FP_COOLDOWN'}
+            # ① upload_data
+            pushed = await self._call_upload_data_bytes(session_data, zip_body)
+            if not pushed:
+                return {
+                    'status': 'error',
+                    'message': '推送云机失败',
+                    'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
+                             'phase': LoginStatus.OTP_VERIFIED},
+                }
+            # ② verifyFingerprint
+            fp = await self._call_verify_fingerprint(session_data)
+            if fp.get('outcome') == 'cooldown':
+                session_data['last_error'] = {'code': 'FP_COOLDOWN', 'cd_until': fp.get('cd_until', 0)}
                 await self._persist_session_data(redis_key, session_data)
                 return {
                     'status': 'error',
                     'message': '当前处于冷却期',
-                    'data': {
-                        'code': 'FP_COOLDOWN',
-                        'phase': 'inCooldown',
-                        'cd_until': session_data.get('cd_until', 0),
-                    }
+                    'data': {'code': 'FP_COOLDOWN', 'cd_until': fp.get('cd_until', 0),
+                             'phase': LoginStatus.OTP_VERIFIED},
                 }
-            if verify_result.get('outcome') == 'transient':
-                session_data['last_error'] = {'code': 'FP_UPSTREAM_TRANSIENT'}
-                await self._persist_session_data(redis_key, session_data)
+            if fp.get('outcome') == 'session_expired':
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key, session_data=session_data,
+                    reason='verifyFingerprint session expired', error_code='FP_SESSION_EXPIRED',
+                )
+            if fp.get('outcome') != 'success':
                 return {
                     'status': 'error',
-                    'message': verify_result.get('message') or '上游临时错误，请重试',
-                    'data': {
-                        'code': 'FP_UPSTREAM_TRANSIENT',
-                        'phase': LoginStatus.FINGERPRINT_UPLOADED,
-                    }
+                    'message': fp.get('message') or '指纹被拒',
+                    'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
+                             'phase': LoginStatus.OTP_VERIFIED},
                 }
-            fingerprint_path = self._get_payment_fingerprint_path(resolved_payment_id)
-            self._assert_status_transition(
-                session_data,
-                LoginStatus.FINGERPRINT_UPLOADED,
-                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-                funcName,
+            # ③ 全成功 → 落盘 + 更新 MySQL + 删 pending
+            phone = session_data.get('phone')
+            filename = self.FINGERPRINT_FILENAME.format(
+                bankname=bankname, payment_id=resolved_payment_id, phone=phone
             )
-            await self._clear_payment_fingerprint_path(resolved_payment_id)
-            if fingerprint_path:
-                try:
-                    os.remove(fingerprint_path)
-                except Exception:
-                    self.logger.warning(f'{self._log_key(funcName)} 删除本地指纹失败: {fingerprint_path}')
-            await self._update_session_status(
-                redis_key,
-                session_data,
-                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-                {'last_error': {'code': 'FP_UPSTREAM_REJECTED'}},
-            )
+            full_path = os.path.join(self.FINGERPRINT_PATH, filename)
+            try:
+                os.makedirs(self.FINGERPRINT_PATH, exist_ok=True)
+                with open(full_path, 'wb') as fp_file:
+                    fp_file.write(zip_body)
+            except Exception as e:
+                self.logger.error(f'{self._log_key(funcName)} 落盘失败: {e}', exc_info=True)
+                return {
+                    'status': 'error',
+                    'message': '本地保存失败',
+                    'data': {'code': 'SL_UPSTREAM_ERROR', 'phase': LoginStatus.OTP_VERIFIED},
+                }
+            await self._update_payment_fingerprint_path(resolved_payment_id, full_path)
+            await self.redis.delete(pending_key)
+            self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
+                                           LoginStatus.FINGERPRINT_VERIFIED, funcName)
+            await self._update_session_status(redis_key, session_data, LoginStatus.FINGERPRINT_VERIFIED,
+                                              {'last_error': None})
             return {
-                'status': 'error',
-                'message': '上游拒绝当前指纹，请重新上传',
-                'data': {
-                    'code': 'FP_UPSTREAM_REJECTED',
-                    'phase': LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-                }
+                'status': 'success',
+                'message': '指纹验证成功',
+                'data': {'ok': True, 'phase': 'fingerprintVerified'},
             }
         except NewApiError:
             raise
         except Exception as e:
-            raise NewApiError(ErrorCode.VerifyFingerPrint, f'FingerPrint verification failed: {str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.VerifyFingerPrint, f'verify failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
+
     async def second_login_http(self, data):
         """二次登录。"""
         funcName = 'second_login_http'
