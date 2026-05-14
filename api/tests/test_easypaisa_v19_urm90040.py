@@ -120,48 +120,8 @@ async def test_urm90040_envelope_contains_all_p0_fields(ep):
 
 
 @pytest.mark.asyncio
-async def test_fallback_stage1_secondlogin_with_pwd_one_shot_thaw(ep, tmp_path):
-    """hotfix-2 P0 Stage 1: secondLogin(with_pwd=True) 一击救冻 URM90040 → ACCOUNT_SELECTION_REQUIRED；0 次 upload/verify。"""
-    import json
-    zip_path = tmp_path / "ep_533302.zip"
-    zip_path.write_bytes(b'fake')
-
-    session = {
-        'id': 533302, 'phone': '03194834960', 'pinCode': '11223',
-        'bankname': 'easypaisa', 'status': LoginStatus.OTP_VERIFIED,
-        'status_history': [LoginStatus.OTP_VERIFIED], 'fallback_from_urm90040': True,
-    }
-    ep._query_payment = AsyncMock(return_value={
-        'id': 533302, 'phone': '03194834960', 'fingerprint_path': str(zip_path),
-    })
-    # 这两个不应该被调用
-    ep._call_upload_data = AsyncMock(side_effect=Exception('Stage 1 不应该调 upload_data'))
-    ep._call_verify_fingerprint = AsyncMock(side_effect=Exception('Stage 1 不应该调 verify_fp'))
-    # Stage 1 一击成功
-    ep._call_second_login = AsyncMock(return_value={'outcome': 'success'})
-    ep._call_query_account_list = AsyncMock(return_value={
-        'outcome': 'success',
-        'accounts_json': json.dumps([{'accno': '96699538', 'accountStatus': 'ACTIVE'}]),
-    })
-    ep._update_session_status = AsyncMock()
-    ep._persist_session_data = AsyncMock()
-
-    result = await ep._verify_otp_fallback_chain('pre_login_easypaisa_533302', session)
-
-    assert result['status'] == 'success'
-    assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
-    # 0 次 upload/verify
-    ep._call_upload_data.assert_not_awaited()
-    ep._call_verify_fingerprint.assert_not_awaited()
-    # secondLogin 只调一次，with_pwd=True
-    ep._call_second_login.assert_awaited_once()
-    args, kwargs = ep._call_second_login.await_args
-    assert kwargs.get('with_pwd') is True, 'Stage 1 必须 with_pwd=True'
-
-
-@pytest.mark.asyncio
-async def test_fallback_stage2_full_chain_when_stage1_still_urm90040(ep, tmp_path):
-    """hotfix-2 P0 Stage 2: Stage 1 URM90040 → 走完整 upload+verify+secondLogin(with_pwd) 兜底。"""
+async def test_fallback_chain_full_with_pwd_to_account_selection(ep, tmp_path):
+    """hotfix-2 P0: fallback 完整 chain (upload+verifyFingerprint+secondLogin(with_pwd)+queryAccountList) → ACCOUNT_SELECTION_REQUIRED。"""
     import json
     zip_path = tmp_path / "ep_533302.zip"
     zip_path.write_bytes(b'fake')
@@ -176,11 +136,7 @@ async def test_fallback_stage2_full_chain_when_stage1_still_urm90040(ep, tmp_pat
     })
     ep._call_upload_data = AsyncMock(return_value=True)
     ep._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
-    # Stage 1 URM90040, Stage 2 success
-    ep._call_second_login = AsyncMock(side_effect=[
-        {'outcome': 'urm90040', 'message': 'URM90040'},
-        {'outcome': 'success'},
-    ])
+    ep._call_second_login = AsyncMock(return_value={'outcome': 'success'})
     ep._call_query_account_list = AsyncMock(return_value={
         'outcome': 'success',
         'accounts_json': json.dumps([{'accno': '96699538', 'accountStatus': 'ACTIVE'}]),
@@ -192,11 +148,46 @@ async def test_fallback_stage2_full_chain_when_stage1_still_urm90040(ep, tmp_pat
 
     assert result['status'] == 'success'
     assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
-    # Stage 2 调了 upload+verify
+    # 完整 chain 都被调一次
     ep._call_upload_data.assert_awaited_once()
     ep._call_verify_fingerprint.assert_awaited_once()
-    # secondLogin 调 2 次，都 with_pwd=True
-    assert ep._call_second_login.await_count == 2
-    for call in ep._call_second_login.await_args_list:
-        args, kwargs = call
-        assert kwargs.get('with_pwd') is True, '两次都必须 with_pwd=True'
+    ep._call_second_login.assert_awaited_once()
+    ep._call_query_account_list.assert_awaited_once()
+    # secondLogin 必须 with_pwd=True
+    args, kwargs = ep._call_second_login.await_args
+    assert kwargs.get('with_pwd') is True, 'fallback secondLogin 必须 with_pwd=True 救冻'
+
+
+@pytest.mark.asyncio
+async def test_fallback_chain_urm90040_recurses_to_urm90040_fallback(ep, tmp_path):
+    """hotfix-2 P0: fallback chain secondLogin 仍 URM90040 → 走 _urm90040_fallback (再发 OTP, counter++)。"""
+    zip_path = tmp_path / "ep_533302.zip"
+    zip_path.write_bytes(b'fake')
+
+    session = {
+        'id': 533302, 'phone': '03194834960', 'pinCode': '11223',
+        'bankname': 'easypaisa', 'status': LoginStatus.OTP_VERIFIED,
+        'status_history': [LoginStatus.OTP_VERIFIED], 'fallback_from_urm90040': True,
+    }
+    ep._query_payment = AsyncMock(return_value={
+        'id': 533302, 'phone': '03194834960', 'fingerprint_path': str(zip_path),
+    })
+    ep._call_upload_data = AsyncMock(return_value=True)
+    ep._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
+    ep._call_second_login = AsyncMock(return_value={'outcome': 'urm90040', 'message': 'URM90040'})
+    ep._call_query_account_list = AsyncMock()
+    ep._update_session_status = AsyncMock()
+    ep._persist_session_data = AsyncMock()
+    # _urm90040_fallback 应该被调
+    ep.redis.incr = AsyncMock(return_value=2)
+    ep.redis.expire = AsyncMock(return_value=True)
+    ep._send_otp = AsyncMock(return_value={'status': 'success'})
+
+    result = await ep._verify_otp_fallback_chain('pre_login_easypaisa_533302', session)
+
+    # 结果应该是 _urm90040_fallback 返回的 (再发 OTP)
+    assert result['status'] == 'error'
+    assert result['data']['code'] == 'SL_NEEDS_OTP'
+    assert result['data']['next_step'] == 'verify_otp'
+    # queryAccountList 不应该被调（secondLogin 已经 urm90040 了）
+    ep._call_query_account_list.assert_not_awaited()

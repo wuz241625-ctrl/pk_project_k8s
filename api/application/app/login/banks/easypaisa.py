@@ -1353,19 +1353,55 @@ class EasyPaisa:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def _verify_otp_fallback_chain(self, redis_key, session_data):
-        """hotfix-2 P0: fallback 两阶段:
-        Stage 1: secondLogin(with_pwd=True) 一击救冻 (实证 2026-05-15)
-        Stage 2: 完整兜底 upload+verify+secondLogin(with_pwd) 仅 Stage 1 仍 URM90040 时跑。
+        """hotfix-2 P0: fallback 完整 chain — upload_data + verifyFingerprint + secondLogin(with_pwd) + queryAccountList。
+
+        fallback 路径每次 loginStep2 完成后都需要重新建立云机端指纹验证
+        (与 _pre_login_second_time_chain 二次上号路径不同; 二次上号路径
+        云机 session 仍有效所以不需要重新 verify)。secondLogin 必须带
+        pwd 救冻 URM90040 (实证 2026-05-15: 03194834960 pwd=11223 → code=200)。
         """
         funcName = '_verify_otp_fallback_chain'
         payment_id = session_data.get('id')
 
-        # Stage 1: secondLogin 带 pwd 救冻
-        sl1 = await self._call_second_login(session_data, with_pwd=True)
-        outcome1 = sl1.get('outcome')
-        if outcome1 == 'success':
-            return await self._fallback_finish_with_query_accts(redis_key, session_data, funcName)
-        if outcome1 == 'needs_pin_change':
+        # 1. 本地 ZIP 防御性检查
+        payment = await self._query_payment(payment_id) if payment_id else None
+        fingerprint_path = payment.get('fingerprint_path') if payment else None
+        if not fingerprint_path or not os.path.exists(fingerprint_path):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason='fallback path: local fingerprint missing',
+                error_code='EP_FP_FILE_MISSING',
+            )
+
+        # 2. upload_data 推 ZIP
+        pushed = await self._call_upload_data(session_data, fingerprint_path)
+        if not pushed:
+            return {
+                'status': 'error',
+                'message': '上传指纹失败',
+                'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'phase': LoginStatus.OTP_VERIFIED,
+                         'id': payment_id},
+            }
+
+        # 3. verifyFingerprint 云机验指纹
+        fp = await self._call_verify_fingerprint(session_data)
+        if fp.get('outcome') != 'success':
+            return {
+                'status': 'error',
+                'message': '指纹验证被拒',
+                'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'phase': LoginStatus.OTP_VERIFIED,
+                         'id': payment_id},
+            }
+
+        # 4. secondLogin(with_pwd=True) 带 pwd 救冻 URM90040
+        sl = await self._call_second_login(session_data, with_pwd=True)
+        outcome = sl.get('outcome')
+        if outcome == 'urm90040':
+            # fallback 路径上仍 URM90040 → 再走 _urm90040_fallback (counter++, 可能再发 OTP)
+            return await self._urm90040_fallback(redis_key, session_data, sl.get('message', ''))
+        if outcome == 'needs_pin_change':
             self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
                                            LoginStatus.AWAITING_PIN_CHANGE, funcName)
             await self._update_session_status(redis_key, session_data, LoginStatus.AWAITING_PIN_CHANGE,
@@ -1377,60 +1413,25 @@ class EasyPaisa:
                          'phase': LoginStatus.AWAITING_PIN_CHANGE,
                          'id': payment_id},
             }
-        if outcome1 == 'cooldown':
-            session_data['last_error'] = {'code': 'SL_COOLDOWN', 'cd_until': sl1.get('cd_until', 0)}
+        if outcome == 'cooldown':
+            session_data['last_error'] = {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until', 0)}
             await self._persist_session_data(redis_key, session_data)
             return {
                 'status': 'error',
                 'message': 'secondLogin 冷却中',
-                'data': {'code': 'SL_COOLDOWN', 'cd_until': sl1.get('cd_until', 0),
+                'data': {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until', 0),
                          'phase': LoginStatus.OTP_VERIFIED,
                          'id': payment_id},
             }
-        if outcome1 != 'urm90040':
-            # 非 URM90040 失败 → 直接 NEEDS_RELOGIN
+        if outcome != 'success':
             return await self._force_terminal_needs_relogin(
                 redis_key=redis_key, session_data=session_data,
-                reason=f'fallback Stage1 secondLogin outcome={outcome1} msg={sl1.get("message", "")}',
-                error_code='SL_NEEDS_RELOGIN' if outcome1 == 'session_expired' else 'SL_UPSTREAM_ERROR',
+                reason=f'fallback secondLogin outcome={outcome} msg={sl.get("message", "")}',
+                error_code='SL_NEEDS_RELOGIN' if outcome == 'session_expired' else 'SL_UPSTREAM_ERROR',
             )
 
-        # Stage 2: URM90040 仍存在 → 完整兜底
-        self.logger.info(f'{self._log_key(funcName)} Stage 1 URM90040 → Stage 2 完整兜底')
-        payment = await self._query_payment(payment_id) if payment_id else None
-        fingerprint_path = payment.get('fingerprint_path') if payment else None
-        if not fingerprint_path or not os.path.exists(fingerprint_path):
-            return await self._force_terminal_needs_relogin(
-                redis_key=redis_key, session_data=session_data,
-                reason='fallback Stage2 local fingerprint missing',
-                error_code='EP_FP_FILE_MISSING',
-            )
-        pushed = await self._call_upload_data(session_data, fingerprint_path)
-        if not pushed:
-            return await self._force_terminal_needs_relogin(
-                redis_key=redis_key, session_data=session_data,
-                reason='fallback Stage2 upload_data failed',
-                error_code='FP_UPSTREAM_REJECTED',
-            )
-        fp = await self._call_verify_fingerprint(session_data)
-        if fp.get('outcome') != 'success':
-            return await self._force_terminal_needs_relogin(
-                redis_key=redis_key, session_data=session_data,
-                reason=f'fallback Stage2 verifyFingerprint outcome={fp.get("outcome")}',
-                error_code='FP_UPSTREAM_REJECTED',
-            )
-        sl2 = await self._call_second_login(session_data, with_pwd=True)
-        outcome2 = sl2.get('outcome')
-        if outcome2 == 'success':
-            return await self._fallback_finish_with_query_accts(redis_key, session_data, funcName)
-        if outcome2 == 'urm90040':
-            # 兜底仍 URM90040 → 再走 _urm90040_fallback（counter++，可能再发 OTP）
-            return await self._urm90040_fallback(redis_key, session_data, sl2.get('message', ''))
-        return await self._force_terminal_needs_relogin(
-            redis_key=redis_key, session_data=session_data,
-            reason=f'fallback Stage2 secondLogin outcome={outcome2} msg={sl2.get("message", "")}',
-            error_code='SL_NEEDS_RELOGIN' if outcome2 == 'session_expired' else 'SL_UPSTREAM_ERROR',
-        )
+        # 5. queryAccountList → ACCOUNT_SELECTION_REQUIRED
+        return await self._fallback_finish_with_query_accts(redis_key, session_data, funcName)
 
     async def _fallback_finish_with_query_accts(self, redis_key, session_data, parent_funcName):
         """fallback secondLogin 成功后续推 queryAccountList → ACCOUNT_SELECTION_REQUIRED。"""
