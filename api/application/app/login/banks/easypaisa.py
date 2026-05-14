@@ -1748,7 +1748,7 @@ class EasyPaisa:
             self._assert_status_transition(
                 session_data,
                 LoginStatus.AWAITING_PIN_CHANGE,
-                LoginStatus.FINGERPRINT_VERIFIED,
+                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
                 funcName,
             )
             required_session_fields = ['phone', 'id', 'bankname']
@@ -1787,24 +1787,61 @@ class EasyPaisa:
                     }
                 }
             await self._save_payment(session_data, pin=pin)
-            self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态')
+            # hotfix-2 P0: 内部续推 secondLogin(with_pwd=True) + queryAccountList → ACCOUNT_SELECTION_REQUIRED
+            # 更新 session.pinCode 为新 PIN 让 secondLogin 用新值
+            session_data['pinCode'] = pin
+            session_data['pin_times'] = session_pin_times
+            session_data['last_error'] = None
+            sl = await self._call_second_login(session_data, with_pwd=True)
+            sl_outcome = sl.get('outcome')
+            if sl_outcome != 'success':
+                self.logger.warning(
+                    f'{self._log_key(funcName)} change_pin 续推 secondLogin 失败 outcome={sl_outcome}'
+                )
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key,
+                    session_data=session_data,
+                    reason=f'change_pin chain secondLogin outcome={sl_outcome}',
+                    error_code='SL_NEEDS_RELOGIN' if sl_outcome == 'session_expired' else 'SL_UPSTREAM_ERROR',
+                )
+            qal = await self._call_query_account_list(session_data)
+            if qal.get('outcome') != 'success':
+                self.logger.warning(
+                    f'{self._log_key(funcName)} change_pin 续推 queryAccountList 失败'
+                )
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key,
+                    session_data=session_data,
+                    reason='change_pin chain queryAccountList failed',
+                    error_code='SL_UPSTREAM_ERROR',
+                )
+            accounts_json = qal.get('accounts_json')
+            self.logger.info(f'{self._log_key(funcName)} 续推成功，更新会话状态 → ACCOUNT_SELECTION_REQUIRED')
             await self._update_session_status(
                 redis_key,
                 session_data,
-                LoginStatus.FINGERPRINT_VERIFIED,
+                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
                 {
                     'pin_times': session_pin_times,
                     'pinCode': pin,
+                    'account_entire': accounts_json,
                     'last_error': None,
                 }
             )
+            try:
+                accounts_list = json.loads(accounts_json) if isinstance(accounts_json, str) else (accounts_json or [])
+            except (TypeError, ValueError):
+                accounts_list = []
             result = {
                 'status': 'success',
                 'message': 'PIN修改成功',
                 'data': {
+                    'id': session_data.get('id'),
+                    'next_step': 'select_accts',
+                    'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                    'accounts': accounts_list,
                     'maximum': PIN_CHANGE_ATTEMPTS_MAXIMUM,
                     'current': session_pin_times,
-                    'phase': LoginStatus.FINGERPRINT_VERIFIED,
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
