@@ -1081,124 +1081,73 @@ class EasyPaisa:
         )
 
     async def send_otp_http(self, data):
-        """OTP发送"""
+        """v1.9 重写：纯 loginStep1 + 20s 节流。spec §3.3.2。"""
         funcName = 'send_otp_http'
         lockName = 'send_otp'
-        self.login_data = data
         payment_lock_id = None
         payment_lock_value = None
+        self.login_data = data
         try:
-            self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
-            required_fields = ['bankname', 'payment_id']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
-                self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
+            required = ['bankname', 'payment_id']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing)}")
             bankname = data['bankname']
             payment_id = data['payment_id']
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-            try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
-                payment_lock_id = lock_result.get('lock_id')
-                payment_lock_value = lock_result.get('lock_value')
-            except NewApiError as lock_error:
-                self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
-                raise lock_error
-            self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
+            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
             session_data = await self._get_session_data(redis_key)
             if not session_data:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
-                self.logger.error(f'{self._log_key(funcName)} 请确保按正确流程调用:')
-                self.logger.error(f'{self._log_key(funcName)}    1. pre_login_http (初始化会话)')
-                self.logger.error(f'{self._log_key(funcName)}    2. send_otp_http ← 当前步骤')
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
-            required_session_fields = ['phone', 'id', 'bankname']
-            missing_fields = [field for field in required_session_fields if not session_data.get(field)]
+            required_fields = ['phone', 'id', 'bankname']
+            missing_fields = [f for f in required_fields if not session_data.get(f)]
             if missing_fields:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
                 raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
-            session_phone = session_data.get('phone')
-            session_payment_id = session_data.get('id')
-            session_bankname = session_data.get('bankname')
-            if session_payment_id and await self.redis.get(self._login_lock_payment_key(session_payment_id)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            if session_phone and await self.redis.get(self._login_lock_phone_key(session_phone)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            self.logger.info(
-                f'{self._log_key(funcName)} 会话: phone={session_phone}, '
-                f'status={session_data.get("status", "UNKNOWN")} → {LoginStatus.OTP_SENT}'
-            )
-            current_status = session_data.get('status', 'UNKNOWN')
-            is_resend = current_status == LoginStatus.OTP_SENT
+            current_status = session_data.get('status')
+            # 节流：sendOTPTime 距今 < 20s 则不调云机
+            last_send = int(session_data.get('sendOTPTime') or 0)
+            now_ts = int(time.time())
+            if last_send and (now_ts - last_send) < self.RESEND_COOLDOWN_SECONDS:
+                wait_left = self.RESEND_COOLDOWN_SECONDS - (now_ts - last_send)
+                raise NewApiError(
+                    ErrorCode.PaymentLocked,
+                    f'Please wait {wait_left}s before requesting a new OTP',
+                )
+            # 允许 PRE_LOGIN_CREATED → OTP_SENT 或 OTP_SENT → OTP_SENT(resend)
             if current_status not in (LoginStatus.PRE_LOGIN_CREATED, LoginStatus.OTP_SENT):
-                self._assert_status_transition(
-                    session_data,
-                    LoginStatus.PRE_LOGIN_CREATED,
-                    LoginStatus.OTP_SENT,
-                    funcName,
+                raise NewApiError(
+                    'INVALID_TRANSITION',
+                    f'send_otp expected PRE_LOGIN_CREATED/OTP_SENT, got {current_status}'
                 )
-            if is_resend:
-                last_send_ts = int(session_data.get('sendOTPTime') or 0)
-                now_ts = int(time.time())
-                if last_send_ts and (now_ts - last_send_ts) < self.RESEND_COOLDOWN_SECONDS:
-                    wait_left = self.RESEND_COOLDOWN_SECONDS - (now_ts - last_send_ts)
-                    raise NewApiError(
-                        ErrorCode.PaymentLocked,
-                        f'Please wait {wait_left}s before requesting a new OTP',
-                    )
-                self._assert_status_transition(
-                    session_data,
-                    LoginStatus.OTP_SENT,
-                    LoginStatus.OTP_SENT,
-                    funcName,
-                )
-                self.logger.info(f'{self._log_key(funcName)} 状态转换验证通过！(otpSent → otpSent resend)')
-            else:
-                self._assert_status_transition(
-                    session_data,
-                    LoginStatus.PRE_LOGIN_CREATED,
-                    LoginStatus.OTP_SENT,
-                    funcName,
-                )
-                self.logger.info(f'{self._log_key(funcName)} 状态转换验证通过！(preLoginCreated → otpSent)')
+            # 调云机 loginStep1
             api_result = await self._send_otp(session_data)
-            self.logger.info(
-                f'{self._log_key(funcName)} 正在更新会话状态. {current_status} → {LoginStatus.OTP_SENT}')
+            is_resend = current_status == LoginStatus.OTP_SENT
             await self._update_session_status(
                 redis_key, session_data, LoginStatus.OTP_SENT,
                 {
-                    'sendOTPTime': int(time.time()),
+                    'sendOTPTime': now_ts,
                     'resend_count': int(session_data.get('resend_count', 0)) + (1 if is_resend else 0),
                 }
             )
-            self.logger.info(f'{self._log_key(funcName)} 完成')
-            result = {
+            return {
                 'status': 'success',
-                'message': 'OTP发送成功，请输入收到的验证码',
+                'message': 'OTP 已发送',
                 'data': {
-                    'next_status': LoginStatus.OTP_VERIFIED,
-                    'phone': session_data.get('phone'),
-                    'instruction': f"请查看手机 {session_data.get('phone')} 收到的OTP验证码短信"
-                }
+                    'next_step': 'verify_otp',
+                    'phase': LoginStatus.OTP_SENT,
+                    'expires_in': 120,
+                },
             }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
         except NewApiError:
-            raise  # 重新抛出NewApiError，不要重新包装
+            raise
         except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
-            self.logger.error(f'异常类型: {type(e).__name__}')
-            self.logger.error(f'异常信息: {str(e)}')
-            import traceback
-            self.logger.error(f'完整异常堆栈:')
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    self.logger.error(f'   {line}')
-            raise NewApiError(ErrorCode.SendOTPFail, f'OTP Sending failed: {str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.SendOTPFail, f'OTP Sending failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
     async def verify_otp_http(self, data):
         """OTP验证"""
         funcName = 'verify_otp_http'
