@@ -1212,15 +1212,13 @@ class EasyPaisa:
 
     async def _update_payment_fingerprint_path(self, payment_id, full_path):
         funcName = '_update_payment_fingerprint_path'
-        try:
-            with self.handler.db_orm.sessionmaker() as session:
-                session.execute(
-                    update(Payment).where(Payment.id == payment_id).values(fingerprint_path=full_path)
-                )
-                session.commit()
-            self.logger.info(f'{self._log_key(funcName)} payment_id={payment_id} path={full_path}')
-        except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+        # Fix #4: 上层依赖此函数的异常做回滚，必须 re-raise（不要 try/except 吃异常）
+        with self.handler.db_orm.sessionmaker() as session:
+            session.execute(
+                update(Payment).where(Payment.id == payment_id).values(fingerprint_path=full_path)
+            )
+            session.commit()
+        self.logger.info(f'{self._log_key(funcName)} payment_id={payment_id} path={full_path}')
 
     async def send_otp_http(self, data):
         """v1.9 重写：纯 loginStep1 + 20s 节流。spec §3.3.2。"""
@@ -1519,15 +1517,17 @@ class EasyPaisa:
                     'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
                              'phase': LoginStatus.OTP_VERIFIED},
                 }
-            # ③ 全成功 → 落盘 + 更新 MySQL + 删 pending
+            # ③ 全成功 → 落盘（原子写）+ 更新 MySQL + 删 pending
             phone = session_data.get('phone')
             filename = self.FINGERPRINT_FILENAME.format(
                 bankname=bankname, payment_id=resolved_payment_id, phone=phone
             )
             full_path = os.path.join(self.FINGERPRINT_PATH, filename)
+            # Fix #4: 先写 .new 临时文件，MySQL 成功后才 atomic rename 替换老 ZIP
+            tmp_path = full_path + '.new'
             try:
                 os.makedirs(self.FINGERPRINT_PATH, exist_ok=True)
-                with open(full_path, 'wb') as fp_file:
+                with open(tmp_path, 'wb') as fp_file:
                     fp_file.write(zip_body)
             except Exception as e:
                 self.logger.error(f'{self._log_key(funcName)} 落盘失败: {e}', exc_info=True)
@@ -1536,7 +1536,24 @@ class EasyPaisa:
                     'message': '本地保存失败',
                     'data': {'code': 'SL_UPSTREAM_ERROR', 'phase': LoginStatus.OTP_VERIFIED},
                 }
-            await self._update_payment_fingerprint_path(resolved_payment_id, full_path)
+            # MySQL 写入成功才 atomic rename，失败回滚删 .new
+            try:
+                await self._update_payment_fingerprint_path(resolved_payment_id, full_path)
+            except Exception as e:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                self.logger.error(
+                    f'{self._log_key(funcName)} MySQL 写入失败，回滚 .new: {e}',
+                    exc_info=True,
+                )
+                return {
+                    'status': 'error',
+                    'message': 'MySQL 写入失败',
+                    'data': {'code': 'SL_UPSTREAM_ERROR', 'phase': LoginStatus.OTP_VERIFIED},
+                }
+            os.rename(tmp_path, full_path)  # atomic 替换老 ZIP
             await self.redis.delete(pending_key)
             self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
                                            LoginStatus.FINGERPRINT_VERIFIED, funcName)
