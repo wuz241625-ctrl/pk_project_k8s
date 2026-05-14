@@ -1797,91 +1797,48 @@ class EasyPaisa:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def query_accts_http(self, data):
-        """账户查询"""
+        """v1.9 stub：second_login_http 已写入 session.account_entire，这里直接读返回。spec §6.4。"""
         funcName = 'query_accts_http'
         lockName = 'query_accts'
         payment_lock_id = None
         payment_lock_value = None
         self.login_data = data
         try:
-            self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
-            required_fields = ['bankname', 'payment_id']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
-                self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
+            required = ['bankname', 'payment_id']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing: {', '.join(missing)}")
             bankname = data['bankname']
             requested_payment_id = self._normalize_payment_id(data['payment_id'])
-            try:
-                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
-                payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
-                payment_lock_id = lock_result.get('lock_id')
-                payment_lock_value = lock_result.get('lock_value')
-            except NewApiError as lock_error:
-                self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
-                raise lock_error
             session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
-            redis_key = session_ctx.get('redis_key')
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
+            lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call second_login_http first')
-            if session_ctx.get('is_aliased'):
-                self.logger.info(
-                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={payment_id}'
-                )
-            self._assert_status_transition(
-                session_data,
-                LoginStatus.SECOND_LOGIN_PASSED,
-                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-                funcName,
-            )
-            api_result = await self._query_accts(session_data['phone'])
-            accts_json = api_result.get('data')
-            accts_data = json.loads(accts_json)
-            if len(accts_data) == 0:
-                raise NewApiError(ErrorCode.QueryAccts, f'can not find any account')
-            active_accounts = [item for item in accts_data if item.get('accountStatus', '') == "ACTIVE"]
-            if not active_accounts:
-                raise NewApiError(ErrorCode.QueryAccts, 'can not find any active account')
-            self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
-            await self._update_payment(payment_id, session_data, account_entire=accts_json)
-            await self._update_session_status(
-                redis_key,
-                session_data,
-                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-                {
-                    'account_entire': accts_json,
-                    'accounts': active_accounts,
-                    'last_error': None,
-                }
-            )
-            result = {
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
+            if session_data.get('status') != LoginStatus.ACCOUNT_SELECTION_REQUIRED:
+                raise NewApiError('INVALID_TRANSITION',
+                                  f'query_accts expected ACCOUNT_SELECTION_REQUIRED, got {session_data.get("status")}')
+            raw = session_data.get('account_entire')
+            accounts = self._load_account_list(raw)
+            active = self._filter_active_accounts(accounts)
+            return {
                 'status': 'success',
                 'data': {
                     'account_selected': session_data.get('account_accno', ''),
-                    'account_entire': active_accounts,
+                    'account_entire': active,
                     'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-                }
+                },
             }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
         except NewApiError:
-            raise  # 重新抛出NewApiError，不要重新包装
+            raise
         except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
-            self.logger.error(f'异常类型: {type(e).__name__}')
-            self.logger.error(f'异常信息: {str(e)}')
-            import traceback
-            self.logger.error(f'完整异常堆栈:')
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    self.logger.error(f'   {line}')
-            raise NewApiError(ErrorCode.ChangePin, f'Query Accounts failed: {str(e)}')
+            raise NewApiError(ErrorCode.QueryAccts, f'query_accts failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
     @staticmethod
     def _load_account_list(raw_accounts):
         if not raw_accounts:
