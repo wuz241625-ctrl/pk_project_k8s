@@ -134,3 +134,59 @@ async def test_u17_payment_status_returns_new_enum_strings(ep_mock):
     assert result['status'] == 'success'
     assert result['datas'][0]['status'] == 'fingerprintVerified'
     assert result['datas'][0]['next_action'] == 'second_login'
+
+
+@pytest.mark.asyncio
+async def test_second_login_idempotent_after_pre_login_chain(ep_mock):
+    """Fix #1: 二次上号续推完成后 APP 调 second_login_http 应幂等返回 success。"""
+    session = {
+        'id': '533294', 'phone': '03130268536', 'bankname': 'easypaisa',
+        'status': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+        'account_entire': '[{"accno":"53512051","accountStatus":"ACTIVE"}]',
+        'status_history': [LoginStatus.PRE_LOGIN_CREATED, LoginStatus.ACCOUNT_SELECTION_REQUIRED],
+    }
+    ep_mock._resolve_session_context = AsyncMock(return_value={
+        'session_data': session, 'redis_key': 'pre_login_easypaisa_533294',
+        'resolved_payment_id': '533294',
+    })
+    ep_mock._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'k', 'lock_value': 'v'}
+    )
+    ep_mock._release_payment_interface_lock = AsyncMock(return_value=True)
+    # _call_second_login 不该被调用（幂等短路）
+    ep_mock._call_second_login = AsyncMock(side_effect=Exception('should not be called'))
+
+    result = await ep_mock.second_login_http({
+        'bankname': 'easypaisa', 'payment_id': '533294'
+    })
+
+    assert result['status'] == 'success'
+    assert result['data']['ok'] is True
+    assert result['data']['next_step'] == 'query_accts'
+    assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_second_login_idempotent_after_active(ep_mock):
+    """Fix #1: ACTIVE_SUCCESSFUL 状态调 second_login_http 也幂等成功。"""
+    session = {
+        'id': '533294', 'phone': '03130268536', 'bankname': 'easypaisa',
+        'status': LoginStatus.ACTIVE_SUCCESSFUL,
+        'status_history': [LoginStatus.ACTIVE_SUCCESSFUL],
+    }
+    ep_mock._resolve_session_context = AsyncMock(return_value={
+        'session_data': session, 'redis_key': 'pre_login_easypaisa_533294',
+        'resolved_payment_id': '533294',
+    })
+    ep_mock._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'k', 'lock_value': 'v'}
+    )
+    ep_mock._release_payment_interface_lock = AsyncMock(return_value=True)
+    ep_mock._call_second_login = AsyncMock(side_effect=Exception('should not be called'))
+
+    result = await ep_mock.second_login_http({
+        'bankname': 'easypaisa', 'payment_id': '533294'
+    })
+
+    assert result['status'] == 'success'
+    assert result['data']['phase'] == LoginStatus.ACTIVE_SUCCESSFUL

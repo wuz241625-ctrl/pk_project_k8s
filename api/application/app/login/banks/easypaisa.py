@@ -1582,6 +1582,22 @@ class EasyPaisa:
             if not session_data:
                 raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
             cur = session_data.get('status')
+            # spec §3.6.1 风格幂等：二次上号续推 / fallback chain 已完成
+            if cur in (LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                       LoginStatus.ACTIVE_SUCCESSFUL):
+                self.logger.info(
+                    f'{self._log_key(funcName)} 幂等返回: 状态已 {cur}，'
+                    f'second_login 续推已由 pre_login/verify_otp 完成'
+                )
+                return {
+                    'status': 'success',
+                    'message': '二次登录已就绪（幂等）',
+                    'data': {
+                        'ok': True,
+                        'next_step': 'query_accts',
+                        'phase': cur,
+                    },
+                }
             # 入态校验：必须是 FINGERPRINT_VERIFIED
             if cur != LoginStatus.FINGERPRINT_VERIFIED:
                 raise NewApiError('INVALID_TRANSITION',
