@@ -17,8 +17,12 @@ class EasyPaisaSecondLoginFallbackSourceTests(unittest.TestCase):
 
         self.assertIn("await asyncio.sleep(2)", second_login_block)
         self.assertIn("retry_result = await self._perform_second_login(session_data)", second_login_block)
+        # 501 走 fallback
         self.assertIn("return await self._fallback_to_first_login(session_data, redis_key, reason=message)", second_login_block)
-        self.assertNotIn("session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}", second_login_block)
+        # 501 检测
+        self.assertIn("'501' in str(message) or 'AccountInvalid' in str(message)", second_login_block)
+        # 防循环
+        self.assertIn("fallback_from", second_login_block)
 
     def test_fallback_session_keeps_pin_code_and_releases_login_locks(self):
         source = self.read_source()

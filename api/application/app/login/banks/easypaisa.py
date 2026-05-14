@@ -2096,25 +2096,10 @@ class EasyPaisa:
                     }
                 }
 
-            # upstream_error: 501/503/网络错误时回退到 loginStep1
+            # upstream_error: 根据错误类型分别处理
             message = second_login_result.get('message', '')
 
-            # 防循环：如果本次 session 已经是 fallback 来的，不再二次回退
-            if session_data.get('fallback_from') == 'secondLogin':
-                self.logger.warning(
-                    f'{self._log_key(funcName)} 二次secondLogin仍失败，不再回退, '
-                    f'phone={session_data.get("phone")}'
-                )
-                return {
-                    'status': 'error',
-                    'message': f'secondLogin二次失败: {message}',
-                    'data': {
-                        'code': 'SL_UPSTREAM_ERROR',
-                        'phase': 'failed',
-                    }
-                }
-
-            # 423 ServerBusy：等待 2 秒后重试一次
+            # 423 ServerBusy：等待 2 秒后重试一次，仍失败则报错
             if self._is_server_busy(message):
                 await asyncio.sleep(2)
                 retry_result = await self._perform_second_login(session_data)
@@ -2129,9 +2114,47 @@ class EasyPaisa:
                             'phase': 'secondLoginPassed',
                         }
                     }
+                # 423 重试仍失败，直接报错
+                session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}
+                await self._persist_session_data(redis_key, session_data)
+                return {
+                    'status': 'error',
+                    'message': message or '云机正忙，请稍后重试',
+                    'data': {
+                        'code': 'SL_UPSTREAM_ERROR',
+                        'phase': 'failed',
+                    }
+                }
 
-            # 501/503/网络错误/423 重试失败：回退到 loginStep1
-            return await self._fallback_to_first_login(session_data, redis_key, reason=message)
+            # 501 被抢登：回退到 loginStep1 重新注册云机
+            if '501' in str(message) or 'AccountInvalid' in str(message):
+                # 防循环：已经 fallback 过一次不再二次回退
+                if session_data.get('fallback_from') == 'secondLogin':
+                    self.logger.warning(
+                        f'{self._log_key(funcName)} 二次secondLogin仍失败(501)，不再回退, '
+                        f'phone={session_data.get("phone")}'
+                    )
+                    return {
+                        'status': 'error',
+                        'message': f'secondLogin二次失败: {message}',
+                        'data': {
+                            'code': 'SL_UPSTREAM_ERROR',
+                            'phase': 'failed',
+                        }
+                    }
+                return await self._fallback_to_first_login(session_data, redis_key, reason=message)
+
+            # 503/网络错误/其他：直接报错，不做 fallback
+            session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': message or '上游错误',
+                'data': {
+                    'code': 'SL_UPSTREAM_ERROR',
+                    'phase': 'failed',
+                }
+            }
         except NewApiError:
             raise
         except Exception as e:
