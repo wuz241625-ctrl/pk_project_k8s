@@ -1170,21 +1170,18 @@ class EasyPaisa:
         funcName = '_urm90040_fallback'
         payment_id = session_data.get('id')
         count_key = self.URM90040_COUNT_KEY.format(payment_id=payment_id)
-        cur = await self.redis.get(count_key)
-        try:
-            cur_count = int(cur) if cur else 0
-        except (TypeError, ValueError):
-            cur_count = 0
-        if cur_count >= self.URM90040_LIMIT:
+        # Fix #3: 原子 INCR（不再 GET+SETEX race），首次自增后才设 TTL
+        new_count = await self.redis.incr(count_key)
+        if new_count == 1:
+            await self.redis.expire(count_key, self.URM90040_WINDOW_SECONDS)
+        if new_count > self.URM90040_LIMIT:
             return await self._force_terminal_needs_relogin(
                 redis_key=redis_key, session_data=session_data,
-                reason=f'URM90040 count {cur_count} exceeded {self.URM90040_LIMIT}/hour',
+                reason=f'URM90040 count {new_count} exceeded {self.URM90040_LIMIT}/hour',
                 error_code='SL_NEEDS_RELOGIN',
                 message='账号疑似被频繁占用，请联系运维介入',
             )
-        # 计数 +1，状态 reset 到 PRE_LOGIN_CREATED 再走 loginStep1
-        new_count = cur_count + 1
-        await self.redis.setex(count_key, self.URM90040_WINDOW_SECONDS, new_count)
+        # 计数已 +1，状态 reset 到 PRE_LOGIN_CREATED 再走 loginStep1
         session_data['fallback_from_urm90040'] = True
         # 状态 reset：当前可能在 PRE_LOGIN_CREATED 或 FINGERPRINT_VERIFIED
         current = session_data.get('status')
