@@ -1202,11 +1202,14 @@ class EasyPaisa:
         )
         return {
             'status': 'error',
-            'message': '账号被抢登，已重新发送 OTP',
+            'message': '账号被抢登，已重新发送 OTP，请输入验证码',
             'data': {
+                'id': payment_id,  # hotfix-2 P0: APP exchange_api.dart line 193 必需
                 'code': 'SL_NEEDS_OTP',
                 'next_step': 'verify_otp',
                 'phase': LoginStatus.OTP_SENT,
+                'expires_in': 60,  # hotfix-2 P0: 云机实际 60s 过期（实战值）
+                'urm90040_count': new_count,  # hotfix-2 P0: 暴露限频计数供 APP/监控
             },
         }
 
@@ -1277,7 +1280,7 @@ class EasyPaisa:
                 'data': {
                     'next_step': 'verify_otp',
                     'phase': LoginStatus.OTP_SENT,
-                    'expires_in': 120,
+                    'expires_in': 60,  # hotfix-2 P0: 云机实际 60s（与 _urm90040_fallback 对齐）
                 },
             }
         except NewApiError:

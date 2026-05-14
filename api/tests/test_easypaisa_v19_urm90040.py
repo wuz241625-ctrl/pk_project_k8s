@@ -90,3 +90,30 @@ async def test_urm90040_first_call_sets_expire(ep):
 
     # 必须调用过 expire 且 TTL=3600
     ep.redis.expire.assert_called_with('easypaisa:urm90040_count:533290', 3600)
+
+
+@pytest.mark.asyncio
+async def test_urm90040_envelope_contains_all_p0_fields(ep):
+    """hotfix-2 P0: URM90040 fallback envelope 必含 id + next_step + expires_in:60 + urm90040_count (修真实事故 03194834960)。"""
+    ep.redis.incr = AsyncMock(return_value=1)
+    ep.redis.expire = AsyncMock(return_value=True)
+    ep.redis.setex = AsyncMock(return_value=True)
+    ep._send_otp = AsyncMock(return_value={'status': 'success'})
+    ep._persist_session_data = AsyncMock(return_value=123)
+
+    session = {
+        'id': 533302, 'phone': '03194834960', 'bankname': 'easypaisa',
+        'status': LoginStatus.PRE_LOGIN_CREATED,
+        'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+    }
+    result = await ep._urm90040_fallback('pre_login_easypaisa_533302', session, 'URM90040')
+
+    assert result['status'] == 'error'
+    data = result['data']
+    # P0 必须含的字段（修 APP exchange_api.dart line 193 抛 pre_login_no_id 的真实事故）
+    assert data['id'] == 533302, 'envelope 必须含 id'
+    assert data['next_step'] == 'verify_otp', 'envelope 必须含 next_step'
+    assert data['code'] == 'SL_NEEDS_OTP'
+    assert data['phase'] == LoginStatus.OTP_SENT
+    assert data['expires_in'] == 60, 'OTP 实际 60s 过期（云机实战值），不是 120'
+    assert data['urm90040_count'] == 1, 'envelope 暴露当前限频计数让 APP/监控可见'
