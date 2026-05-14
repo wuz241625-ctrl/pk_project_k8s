@@ -36,42 +36,46 @@ class LoginStatus:
     PRE_LOGIN_CREATED = "preLoginCreated"
     OTP_SENT = "otpSent"
     OTP_VERIFIED = "otpVerified"
-    FINGERPRINT_UPLOAD_REQUIRED = "fingerprintUploadRequired"
-    FINGERPRINT_UPLOADED = "fingerprintUploaded"
     FINGERPRINT_VERIFIED = "fingerprintVerified"
-    SECOND_LOGIN_READY = "secondLoginReady"
-    SECOND_LOGIN_PASSED = "secondLoginPassed"
     AWAITING_PIN_CHANGE = "awaitingPinChange"
     ACCOUNT_SELECTION_REQUIRED = "accountSelectionRequired"
     ACTIVE_SUCCESSFUL = "activeSuccessful"
-    PRE_LOGIN = PRE_LOGIN_CREATED
-    SEND_OTP = OTP_SENT
-    VERIFY_OTP = OTP_VERIFIED
-    LOGIN_SUCCESSFUL = SECOND_LOGIN_PASSED
+    NEEDS_RELOGIN = "needsRelogin"
+
 STATUS_TRANSITIONS = {
-    LoginStatus.PRE_LOGIN_CREATED: [LoginStatus.OTP_SENT],
-    LoginStatus.OTP_SENT: [LoginStatus.OTP_SENT, LoginStatus.OTP_VERIFIED],
-    LoginStatus.OTP_VERIFIED: [
-        LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-        LoginStatus.FINGERPRINT_UPLOADED,
+    LoginStatus.PRE_LOGIN_CREATED: [
+        LoginStatus.OTP_SENT,
+        LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+        LoginStatus.OTP_VERIFIED,
+        LoginStatus.AWAITING_PIN_CHANGE,
+        LoginStatus.NEEDS_RELOGIN,
     ],
-    LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: [LoginStatus.FINGERPRINT_UPLOADED],
-    LoginStatus.FINGERPRINT_UPLOADED: [
+    LoginStatus.OTP_SENT: [
+        LoginStatus.OTP_SENT,
+        LoginStatus.OTP_VERIFIED,
+        LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+        LoginStatus.PRE_LOGIN_CREATED,
+        LoginStatus.NEEDS_RELOGIN,
+    ],
+    LoginStatus.OTP_VERIFIED: [
         LoginStatus.FINGERPRINT_VERIFIED,
-        LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
+        LoginStatus.NEEDS_RELOGIN,
     ],
     LoginStatus.FINGERPRINT_VERIFIED: [
-        LoginStatus.SECOND_LOGIN_PASSED,
+        LoginStatus.ACCOUNT_SELECTION_REQUIRED,
         LoginStatus.AWAITING_PIN_CHANGE,
+        LoginStatus.NEEDS_RELOGIN,
     ],
-    LoginStatus.SECOND_LOGIN_READY: [
-        LoginStatus.SECOND_LOGIN_PASSED,
-        LoginStatus.AWAITING_PIN_CHANGE,
+    LoginStatus.AWAITING_PIN_CHANGE: [
+        LoginStatus.FINGERPRINT_VERIFIED,
+        LoginStatus.NEEDS_RELOGIN,
     ],
-    LoginStatus.SECOND_LOGIN_PASSED: [LoginStatus.ACCOUNT_SELECTION_REQUIRED],
-    LoginStatus.AWAITING_PIN_CHANGE: [LoginStatus.FINGERPRINT_VERIFIED],
-    LoginStatus.ACCOUNT_SELECTION_REQUIRED: [LoginStatus.ACTIVE_SUCCESSFUL],
+    LoginStatus.ACCOUNT_SELECTION_REQUIRED: [
+        LoginStatus.ACTIVE_SUCCESSFUL,
+        LoginStatus.NEEDS_RELOGIN,
+    ],
     LoginStatus.ACTIVE_SUCCESSFUL: [],
+    LoginStatus.NEEDS_RELOGIN: [],
 }
 class ErrorCode:
     MissingParams = '20001'
