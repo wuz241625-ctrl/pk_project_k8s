@@ -1115,12 +1115,53 @@ class EasyPaisa:
             return {'outcome': 'rejected', 'message': str(e)}
 
     async def _call_second_login(self, session_data):
-        """Task 13 placeholder."""
-        return {'outcome': 'session_expired', 'message': 'STUB'}
+        """spec v1.9 secondLogin action。"""
+        funcName = '_call_second_login'
+        try:
+            url = self.API_ENDPOINTS['base_url']
+            request_data = self._build_verify_account_request(session_data)
+            response = self.retry_make_request(method='POST', url=url, data=request_data)
+            if not response or response.status_code != 200:
+                return {'outcome': 'upstream_error', 'message': f'http {response.status_code if response else "none"}'}
+            body = self._decode_indus_response(funcName, response.text)
+            if not isinstance(body, dict):
+                return {'outcome': 'upstream_error', 'message': response.text}
+            code = body.get('code')
+            msg = body.get('msg', '')
+            data_field = body.get('data') or {}
+            msg_cd = data_field.get('msgCd') if isinstance(data_field, dict) else ''
+            if code in (100, 200):
+                return {'outcome': 'success'}
+            # spec §4.1：URM90040 不是永久锁号，是可恢复抢登
+            if code == 501 and msg_cd == 'URM90040':
+                return {'outcome': 'urm90040', 'message': msg_cd}
+            if code == 501:
+                return {'outcome': 'needs_relogin', 'message': msg_cd or msg}
+            if msg_cd == 'URM10004':
+                return {'outcome': 'session_expired', 'message': msg_cd}
+            if msg_cd == 'URM40008':
+                cd_until = int(time.time()) + 60 * 60 * 2
+                return {'outcome': 'cooldown', 'cd_until': cd_until}
+            if msg_cd in ('URM20008', 'URM20017'):
+                return {'outcome': 'needs_pin_change', 'message': msg_cd}
+            return {'outcome': 'upstream_error', 'message': msg_cd or msg}
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            return {'outcome': 'upstream_error', 'message': str(e)}
 
     async def _call_query_account_list(self, session_data):
-        """Task 14 placeholder."""
-        return {'outcome': 'rejected'}
+        """spec v1.9 queryAccountList action。"""
+        funcName = '_call_query_account_list'
+        try:
+            phone = session_data.get('phone')
+            api_result = await self._query_accts(phone)
+            accounts_json = api_result.get('data')
+            if not accounts_json:
+                return {'outcome': 'rejected', 'message': 'empty accounts'}
+            return {'outcome': 'success', 'accounts_json': accounts_json}
+        except Exception as e:
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            return {'outcome': 'rejected', 'message': str(e)}
 
     async def _urm90040_fallback(self, redis_key, session_data, msg):
         """Task 15 placeholder."""
@@ -1475,17 +1516,17 @@ class EasyPaisa:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def second_login_http(self, data):
-        """二次登录。"""
+        """v1.9 重写：secondLogin + queryAccountList，状态 FINGERPRINT_VERIFIED → ACCOUNT_SELECTION_REQUIRED。spec §3.2。"""
         funcName = 'second_login_http'
         lockName = 'second_login'
         payment_lock_id = None
         payment_lock_value = None
         self.login_data = data
         try:
-            required_fields = ['bankname', 'payment_id']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                raise NewApiError(ErrorCode.MissingParams, f'Missing required parameters: {", ".join(missing_fields)}')
+            required = ['bankname', 'payment_id']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing: {', '.join(missing)}")
             bankname = data['bankname']
             requested_payment_id = self._normalize_payment_id(data['payment_id'])
             session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
@@ -1493,146 +1534,84 @@ class EasyPaisa:
             lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
             payment_lock_id = lock_result.get('lock_id')
             payment_lock_value = lock_result.get('lock_value')
-            session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
             redis_key = session_ctx.get('redis_key')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
-            if session_ctx.get('is_aliased'):
-                self.logger.info(
-                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
+            cur = session_data.get('status')
+            # 入态校验：必须是 FINGERPRINT_VERIFIED
+            if cur != LoginStatus.FINGERPRINT_VERIFIED:
+                raise NewApiError('INVALID_TRANSITION',
+                                  f'second_login expected FINGERPRINT_VERIFIED, got {cur}')
+            sl = await self._call_second_login(session_data)
+            outcome = sl.get('outcome')
+            if outcome == 'urm90040':
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key, session_data=session_data,
+                    reason='secondLogin URM90040 outside pre_login chain', error_code='SL_NEEDS_RELOGIN',
                 )
-            current_status = session_data.get('status')
-            if current_status not in (LoginStatus.FINGERPRINT_VERIFIED, LoginStatus.SECOND_LOGIN_READY):
-                self._assert_status_transition(
-                    session_data,
-                    LoginStatus.FINGERPRINT_VERIFIED,
-                    LoginStatus.SECOND_LOGIN_PASSED,
-                    funcName,
-                )
-            self._assert_status_transition(
-                session_data,
-                current_status,
-                LoginStatus.SECOND_LOGIN_PASSED,
-                funcName,
-            )
-            second_login_result = await self._perform_second_login(session_data)
-            outcome = second_login_result.get('outcome')
-            if outcome == 'success':
-                se_until = await self._update_session_status(
-                    redis_key,
-                    session_data,
-                    LoginStatus.SECOND_LOGIN_PASSED,
-                    {'last_error': None},
-                )
-                return {
-                    'status': 'success',
-                    'message': '二次登录成功',
-                    'data': {
-                        'phase': LoginStatus.SECOND_LOGIN_PASSED,
-                        'se_until': se_until,
-                    }
-                }
             if outcome == 'needs_pin_change':
-                self._assert_status_transition(
-                    session_data,
-                    current_status,
-                    LoginStatus.AWAITING_PIN_CHANGE,
-                    funcName,
-                )
-                await self._update_session_status(
-                    redis_key,
-                    session_data,
-                    LoginStatus.AWAITING_PIN_CHANGE,
-                    {'last_error': {'code': 'SL_NEEDS_PIN_CHANGE'}},
-                )
+                self._assert_status_transition(session_data, LoginStatus.FINGERPRINT_VERIFIED,
+                                               LoginStatus.AWAITING_PIN_CHANGE, funcName)
+                await self._update_session_status(redis_key, session_data, LoginStatus.AWAITING_PIN_CHANGE,
+                                                  {'last_error': {'code': 'SL_NEEDS_PIN_CHANGE'}})
                 return {
                     'status': 'error',
                     'message': '需要修改 PIN',
-                    'data': {
-                        'code': 'SL_NEEDS_PIN_CHANGE',
-                        'phase': LoginStatus.AWAITING_PIN_CHANGE,
-                    }
-                }
-            if outcome == 'session_expired':
-                session_data['last_error'] = {'code': 'SL_SESSION_EXPIRED'}
-                await self._persist_session_data(redis_key, session_data)
-                return {
-                    'status': 'error',
-                    'message': '会话已过期，请重新开始',
-                    'data': {
-                        'code': 'SL_SESSION_EXPIRED',
-                        'phase': 'needsRelogin',
-                    }
+                    'data': {'code': 'SL_NEEDS_PIN_CHANGE', 'next_step': 'change_pin',
+                             'phase': LoginStatus.AWAITING_PIN_CHANGE},
                 }
             if outcome == 'cooldown':
-                session_data['last_error'] = {'code': 'SL_COOLDOWN'}
+                session_data['last_error'] = {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until')}
                 await self._persist_session_data(redis_key, session_data)
                 return {
                     'status': 'error',
                     'message': '当前处于冷却期',
-                    'data': {
-                        'code': 'SL_COOLDOWN',
-                        'phase': 'inCooldown',
-                        'cd_until': session_data.get('cd_until', 0),
-                    }
+                    'data': {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until'),
+                             'phase': LoginStatus.FINGERPRINT_VERIFIED},
                 }
-            message = second_login_result.get('message', '')
-            if self._is_server_busy(message):
-                await asyncio.sleep(2)
-                retry_result = await self._perform_second_login(session_data)
-                if retry_result.get('outcome') == 'success':
-                    session_data['status'] = 'secondLoginPassed'
-                    await self._persist_session_data(redis_key, session_data)
-                    return {
-                        'status': 'success',
-                        'message': 'Second login passed',
-                        'data': {
-                            'code': 'SL_OK',
-                            'phase': 'secondLoginPassed',
-                        }
-                    }
-                session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}
-                await self._persist_session_data(redis_key, session_data)
+            if outcome == 'session_expired':
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key, session_data=session_data,
+                    reason='secondLogin URM10004', error_code='SL_SESSION_EXPIRED',
+                )
+            if outcome != 'success':
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key, session_data=session_data,
+                    reason=f'secondLogin {outcome}: {sl.get("message")}',
+                    error_code='SL_NEEDS_RELOGIN' if outcome == 'needs_relogin' else 'SL_UPSTREAM_ERROR',
+                )
+            # secondLogin 成功 → 立即调 queryAccountList
+            qal = await self._call_query_account_list(session_data)
+            if qal.get('outcome') != 'success':
                 return {
                     'status': 'error',
-                    'message': message or '云机正忙，请稍后重试',
-                    'data': {
-                        'code': 'SL_UPSTREAM_ERROR',
-                        'phase': 'failed',
-                    }
+                    'message': 'queryAccountList 失败',
+                    'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'second_login',
+                             'phase': LoginStatus.FINGERPRINT_VERIFIED},
                 }
-            if '501' in str(message) or 'AccountInvalid' in str(message):
-                if session_data.get('fallback_from') == 'secondLogin':
-                    self.logger.warning(
-                        f'{self._log_key(funcName)} 二次secondLogin仍失败(501)，不再回退, '
-                        f'phone={session_data.get("phone")}'
-                    )
-                    return {
-                        'status': 'error',
-                        'message': f'secondLogin二次失败: {message}',
-                        'data': {
-                            'code': 'SL_UPSTREAM_ERROR',
-                            'phase': 'failed',
-                        }
-                    }
-                return await self._fallback_to_first_login(session_data, redis_key, reason=message)
-            session_data['last_error'] = {'code': 'SL_UPSTREAM_ERROR'}
-            await self._persist_session_data(redis_key, session_data)
+            self._assert_status_transition(session_data, LoginStatus.FINGERPRINT_VERIFIED,
+                                           LoginStatus.ACCOUNT_SELECTION_REQUIRED, funcName)
+            await self._update_session_status(redis_key, session_data, LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                                              {'account_entire': qal.get('accounts_json'),
+                                               'last_error': None})
             return {
-                'status': 'error',
-                'message': message or '上游错误',
+                'status': 'success',
+                'message': '二次登录成功',
                 'data': {
-                    'code': 'SL_UPSTREAM_ERROR',
-                    'phase': 'failed',
-                }
+                    'ok': True,
+                    'next_step': 'query_accts',
+                    'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                },
             }
         except NewApiError:
             raise
         except Exception as e:
-            raise NewApiError(ErrorCode.VerifyAccount, f'Second login failed: {str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.VerifyAccount, f'second_login failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
+
     async def active_account_http(self, data):
         self.login_data = data
         return {
