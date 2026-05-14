@@ -80,3 +80,50 @@ async def test_force_terminal_rejects_already_active(ep_instance):
             reason='r', error_code='SL_NEEDS_RELOGIN',
         )
     assert 'INVALID_TRANSITION' in str(exc.value) or 'ACTIVE_SUCCESSFUL' in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_session_data_does_not_contain_password(ep_instance):
+    """Fix #5: pre_login_http 完成后 session 不含明文 password 字段。"""
+    import bcrypt
+
+    # 准备 bcrypt 校验通过的 hash
+    test_password = b'test_pwd_123'
+    hashed = bcrypt.hashpw(test_password, bcrypt.gensalt()).decode()
+
+    captured_sessions = []
+
+    async def fake_persist(redis_key, session_data):
+        captured_sessions.append(dict(session_data))
+        return 999
+
+    ep_instance._persist_session_data = fake_persist
+    ep_instance._select_proxy_ip = AsyncMock(return_value='')
+    ep_instance._check_login_failed_attempts = AsyncMock(return_value=False)
+    ep_instance._check_payment = AsyncMock(return_value=None)  # 走"首次"分支
+    ep_instance._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'k', 'lock_value': 'v'}
+    )
+    ep_instance._release_payment_interface_lock = AsyncMock(return_value=True)
+    ep_instance._get_session_data = AsyncMock(return_value=None)
+    ep_instance._is_account_registered = AsyncMock(return_value=False)
+    ep_instance.redis.get = AsyncMock(return_value=None)
+
+    ep_instance.handler.current_user.id = 33057
+    ep_instance.handler.current_user.hash_trade = hashed
+
+    await ep_instance.pre_login_http({
+        'bankname': 'easypaisa',
+        'phone': '03130268536',
+        'password': test_password.decode(),
+        'pin': '12345',
+        'name': 'Test',
+        'step': 'complete_login',
+    })
+
+    # 必须至少调用过一次 _persist_session_data
+    assert len(captured_sessions) > 0, '_persist_session_data 未被调用'
+    # 任何一次 persist 的 session 都不该含 password 字段
+    for s in captured_sessions:
+        assert 'password' not in s, \
+            f'session 不该含明文 password，但实际有: {str(s.get("password"))[:5]}***'

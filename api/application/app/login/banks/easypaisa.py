@@ -923,7 +923,7 @@ class EasyPaisa:
                 'qr_channel': data.get('channel', 1001),
                 'pinCode': pin,
                 'bankname': bankname,
-                'password': password,
+                # Fix #5: password 字段不存 session（bcrypt 校验完不再使用）
                 'account': data.get('account', ''),
                 'is_new_user': is_new_user,
                 'name': name,
