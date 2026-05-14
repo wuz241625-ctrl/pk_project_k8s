@@ -115,6 +115,21 @@ class ErrorCode:
     QueryAccts = '31006'
     SelectAccts = '31007'
     Retry = '66666'
+    # === v1.9 重构错误码映射（Task 0 commitment）===
+    # 实现 *_http 方法时，所有 spec 中 EP_xxx 占位符按下表映射成 APP 已识别码：
+    #   EP_LOGINED            → ErrorCode.Logined        (20101)
+    #   EP_MISSING_PARAMS     → ErrorCode.MissingParams  (20001)
+    #   EP_INVALID_PASSWORD   → ErrorCode.InvalidPaswd   (20004)
+    #   EP_LOGIN_ATTEMPS      → ErrorCode.LoginAttemps   (20106)
+    #   EP_PAYMENT_NOT_FOUND  → ErrorCode.InvalidBankOrPayment (20003)
+    #   EP_PERMISSION_DENIED  → '10402'
+    #   EP_PAYMENT_PHONE_MISMATCH → ErrorCode.PaymentPhoneMismatch (20005)
+    #   EP_OTP_INVALID        → ErrorCode.VerifyOTPFail  (20307)
+    #   EP_BAD_STATE/THROTTLED/BAD_REQUEST → 'INVALID_TRANSITION' + state hint
+    #   EP_NETWORK/QUERY_FAIL/SYSTEM_ERROR  → 'SL_UPSTREAM_ERROR'
+    #   EP_FP_PUSH_FAIL       → 'FP_UPSTREAM_REJECTED'
+    #   EP_FP_FILE_MISSING    → 'EP_FP_FILE_MISSING' (本次唯一新增；APP 暂回退 needsRelogin)
+    # ===============================================
 
 
 class AccountStatus:
