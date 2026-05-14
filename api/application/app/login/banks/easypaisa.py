@@ -31,7 +31,6 @@ PIN_CHANGE_ATTEMPTS_MAXIMUM = 3
 FINGERPRINT_UPLOAD_ATTEMPTS_MAXIMUM = 3
 ISTEST = False
 CODE_VER = '20250917002'
-EASYPAISA_API_VERSION = 'v1.6'  # API版本控制：v1.6需要指纹验证，v1.8不需要指纹验证
 class LoginStatus:
     PRE_LOGIN_CREATED = "preLoginCreated"
     OTP_SENT = "otpSent"
@@ -2686,9 +2685,7 @@ class EasyPaisa:
             "account_id": phone,
             "otpcode": otp
         }
-        if EASYPAISA_API_VERSION == 'v1.8':
-            request_msg["should_verify_fingerprint"] = False
-            self.logger.info(f'{self._log_key(funcName)} v1.8模式: 已添加 should_verify_fingerprint=False')
+        request_msg["should_verify_fingerprint"] = False
         json_str = json.dumps(request_msg, ensure_ascii=False, indent=2)
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_otp'], json_str)
