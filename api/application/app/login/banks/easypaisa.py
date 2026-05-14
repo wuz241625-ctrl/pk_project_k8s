@@ -532,6 +532,49 @@ class EasyPaisa:
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
             return False
+
+    async def _force_terminal_needs_relogin(
+        self,
+        redis_key: str,
+        session_data: dict,
+        reason: str,
+        error_code: str,
+        message: str | None = None,
+    ) -> dict:
+        """spec §3.1.2：所有 needsRelogin 必须经过这里。
+
+        Why: 统一可观测性（grep _force_terminal_needs_relogin 看所有终止点）+
+        保留 5 秒窗口让 APP 拉 last_error 后再删 key。
+        """
+        funcName = '_force_terminal_needs_relogin'
+        current = session_data.get('status', LoginStatus.PRE_LOGIN_CREATED)
+        if LoginStatus.NEEDS_RELOGIN not in STATUS_TRANSITIONS.get(current, []):
+            msg = f'INVALID_TRANSITION: {current} -> NEEDS_RELOGIN not allowed'
+            self.logger.error(f'{self._log_key(funcName)} {msg}')
+            raise NewApiError('INVALID_TRANSITION', msg)
+        self.logger.warning(
+            f'{self._log_key(funcName)} 状态推进: {current} → {LoginStatus.NEEDS_RELOGIN}, reason={reason}'
+        )
+        session_data['status'] = LoginStatus.NEEDS_RELOGIN
+        session_data.setdefault('status_history', []).append(LoginStatus.NEEDS_RELOGIN)
+        session_data['last_error'] = {
+            'code': error_code,
+            'message': message,
+            'reason': reason,
+            'timestamp': int(time.time()),
+        }
+        session_data['last_status_change'] = int(time.time())
+        await self.redis.setex(redis_key, 5, json.dumps(session_data))
+        await self.redis.expire(redis_key, 5)
+        return {
+            'status': 'error',
+            'message': message or '账户需要重新登录',
+            'data': {
+                'code': error_code,
+                'phase': LoginStatus.NEEDS_RELOGIN,
+            },
+        }
+
     async def _read_prelogin_entry(self, redis_key):
         """读取 pre_login Redis 记录，可能是真实 session，也可能是 alias 文档。"""
         try:
