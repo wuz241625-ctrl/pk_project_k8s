@@ -964,15 +964,121 @@ class EasyPaisa:
                 await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def _pre_login_second_time_chain(self, redis_key, session_data, bound_payment):
-        """Task 8 will implement this."""
+        """spec §3.3 ⑩：二次上号内部续推 upload_data + verifyFingerprint + secondLogin + queryAccountList。"""
+        funcName = '_pre_login_second_time_chain'
+        fingerprint_path = (bound_payment or {}).get('fingerprint_path')
+        # spec §3.3 边界：本地 ZIP 丢失 → 直接 needsRelogin
+        if not fingerprint_path or not os.path.exists(fingerprint_path):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason=f'Local fingerprint ZIP missing: {fingerprint_path}',
+                error_code='EP_FP_FILE_MISSING',
+                message='本地指纹文件缺失，请联系运维介入',
+            )
+        # a. upload_data 推 ZIP
+        pushed = await self._call_upload_data(session_data, fingerprint_path)
+        if not pushed:
+            session_data['last_error'] = {'code': 'FP_UPSTREAM_REJECTED', 'reason': 'upload_data failed'}
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': 'upload_data 失败，请重试 pre_login',
+                'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'pre_login'},
+            }
+        # b. verifyFingerprint
+        fp_result = await self._call_verify_fingerprint(session_data)
+        if fp_result.get('outcome') != 'success':
+            self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
+                                           LoginStatus.OTP_VERIFIED, funcName)
+            session_data['status'] = LoginStatus.OTP_VERIFIED
+            session_data['status_history'].append(LoginStatus.OTP_VERIFIED)
+            session_data['last_error'] = {'code': 'FP_UPSTREAM_REJECTED',
+                                          'reason': fp_result.get('message', '')}
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': '指纹验证被拒，请重新上传',
+                'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
+                         'phase': LoginStatus.OTP_VERIFIED},
+            }
+        # c. secondLogin
+        sl_result = await self._call_second_login(session_data)
+        outcome = sl_result.get('outcome')
+        if outcome == 'urm90040':
+            return await self._urm90040_fallback(redis_key, session_data, sl_result.get('message', ''))
+        if outcome == 'needs_pin_change':
+            self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
+                                           LoginStatus.AWAITING_PIN_CHANGE, funcName)
+            session_data['status'] = LoginStatus.AWAITING_PIN_CHANGE
+            session_data['status_history'].append(LoginStatus.AWAITING_PIN_CHANGE)
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': '需要修改 PIN',
+                'data': {'code': 'SL_NEEDS_PIN_CHANGE', 'next_step': 'change_pin',
+                         'phase': LoginStatus.AWAITING_PIN_CHANGE},
+            }
+        if outcome != 'success':
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason=f'secondLogin outcome={outcome} msg={sl_result.get("message", "")}',
+                error_code='SL_NEEDS_RELOGIN' if outcome == 'session_expired' else 'SL_UPSTREAM_ERROR',
+            )
+        # d. queryAccountList
+        qal_result = await self._call_query_account_list(session_data)
+        if qal_result.get('outcome') != 'success':
+            self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
+                                           LoginStatus.FINGERPRINT_VERIFIED, funcName)
+            session_data['status'] = LoginStatus.FINGERPRINT_VERIFIED
+            session_data['status_history'].append(LoginStatus.FINGERPRINT_VERIFIED)
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': 'queryAccountList 失败',
+                'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'second_login',
+                         'phase': LoginStatus.FINGERPRINT_VERIFIED},
+            }
+        # 全成功：直接跳到 ACCOUNT_SELECTION_REQUIRED
+        self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
+                                       LoginStatus.ACCOUNT_SELECTION_REQUIRED, funcName)
+        session_data['status'] = LoginStatus.ACCOUNT_SELECTION_REQUIRED
+        session_data['status_history'].append(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
+        session_data['account_entire'] = qal_result.get('accounts_json')
+        await self._persist_session_data(redis_key, session_data)
+        self.logger.info(f'{self._log_key(funcName)} 二次上号续推完成，状态 → ACCOUNT_SELECTION_REQUIRED')
         return {
             'status': 'success',
-            'message': 'TODO Task 8',
+            'message': '二次上号续推成功',
             'data': {
                 'id': session_data['id'],
                 'next_step': 'second_login',
+                'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
             },
         }
+
+    async def _call_upload_data(self, session_data, fingerprint_path):
+        """Task 11 will implement upload_data action call. Placeholder returns False for now."""
+        self.logger.warning('STUB: _call_upload_data not implemented')
+        return False
+
+    async def _call_verify_fingerprint(self, session_data):
+        """Task 12 placeholder."""
+        return {'outcome': 'rejected', 'message': 'STUB'}
+
+    async def _call_second_login(self, session_data):
+        """Task 13 placeholder."""
+        return {'outcome': 'session_expired', 'message': 'STUB'}
+
+    async def _call_query_account_list(self, session_data):
+        """Task 14 placeholder."""
+        return {'outcome': 'rejected'}
+
+    async def _urm90040_fallback(self, redis_key, session_data, msg):
+        """Task 15 placeholder."""
+        return await self._force_terminal_needs_relogin(
+            redis_key=redis_key, session_data=session_data,
+            reason='URM90040 fallback stub', error_code='SL_NEEDS_RELOGIN',
+        )
 
     async def send_otp_http(self, data):
         """OTP发送"""

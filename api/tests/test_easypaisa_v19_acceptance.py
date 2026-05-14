@@ -59,3 +59,64 @@ async def test_u3_pre_login_returns_ready_when_active(ep_mock):
     assert result['status'] == 'success'
     assert result['data']['next_step'] == 'ready'
     assert result['data']['phase'] == LoginStatus.ACTIVE_SUCCESSFUL
+
+
+@pytest.mark.asyncio
+async def test_u2_second_time_login_success(ep_mock, tmp_path):
+    """U2: 二次上号一气呵成到 ACCOUNT_SELECTION_REQUIRED。"""
+    zip_path = tmp_path / "ep.zip"
+    zip_path.write_bytes(b'fake zip content')
+    bound_payment = {
+        'id': 533264,
+        'phone': '03421904953',
+        'fingerprint_path': str(zip_path),
+        'wallet_status': 0,
+    }
+    session_data = {
+        'id': 533264, 'phone': '03421904953', 'bankname': 'easypaisa',
+        'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+    }
+    ep_mock._call_upload_data = AsyncMock(return_value=True)
+    ep_mock._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
+    ep_mock._call_second_login = AsyncMock(return_value={'outcome': 'success'})
+    ep_mock._call_query_account_list = AsyncMock(return_value={
+        'outcome': 'success',
+        'accounts_json': json.dumps([{'accno': '88521642', 'accountStatus': 'ACTIVE'}]),
+    })
+    ep_mock._persist_session_data = AsyncMock(return_value=int(123))
+    result = await ep_mock._pre_login_second_time_chain(
+        'pre_login_easypaisa_533264', session_data, bound_payment
+    )
+    assert result['status'] == 'success'
+    assert result['data']['next_step'] == 'second_login'
+    assert session_data['status'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_u8_second_time_fingerprint_rejected_falls_to_otp_verified(ep_mock, tmp_path):
+    """U8: 二次上号 verifyFingerprint 失败 → 状态降到 OTP_VERIFIED。"""
+    zip_path = tmp_path / "ep.zip"
+    zip_path.write_bytes(b'fake')
+    bound = {'id': 1, 'phone': 'x', 'fingerprint_path': str(zip_path), 'wallet_status': 0}
+    session = {'id': 1, 'phone': 'x', 'bankname': 'easypaisa',
+               'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED]}
+    ep_mock._call_upload_data = AsyncMock(return_value=True)
+    ep_mock._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'rejected', 'message': 'bad'})
+    ep_mock._persist_session_data = AsyncMock(return_value=123)
+    result = await ep_mock._pre_login_second_time_chain('k', session, bound)
+    assert result['status'] == 'error'
+    assert result['data']['code'] == 'FP_UPSTREAM_REJECTED'
+    assert result['data']['next_step'] == 'upload_fingerprint'
+    assert session['status'] == LoginStatus.OTP_VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_u20_local_zip_missing_force_terminal(ep_mock):
+    """U20: 本地 ZIP 文件丢失 → needsRelogin。"""
+    bound = {'id': 1, 'phone': 'x', 'fingerprint_path': '/nonexistent/file.zip', 'wallet_status': 0}
+    session = {'id': 1, 'phone': 'x', 'bankname': 'easypaisa',
+               'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED]}
+    result = await ep_mock._pre_login_second_time_chain('pre_login_easypaisa_1', session, bound)
+    assert result['status'] == 'error'
+    assert result['data']['code'] == 'EP_FP_FILE_MISSING'
+    assert session['status'] == LoginStatus.NEEDS_RELOGIN
