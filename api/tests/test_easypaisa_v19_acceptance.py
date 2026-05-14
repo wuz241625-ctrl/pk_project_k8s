@@ -190,3 +190,34 @@ async def test_second_login_idempotent_after_active(ep_mock):
 
     assert result['status'] == 'success'
     assert result['data']['phase'] == LoginStatus.ACTIVE_SUCCESSFUL
+
+
+def test_build_verify_account_request_with_pwd_includes_phone_and_pwd():
+    """hotfix-2 P0: with_pwd=True 时 request body 必含 phone + pwd 字段。"""
+    handler = MagicMock()
+    ep = EasyPaisa(handler)
+
+    session = {'phone': '03194834960', 'pinCode': '11223'}
+
+    # Mock _encode_indus_request 让测试不依赖加密细节
+    captured_payloads = []
+
+    def fake_encode(funcName, endpoint, json_str):
+        captured_payloads.append(json_str)
+        return b'encoded_bytes'
+
+    ep._encode_indus_request = fake_encode
+
+    # 默认 with_pwd=False
+    ep._build_verify_account_request(session)
+    default_payload = captured_payloads[-1]
+    assert '"account_id": "03194834960"' in default_payload
+    assert '"pwd"' not in default_payload
+    assert default_payload.count('"phone"') == 0
+
+    # with_pwd=True
+    ep._build_verify_account_request(session, with_pwd=True)
+    pwd_payload = captured_payloads[-1]
+    assert '"account_id": "03194834960"' in pwd_payload
+    assert '"phone": "03194834960"' in pwd_payload
+    assert '"pwd": "11223"' in pwd_payload

@@ -1116,12 +1116,12 @@ class EasyPaisa:
             self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
             return {'outcome': 'rejected', 'message': str(e)}
 
-    async def _call_second_login(self, session_data):
-        """spec v1.9 secondLogin action。"""
+    async def _call_second_login(self, session_data, with_pwd: bool = False):
+        """spec v1.9 secondLogin action; hotfix-2: with_pwd 透传给 _build_verify_account_request。"""
         funcName = '_call_second_login'
         try:
             url = self.API_ENDPOINTS['base_url']
-            request_data = self._build_verify_account_request(session_data)
+            request_data = self._build_verify_account_request(session_data, with_pwd=with_pwd)
             response = self.retry_make_request(method='POST', url=url, data=request_data)
             if not response or response.status_code != 200:
                 return {'outcome': 'upstream_error', 'message': f'http {response.status_code if response else "none"}'}
@@ -2721,13 +2721,17 @@ class EasyPaisa:
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_otp'], json_str)
         self.logger.info(f'{self._log_key(funcName)} 加密完成, 长度: {len(encoded_msg)}, 预览: {encoded_msg[:100]}...')
         return encoded_msg
-    def _build_verify_account_request(self, session_data):
+    def _build_verify_account_request(self, session_data, with_pwd: bool = False):
         funcName = '构建账号验证'
         phone = session_data.get('phone')
-        self.logger.info(f'{self._log_key(funcName)} 参数 phone: {phone}')
+        self.logger.info(f'{self._log_key(funcName)} 参数 phone: {phone}, with_pwd: {with_pwd}')
         request_msg = {
             "account_id": phone,
         }
+        if with_pwd:
+            # hotfix-2 P0: secondLogin 带 pwd 救冻 URM90040（实证 2026-05-15）
+            request_msg["phone"] = phone
+            request_msg["pwd"] = session_data.get('pinCode', '')
         json_str = json.dumps(request_msg, ensure_ascii=False, indent=2)
         self.logger.info(f'{self._log_key(funcName)} 原始JSON: {json_str}')
         encoded_msg = self._encode_indus_request(funcName, self.API_ENDPOINTS['verify_account'], json_str)
