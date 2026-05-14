@@ -804,230 +804,176 @@ class EasyPaisa:
             self.logger.warning(f'make_request() 两次尝试均失败, args: {str(args)}, kwargs: {str(kwargs)}')
         return res
     async def pre_login_http(self, data):
-        """会话初始化：写 Redis 占位，不调用上游。下一步走 send_otp_http。"""
+        """v1.9 重写：见 spec §3.3。"""
         funcName = 'pre_login_http'
         lockName = 'pre_login'
         payment_lock_id = None
         payment_lock_value = None
         self.login_data = data
         try:
-            self.logger.info(f'=== 当前代码版本 code_ver: {CODE_VER} ===')
+            self.logger.info(f'=== code_ver: {CODE_VER} ===')
             self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
             if data.get('step', 'unknown') != 'complete_login':
                 raise NewApiError(ErrorCode.Unsupported, f"Unsupported step: {data.get('step', 'unknown')}")
-            self.logger.info(f"{self._log_key(funcName)} 执行步骤: {data.get('step', 'complete_login')}")
-            required_fields = ['bankname', 'phone', 'password', 'pin', 'name']
-            if not all(field in data and data[field] for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data or not data[field]]
-                error_msg = f"Missing required parameters: {', '.join(missing_fields)}"
-                self.logger.error(f'{self._log_key(funcName)} 参数验证失败: {error_msg}')
-                raise NewApiError(ErrorCode.MissingParams, error_msg)
+            required = ['bankname', 'phone', 'password', 'pin', 'name']
+            missing = [f for f in required if not data.get(f)]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing)}")
             bankname = data['bankname']
-            original_phone = data['phone']  # 保存原始号码
+            original_phone = data['phone']
             phone = self._format_phone_number(original_phone)
             password = data['password']
             pin = data['pin']
-            name = data['name']  # name 已在 required_fields 中验证，必须存在
-            expire_second = self.expire_time_login_pending
-            self.logger.info(f'{self._log_key(funcName)} 前端传递的name参数: {name}')
+            name = data['name']
             if not self._validate_phone_number(phone):
-                raise NewApiError(ErrorCode.InvalidPhone, f'Invalid phone number format: {phone}, should start with 03 and be 11 digits long')
-            is_locked = await self._check_login_failed_attempts(phone)
-            if is_locked:
+                raise NewApiError(ErrorCode.InvalidPhone, f'Invalid phone number format: {phone}')
+            if await self._check_login_failed_attempts(phone):
                 raise NewApiError(ErrorCode.LoginAttemps, 'Try too many times, try again after two hours.')
-            try:
-                await self._verify_payment_password_bcrypt(password, self.handler.current_user.hash_trade, phone)
-                self.logger.info(f'{self._log_key(funcName)} 密码验证成功: 用户={self.handler.current_user.id}, 手机号={phone}')
-            except Exception as e:
-                self.logger.error(f'{self._log_key(funcName)} 密码验证异常: 用户={self.handler.current_user.id}, 手机号={phone}, 错误={str(e)}')
-                raise NewApiError(ErrorCode.LoginAttemps, 'Payment password verification failed')
-            user_id = self.handler.current_user.id  # ← 获取码商ID
+            await self._verify_payment_password_bcrypt(password, self.handler.current_user.hash_trade, phone)
+            user_id = self.handler.current_user.id
             is_new_user = data.get('is_new_user', True)
-            payment_id = data.get('payment_id')  # 获取payment_id
+            payment_id = data.get('payment_id')
             bound_payment = None
-            self.logger.info(f'{self._log_key(funcName)} 预登录参数: 银行={bankname}, 手机号={phone}, 码商ID={user_id}')
-            self.logger.info(f"{self._log_key(funcName)} 当前认证用户信息: ID={user_id}, 手机号={getattr(self.handler.current_user, 'cellphone', 'Unknown')}")
             if payment_id and await self.redis.get(self._login_lock_payment_key(payment_id)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
+                raise NewApiError(ErrorCode.Logined, 'Account is in login process, please try again later')
             if phone and await self.redis.get(self._login_lock_phone_key(phone)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
+                raise NewApiError(ErrorCode.Logined, 'Account is in login process, please try again later')
             if payment_id:
                 bank_type_id = await self._get_bank_type_id(bankname)
                 if not bank_type_id:
                     raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Bank type not found for: {bankname}')
                 with self.handler.db_orm.sessionmaker() as session:
                     existing_payment = session.query(Payment).filter(
-                        Payment.id == payment_id,
-                        Payment.bank_type_id == bank_type_id
+                        Payment.id == payment_id, Payment.bank_type_id == bank_type_id
                     ).first()
                     if not existing_payment:
                         raise NewApiError(ErrorCode.InvalidBankOrPayment, f'Payment record not found: {payment_id}')
                     if existing_payment.phone != phone:
-                        raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number mismatch for payment {payment_id}, expected {existing_payment.phone}')
+                        raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone mismatch payment {payment_id}')
                     if int(getattr(existing_payment, 'user_id', 0) or 0) != int(user_id):
                         raise NewApiError('10402', 'UPI already occupied by another user')
                     bound_payment = {
                         'id': existing_payment.id,
                         'phone': existing_payment.phone,
                         'user_id': existing_payment.user_id,
-                        'pin': getattr(existing_payment, 'pin', None),
-                        'account_entire': getattr(existing_payment, 'account_entire', None),
-                        'account_accno': getattr(existing_payment, 'account_accno', None),
-                        'account_iban': getattr(existing_payment, 'account_iban', None),
+                        'wallet_status': getattr(existing_payment, 'wallet_status', 0),
+                        'fingerprint_path': getattr(existing_payment, 'fingerprint_path', None),
                     }
-                    phone_owner = await self._check_payment(bankname, phone, user_id)
-                    if phone_owner and str(phone_owner.get('id')) != str(existing_payment.id):
-                        raise NewApiError('10402', 'UPI already occupied by another payment id')
-                    self.logger.info(f'{self._log_key(funcName)} Payment record validation successful: {payment_id}')
             else:
-                existing_payment = await self._check_payment(bankname, phone, user_id)
-                is_new_user = existing_payment is None
-                self.logger.info(f'{self._log_key(funcName)} 用户类型检查: {phone} - partner_id: {user_id} - 新用户: {is_new_user}')
-                if existing_payment:
-                    if existing_payment.get('user_id') == user_id:
-                        self.logger.error(
-                            f'{self._log_key(funcName)} payment已存在且属于当前用户: phone={phone}, user_id={user_id}'
-                        )
-                        payment_id = existing_payment.get('id')
-                        bound_payment = existing_payment
+                existing = await self._check_payment(bankname, phone, user_id)
+                is_new_user = existing is None
+                if existing:
+                    if existing.get('user_id') == user_id:
+                        payment_id = existing.get('id')
+                        bound_payment = existing
                     else:
-                        self.logger.error(
-                            f'{self._log_key(funcName)} payment已被其他码商占用: phone={phone}, '
-                            f'current_user={user_id}, owner_user={existing_payment.get("user_id")}'
-                        )
                         raise NewApiError('10402', 'UPI already occupied by another user')
                 else:
-                    payment_id = phone  # 直接使用手机号作为临时ID
-                    self.logger.info(f'{self._log_key(funcName)} 使用手机号作为payment_id: {payment_id}')
-            try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
-                payment_lock_id = lock_result.get('lock_id')
-                payment_lock_value = lock_result.get('lock_value')
-            except NewApiError as lock_error:
-                self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
-                raise lock_error
-            if bound_payment:
-                is_registered = await self._is_account_registered(phone)
-                if is_registered:
-                    redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-                    await self.redis.delete(redis_key)
-                    result = {
-                        'status': 'success',
-                        'message': '成功',
-                        'data': {
-                            'id': payment_id,
-                            'redis_key': None,
-                            'expires_in': 0,
-                            'total_timeout': 120,
-                            'is_new_user': False,
-                            'bank_type': self.LOGIN_TYPE,
-                            'next_step': 'second_login'
-                        }
-                    }
-                    self.logger.info(f'{self._log_key(funcName)} 已绑定账号通过归属校验，返回second_login: {result}')
-                    return result
-                self.logger.warning(
-                    f'{self._log_key(funcName)} 已绑定EasyPaisa账号云机未注册，回退首次上号流程: '
-                    f'phone={phone}, payment_id={payment_id}'
-                )
+                    payment_id = phone
+            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
             redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
-            self.logger.info(f'{self._log_key(funcName)} 创建Redis会话key: {redis_key}')
+            # spec §3.3 ⑦：已 ACTIVE 直接返回 ready（修复 533264）
+            if bound_payment and int(bound_payment.get('wallet_status', 0) or 0) == 1:
+                self.logger.info(f'{self._log_key(funcName)} 已 active，返回 ready: payment_id={payment_id}')
+                return {
+                    'status': 'success',
+                    'message': '账号已激活',
+                    'data': {
+                        'id': payment_id,
+                        'next_step': 'ready',
+                        'phase': LoginStatus.ACTIVE_SUCCESSFUL,
+                    },
+                }
+            # spec §3.3 ⑦.1：残留 session 复用（修复 Blocker 4）
             existing_session = await self._get_session_data(redis_key)
             if existing_session:
-                current_status = existing_session.get('status')
-                self.logger.warning(f'{self._log_key(funcName)} 发现已存在会话: {redis_key} - 状态: {current_status}')
-                if current_status == LoginStatus.ACTIVE_SUCCESSFUL:
-                    if await self._clear_stale_active_session_if_offline(redis_key, existing_session):
-                        self.logger.warning(
-                            f'{self._log_key(funcName)} MySQL 已离线，已清理当前成功会话并允许重新登录: {redis_key}'
-                        )
-                        existing_session = None
-                    else:
-                        self.logger.error(f'{self._log_key(funcName)} 账户已登录成功，拒绝重复登录')
-                        raise NewApiError(ErrorCode.Logined2, f'Account already logged in successfully, duplicate login denied')
-                if existing_session and current_status == LoginStatus.ACTIVE_SUCCESSFUL:
-                    self.logger.error(f'{self._log_key(funcName)} 账户已登录成功，拒绝重复登录')
-                    raise NewApiError(ErrorCode.Logined2, f'Account already logged in successfully, duplicate login denied')
-                elif existing_session and current_status == LoginStatus.PRE_LOGIN_CREATED:
-                    self.logger.error(f'{self._log_key(funcName)} 已经开始走登录流程，拒绝重复登录')
-                    raise NewApiError(ErrorCode.Logined3, f'Account already started login process, duplicate login denied')
-                elif existing_session and current_status in [
-                    LoginStatus.OTP_SENT,
-                    LoginStatus.OTP_VERIFIED,
-                    LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-                    LoginStatus.FINGERPRINT_UPLOADED,
-                    LoginStatus.FINGERPRINT_VERIFIED,
-                    LoginStatus.SECOND_LOGIN_PASSED,
-                    LoginStatus.AWAITING_PIN_CHANGE,
+                cur_status = existing_session.get('status')
+                if cur_status in (
+                    LoginStatus.OTP_SENT, LoginStatus.OTP_VERIFIED,
+                    LoginStatus.FINGERPRINT_VERIFIED, LoginStatus.AWAITING_PIN_CHANGE,
                     LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-                ]:
-                    self.logger.error(f'{self._log_key(funcName)} 登录流程进行中，拒绝重复登录')
-                    raise NewApiError(ErrorCode.Logined4, f' status: {current_status}')
+                ):
+                    # 状态合理性：phone 必须匹配
+                    if existing_session.get('phone') == phone:
+                        return await self._build_resumed_session_response(redis_key, existing_session)
+                    self.logger.warning(f'{self._log_key(funcName)} 残留 session phone 不匹配，删除后重建')
+                    await self.redis.delete(redis_key)
+                elif cur_status == LoginStatus.NEEDS_RELOGIN:
+                    # 终态，删 key 重新走
+                    await self.redis.delete(redis_key)
+                # PRE_LOGIN_CREATED / ACTIVE_SUCCESSFUL 走下面正常分支
+            # spec §3.3 ⑧：创建新 session
             proxy_ip = await self._select_proxy_ip(bankname)
-            self.logger.info(f'{self._log_key(funcName)} 选择代理IP: {proxy_ip}')
+            expire_second = self.expire_time_login_pending
             session_data = {
                 'id': payment_id,
                 'partner_id': user_id,
                 'phone': phone,
                 'original_phone': original_phone,
                 'status': LoginStatus.PRE_LOGIN_CREATED,
+                'status_history': [LoginStatus.PRE_LOGIN_CREATED],
                 'time': int(time.time()),
                 'try_count': 0,
                 'socks_ip': proxy_ip or '',
                 'to': self.name,
                 'qr_channel': data.get('channel', 1001),
                 'pinCode': pin,
-                'id_num': '',
                 'bankname': bankname,
                 'password': password,
                 'account': data.get('account', ''),
                 'is_new_user': is_new_user,
-                'status_history': [LoginStatus.PRE_LOGIN_CREATED],
                 'name': name,
                 'login_time': int(time.time()),
                 'last_status_change': int(time.time()),
                 'last_request_time': int(time.time()),
                 'expires_at': int(time.time()) + expire_second,
-                'total_timeout': int(time.time()) + 120,
                 'sendOTPTime': 0,
                 'selected_upi': '',
                 'upi_list': [],
+                'fallback_from_urm90040': False,
             }
-            self.logger.info(f'{self._log_key(funcName)} Redis待存储数据: {json.dumps(session_data)}')
             await self._persist_session_data(redis_key, session_data)
-            self.logger.info(f'{self._log_key(funcName)} 会话数据已存储到Redis: {redis_key} - 过期时间: {expire_second}秒')
-            self.logger.info(f'{self._log_key(funcName)} 成功: {phone} - {payment_id} - 新用户: {is_new_user}')
-            result = {
-                'status': 'success',
-                'message': f'成功',
-                'data': {
-                    'id': payment_id,
-                    'redis_key': redis_key,
-                    'expires_in': expire_second,
-                    'total_timeout': 120,
-                    'is_new_user': is_new_user,
-                    'bank_type': self.LOGIN_TYPE,
-                    'next_step': 'send_sms'
+            # spec §3.3 ⑨：调云机 isAccountRegistered
+            is_registered = await self._is_account_registered(phone)
+            if not is_registered:
+                # 首次上号：仅 session 初始化，不调 loginStep1
+                self.logger.info(f'{self._log_key(funcName)} 首次上号 next_step=send_otp')
+                return {
+                    'status': 'success',
+                    'message': '成功',
+                    'data': {
+                        'id': payment_id,
+                        'redis_key': redis_key,
+                        'expires_in': expire_second,
+                        'is_new_user': True,
+                        'bank_type': self.LOGIN_TYPE,
+                        'next_step': 'send_otp',
+                    },
                 }
-            }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
+            # spec §3.3 ⑩：二次上号续推（详细路径在 Task 8）
+            return await self._pre_login_second_time_chain(redis_key, session_data, bound_payment)
         except NewApiError:
-            raise  # 重新抛出NewApiError，不要重新包装
+            raise
         except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
-            self.logger.error(f'异常类型: {type(e).__name__}')
-            self.logger.error(f'异常信息: {str(e)}')
-            import traceback
-            self.logger.error(f'完整异常堆栈:')
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    self.logger.error(f'   {line}')
-            raise NewApiError(ErrorCode.LoginAttemps, f'{str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.LoginAttemps, str(e))
         finally:
             if payment_lock_id and payment_lock_value:
                 await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-                self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
+    async def _pre_login_second_time_chain(self, redis_key, session_data, bound_payment):
+        """Task 8 will implement this."""
+        return {
+            'status': 'success',
+            'message': 'TODO Task 8',
+            'data': {
+                'id': session_data['id'],
+                'next_step': 'second_login',
+            },
+        }
+
     async def send_otp_http(self, data):
         """OTP发送"""
         funcName = 'send_otp_http'
