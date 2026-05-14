@@ -2834,11 +2834,11 @@ class EasyPaisa:
             if not bank_type_id:
                 return None
             with self.handler.db_orm.sessionmaker() as session:
-                existing_payment = session.query(Payment
-                ).filter(
-                    Payment.bank_type == bank_type_id,
+                existing_payment = session.query(Payment).filter(
                     Payment.bank_type_id == bank_type_id,
-                    Payment.phone == phone
+                    Payment.phone == phone,
+                    # Defense-in-depth: Payment.user_id 是 ORM 属性，对应 SQL 列 partner_id
+                    Payment.user_id == partner_id,
                 ).first()
                 if existing_payment:
                     payment_info = {
