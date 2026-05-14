@@ -1710,7 +1710,7 @@ class EasyPaisa:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
             self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
     async def upload_fingerprint_http(self, data):
-        """指纹上传"""
+        """v1.9 重写：只把 ZIP 存 Redis pending key，不调云机、不落盘。spec §3.4.1。"""
         funcName = 'upload_fingerprint_http'
         lockName = 'upload_fingerprint'
         payment_lock_id = None
@@ -1718,96 +1718,52 @@ class EasyPaisa:
         self.login_data = data
         try:
             file = data.pop("file", None)
-            self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
-            required_fields = ['bankname', 'payment_id']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
-                self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
-            bankname = data['bankname']
-            requested_payment_id = self._normalize_payment_id(data['payment_id'])
+            required = ['bankname', 'payment_id']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing: {', '.join(missing)}")
             if not file:
                 raise NewApiError(ErrorCode.MissingParams, 'file cannot be empty')
             if file["content_type"] not in ["application/zip", "application/x-zip-compressed", "multipart/x-zip"]:
                 raise NewApiError(ErrorCode.MissingParams, 'file ext should be .zip')
             if len(file["body"]) > 1024 * 1024 * 16:
                 raise NewApiError(ErrorCode.MissingParams, 'file size can not over 16MB')
-            try:
-                session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
-                resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
-                lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
-                payment_lock_id = lock_result.get('lock_id')
-                payment_lock_value = lock_result.get('lock_value')
-            except NewApiError as lock_error:
-                self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
-                raise lock_error
-            self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
+            bankname = data['bankname']
+            requested_payment_id = self._normalize_payment_id(data['payment_id'])
             session_ctx = await self._resolve_session_context(bankname, requested_payment_id)
+            resolved_payment_id = session_ctx.get('resolved_payment_id') or requested_payment_id
+            lock_result = await self._get_payment_interface_lock(resolved_payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
             redis_key = session_ctx.get('redis_key')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
-            if session_ctx.get('is_aliased'):
-                self.logger.info(
-                    f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
+            # 状态校验：必须是 OTP_VERIFIED
+            if session_data.get('status') != LoginStatus.OTP_VERIFIED:
+                raise NewApiError(
+                    'INVALID_TRANSITION',
+                    f'upload_fingerprint expected OTP_VERIFIED, got {session_data.get("status")}'
                 )
-            self._assert_status_transition(
-                session_data,
-                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED,
-                LoginStatus.FINGERPRINT_UPLOADED,
-                funcName,
-            )
-            required_session_fields = ['phone', 'id', 'bankname']
-            missing_fields = []
-            for field in required_session_fields:
-                if not session_data.get(field):
-                    missing_fields.append(field)
-            if missing_fields:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
-            session_phone = session_data.get('phone')
-            session_payment_id = session_data.get('id')
-            session_bankname = session_data.get('bankname')
-            session_fg_times = session_data.get('fg_times', 0)
-            session_fg_times = session_fg_times + 1
-            await self._upload_fingerprint(session_data, file["filename"], file["body"])
-            await self._save_fingerprint(session_data, file["body"], session_bankname, session_payment_id, session_phone)
-            self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态')
-            await self._update_session_status(
-                redis_key, session_data, LoginStatus.FINGERPRINT_UPLOADED,
-                {
-                    'fg_times': session_fg_times,
-                    'last_error': None,
-                }
-            )
-            result = {
+            pending_key = f'easypaisa:pending_fp:{resolved_payment_id}'
+            await self.redis.setex(pending_key, 600, file["body"])
+            self.logger.info(f'{self._log_key(funcName)} 已存 pending: key={pending_key} size={len(file["body"])}')
+            return {
                 'status': 'success',
-                'message': '指纹上传成功',
+                'message': '指纹已暂存，请调 verify_fingerprint',
                 'data': {
-                    'maximum': FINGERPRINT_UPLOAD_ATTEMPTS_MAXIMUM,
-                    'current': session_fg_times,
-                    'phase': LoginStatus.FINGERPRINT_UPLOADED,
-                }
+                    'phase': 'fingerprintUploaded',
+                    'next_step': 'verify_fingerprint',
+                },
             }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
         except NewApiError:
-            raise  # 重新抛出NewApiError，不要重新包装
+            raise
         except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
-            self.logger.error(f'异常类型: {type(e).__name__}')
-            self.logger.error(f'异常信息: {str(e)}')
-            import traceback
-            self.logger.error(f'完整异常堆栈:')
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    self.logger.error(f'   {line}')
-            raise NewApiError(ErrorCode.UploadFingerPrint, f'FingerPrint Upload failed: {str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.UploadFingerPrint, f'Upload failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
     async def query_accts_http(self, data):
         """账户查询"""
         funcName = 'query_accts_http'
