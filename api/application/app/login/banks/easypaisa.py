@@ -966,10 +966,12 @@ class EasyPaisa:
                 await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def _pre_login_second_time_chain(self, redis_key, session_data, bound_payment):
-        """spec §3.3 ⑩：二次上号内部续推 upload_data + verifyFingerprint + secondLogin + queryAccountList。"""
+        """hotfix-2 P0: 二次上号去前置指纹 — 仅 secondLogin + queryAccountList。
+        云机端指纹一次性建立（loginStep2 时），secondLogin 不需要再验指纹。
+        本地 ZIP 缺失仍然防御性检查（数据完整性）。"""
         funcName = '_pre_login_second_time_chain'
         fingerprint_path = (bound_payment or {}).get('fingerprint_path')
-        # spec §3.3 边界：本地 ZIP 丢失 → 直接 needsRelogin
+        # 本地 ZIP 防御性检查：MySQL 说有 path 但实际不存在 → NEEDS_RELOGIN
         if not fingerprint_path or not os.path.exists(fingerprint_path):
             return await self._force_terminal_needs_relogin(
                 redis_key=redis_key, session_data=session_data,
@@ -977,33 +979,7 @@ class EasyPaisa:
                 error_code='EP_FP_FILE_MISSING',
                 message='本地指纹文件缺失，请联系运维介入',
             )
-        # a. upload_data 推 ZIP
-        pushed = await self._call_upload_data(session_data, fingerprint_path)
-        if not pushed:
-            session_data['last_error'] = {'code': 'FP_UPSTREAM_REJECTED', 'reason': 'upload_data failed'}
-            await self._persist_session_data(redis_key, session_data)
-            return {
-                'status': 'error',
-                'message': 'upload_data 失败，请重试 pre_login',
-                'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'pre_login'},
-            }
-        # b. verifyFingerprint
-        fp_result = await self._call_verify_fingerprint(session_data)
-        if fp_result.get('outcome') != 'success':
-            self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
-                                           LoginStatus.OTP_VERIFIED, funcName)
-            session_data['status'] = LoginStatus.OTP_VERIFIED
-            session_data['status_history'].append(LoginStatus.OTP_VERIFIED)
-            session_data['last_error'] = {'code': 'FP_UPSTREAM_REJECTED',
-                                          'reason': fp_result.get('message', '')}
-            await self._persist_session_data(redis_key, session_data)
-            return {
-                'status': 'error',
-                'message': '指纹验证被拒，请重新上传',
-                'data': {'code': 'FP_UPSTREAM_REJECTED', 'next_step': 'upload_fingerprint',
-                         'phase': LoginStatus.OTP_VERIFIED},
-            }
-        # c. secondLogin
+        # secondLogin (无 pwd) — 云机已认指纹，直接登录
         sl_result = await self._call_second_login(session_data)
         outcome = sl_result.get('outcome')
         if outcome == 'urm90040':
@@ -1018,7 +994,8 @@ class EasyPaisa:
                 'status': 'error',
                 'message': '需要修改 PIN',
                 'data': {'code': 'SL_NEEDS_PIN_CHANGE', 'next_step': 'change_pin',
-                         'phase': LoginStatus.AWAITING_PIN_CHANGE},
+                         'phase': LoginStatus.AWAITING_PIN_CHANGE,
+                         'id': session_data.get('id')},
             }
         if outcome != 'success':
             return await self._force_terminal_needs_relogin(
@@ -1026,9 +1003,10 @@ class EasyPaisa:
                 reason=f'secondLogin outcome={outcome} msg={sl_result.get("message", "")}',
                 error_code='SL_NEEDS_RELOGIN' if outcome == 'session_expired' else 'SL_UPSTREAM_ERROR',
             )
-        # d. queryAccountList
+        # queryAccountList
         qal_result = await self._call_query_account_list(session_data)
         if qal_result.get('outcome') != 'success':
+            # secondLogin 成功但 queryAccountList 失败 → 状态 FINGERPRINT_VERIFIED 让 APP 重试 second_login
             self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
                                            LoginStatus.FINGERPRINT_VERIFIED, funcName)
             session_data['status'] = LoginStatus.FINGERPRINT_VERIFIED
@@ -1038,7 +1016,8 @@ class EasyPaisa:
                 'status': 'error',
                 'message': 'queryAccountList 失败',
                 'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'second_login',
-                         'phase': LoginStatus.FINGERPRINT_VERIFIED},
+                         'phase': LoginStatus.FINGERPRINT_VERIFIED,
+                         'id': session_data.get('id')},
             }
         # 全成功：直接跳到 ACCOUNT_SELECTION_REQUIRED
         self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
@@ -1047,7 +1026,7 @@ class EasyPaisa:
         session_data['status_history'].append(LoginStatus.ACCOUNT_SELECTION_REQUIRED)
         session_data['account_entire'] = qal_result.get('accounts_json')
         await self._persist_session_data(redis_key, session_data)
-        self.logger.info(f'{self._log_key(funcName)} 二次上号续推完成，状态 → ACCOUNT_SELECTION_REQUIRED')
+        self.logger.info(f'{self._log_key(funcName)} 二次上号续推完成（去前置指纹），状态 → ACCOUNT_SELECTION_REQUIRED')
         return {
             'status': 'success',
             'message': '二次上号续推成功',
