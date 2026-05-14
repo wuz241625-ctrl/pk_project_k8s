@@ -117,14 +117,6 @@ class ErrorCode:
     #   EP_FP_PUSH_FAIL       → 'FP_UPSTREAM_REJECTED'
     #   EP_FP_FILE_MISSING    → 'EP_FP_FILE_MISSING' (本次唯一新增；APP 暂回退 needsRelogin)
     # ===============================================
-class AccountStatus:
-    """账号验证状态"""
-    def __init__(self):
-        self.IsSuccess = False
-        self.IsInCoolDown = False
-        self.IsNeedRelogin = False
-        self.IsNeedChangePin = False
-        self.IsNeedFingerPrint = False
 class EasyPaisa:
     LOGIN_TYPE = 'sms_otp_pin'
     BANK_NAME_MAPPING = {
@@ -741,130 +733,6 @@ class EasyPaisa:
             self.logger.error(message)
             raise NewApiError('INVALID_TRANSITION', message)
         return True
-    async def _promote_session_to_active_successful(self, redis_key, session_data, operation_name):
-        """将 loginSuccessful 会话安全推进到 activeSuccessful。"""
-        funcName = f'{operation_name} - 推进activeSuccessful'
-        required_session_fields = ['phone', 'id', 'bankname']
-        missing_fields = [field for field in required_session_fields if not session_data.get(field)]
-        if missing_fields:
-            self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-            raise NewApiError(ErrorCode.SessionNotExist, f'Session data incomplete, missing fields: {", ".join(missing_fields)}')
-        session_phone = session_data.get('phone')
-        session_payment_id = session_data.get('id')
-        session_bankname = session_data.get('bankname')
-        session_status = session_data.get('status', 'UNKNOWN')
-        if session_status == LoginStatus.ACTIVE_SUCCESSFUL:
-            result = {
-                'status': 'success',
-                'message': '账号已经激活成功，请勿重复激活'
-            }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
-        if session_status != LoginStatus.LOGIN_SUCCESSFUL:
-            raise NewApiError(ErrorCode.SessionNotExist, f'Invalid status transition, current status: {session_status}')
-        api_result_verify_acct = await self._verify_account(session_data)
-        if api_result_verify_acct.IsSuccess:
-            self.logger.info(f'{self._log_key(funcName)} 账号状态正常')
-            api_result_query_accts = await self._query_accts(session_phone)
-            accts_json = api_result_query_accts.get('data')
-            accts_data = json.loads(accts_json)
-            acct = self._query_accts_default(accts_data)
-            if not acct:
-                raise NewApiError(ErrorCode.QueryAccts, 'Easypaisa Wallet account not found')
-            login_lock_payment_key = self._login_lock_payment_key(session_payment_id)
-            await self.redis.setex(login_lock_payment_key, self.lock_time_login_duplicate_avoid, 1)
-            login_lock_phone_key = self._login_lock_phone_key(session_phone)
-            await self.redis.setex(login_lock_phone_key, self.lock_time_login_duplicate_avoid, 1)
-            self.logger.info(f'{self._log_key(funcName)} Payment锁: {login_lock_payment_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-            self.logger.info(f'{self._log_key(funcName)} Phone锁: {login_lock_phone_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-            self.logger.info(f'{self._log_key(funcName)} 正在更新会话状态. {session_data.get("status")} → {LoginStatus.ACTIVE_SUCCESSFUL}')
-            await self._update_session_status(redis_key, session_data, LoginStatus.ACTIVE_SUCCESSFUL)
-            self.logger.info(f'{self._log_key(funcName)} 正在更新payment...')
-            await self._update_payment(
-                session_payment_id,
-                session_data,
-                account_entire=accts_json,
-                account_accno=acct.get('accno'),
-                account_iban=acct.get('IBAN'),
-            )
-            result = {
-                'status': 'success',
-                'message': '账号激活成功',
-                'data': {
-                    'account_accno': acct.get('accno', ''),
-                    'account_iban': acct.get('IBAN', ''),
-                }
-            }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
-        if api_result_verify_acct.IsInCoolDown:
-            self.logger.error(f'{self._log_key(funcName)} 冷却中，当前：{datetime.now()}, 冷却至：{datetime.fromtimestamp(session_data.get("cd_until", 0))}')
-        if api_result_verify_acct.IsNeedRelogin:
-            self.logger.error(f'{self._log_key(funcName)} 需要重新登录（会话过期），执行强制下线流程')
-            logout_success = await self._force_logout(
-                payment_id=session_payment_id,
-                bankname=session_bankname,
-                reason='SESSION_EXPIRED_URM10004'
-            )
-            if logout_success:
-                self.logger.warning(f'{self._log_key(funcName)} 强制下线成功')
-            else:
-                self.logger.error(f'{self._log_key(funcName)} 强制下线失败')
-            login_lock_phone_key = self._login_lock_phone_key(session_phone)
-            await self.redis.delete(login_lock_phone_key)
-            result = {
-                'status': 'error',
-                'message': '会话已过期，账号已强制下线，请重新登录',
-                'data': {
-                    'isNeedReLogin': True,
-                    'isInCoolDown': False,
-                    'isNeedChangePin': False,
-                    'isNeedFingerPrint': False,
-                }
-            }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
-        if api_result_verify_acct.IsNeedChangePin:
-            self.logger.error(f'{self._log_key(funcName)} 需要修改PIN')
-        if api_result_verify_acct.IsNeedFingerPrint:
-            self.logger.error(f'{self._log_key(funcName)} 需要修改指纹')
-        result = {
-            'status': 'error',
-            'message': '账号状态异常',
-            'data': {
-                'isInCoolDown': api_result_verify_acct.IsInCoolDown,
-                'isNeedReLogin': api_result_verify_acct.IsNeedRelogin,
-                'isNeedChangePin': api_result_verify_acct.IsNeedChangePin,
-                'isNeedFingerPrint': api_result_verify_acct.IsNeedFingerPrint,
-            }
-        }
-        self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-        return result
-    async def _try_promote_session_from_payment_status(self, payment_id, redis_key, session_data):
-        """在 payment_status 轮询时尝试补推进登录成功但未激活的会话。"""
-        funcName = 'payment_status_http'
-        payment_lock_id = None
-        payment_lock_value = None
-        if session_data.get('status') != LoginStatus.LOGIN_SUCCESSFUL:
-            return session_data
-        try:
-            lock_result = await self._get_payment_interface_lock(payment_id, 'payment_status_promote')
-            payment_lock_id = lock_result.get('lock_id')
-            payment_lock_value = lock_result.get('lock_value')
-            latest_session_data = await self._get_session_data(redis_key)
-            if not latest_session_data:
-                return None
-            if latest_session_data.get('status') != LoginStatus.LOGIN_SUCCESSFUL:
-                return latest_session_data
-            result = await self._promote_session_to_active_successful(redis_key, latest_session_data, funcName)
-            self.logger.info(f'{self._log_key(funcName)} payment_status 自动补推进结果: {result}')
-        except NewApiError as e:
-            self.logger.warning(f'{self._log_key(funcName)} payment_status 自动补推进跳过: {e.code} {e.message}')
-        except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} payment_status 自动补推进异常: {str(e)}', exc_info=True)
-        finally:
-            await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-        return await self._get_session_data(redis_key)
     def make_request(self, method, url, headers=None, data=None, files=None, proxies=None):
         self.logger.info('请求 {method} {url}, headers:{headers} data:{data} 代理:{proxies}'.format(method=method, url=url, headers=headers, data=data, proxies=proxies))
         try:
@@ -1336,17 +1204,10 @@ class EasyPaisa:
                 'previous_payment_id': old_payment_id,
             })
             self.logger.info(f"{self._log_key(funcName)} 正在更新会话状态. {session_data.get('status')} → {LoginStatus.OTP_VERIFIED}")
-            await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
-            try:
-                replay_ok = await self._replay_saved_fingerprint(real_payment_id, session_phone)
-            except Exception:
-                replay_ok = False
-            next_phase = (
-                LoginStatus.FINGERPRINT_UPLOADED
-                if replay_ok else LoginStatus.FINGERPRINT_UPLOAD_REQUIRED
-            )
-            self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED, next_phase, funcName)
-            se_until = await self._update_session_status(redis_key, session_data, next_phase)
+            se_until = await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
+            # TODO Task 10: 重写 verify_otp_http 内 _replay_saved_fingerprint 调用后续逻辑
+            # 原代码已删除（Task 4），_replay_saved_fingerprint + LoginStatus.FINGERPRINT_UPLOADED/UPLOAD_REQUIRED 都已不存在
+            next_phase = LoginStatus.OTP_VERIFIED
             result = {
                 'status': 'success',
                 'message': 'OTP验证成功',
@@ -1515,8 +1376,7 @@ class EasyPaisa:
             redis_key = session_ctx.get('redis_key')
             session_data = session_ctx.get('session_data')
             if not session_data:
-                session_data = await self._build_bound_second_login_session(bankname, requested_payment_id)
-                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=requested_payment_id)
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call pre_login_http first')
             if session_ctx.get('is_aliased'):
                 self.logger.info(
                     f'{self._log_key(funcName)} payment_id桥接: requested={requested_payment_id} -> resolved={resolved_payment_id}'
@@ -2337,99 +2197,6 @@ class EasyPaisa:
             }
         else:
             raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {status_desc}')
-    async def _verify_account(self, session_data) -> AccountStatus:
-        baseName = '账号验证'
-        funcName = f'{baseName}'
-        url = self.API_ENDPOINTS['base_url']
-        self.logger.info(f'{self._log_key(funcName)} 请求URL: {url}')
-        isNeedFingerPring = True
-        result = AccountStatus()
-        if ISTEST:
-            result.IsInCoolDown = False
-            result.IsNeedRelogin = False
-            result.IsNeedChangePin = False
-            isNeedFingerPring = False
-        else:
-            if EASYPAISA_API_VERSION == 'v1.8':
-                self.logger.info(f'{self._log_key(funcName)} v1.8模式: 跳过指纹验证')
-                isNeedFingerPring = False
-            else:
-                funcName = f'{baseName} - 指纹信息'
-                request_data = self._build_verify_fingerprint_request(session_data)
-                response = self.retry_make_request(
-                    method='POST',
-                    url=url,
-                    data=request_data,
-                )
-                self._log_response(funcName, response)
-                if not response:
-                    raise NewApiError(ErrorCode.VerifyAccount, 'Account verification request failed')
-                status_code = response.status_code
-                if status_code != 200:
-                    self.logger.error(f'{self._log_key(funcName)} HTTP状态码错误: {status_code}')
-                    raise NewApiError(ErrorCode.VerifyAccount, 'Account verification request failed')
-                self.logger.info(f'{self._log_key(funcName)} HTTP请求成功!')
-                response_data = self._decode_indus_response(funcName, response.text)
-                if not response_data:
-                    self.logger.error(f'{self._log_key(funcName)} 解码失败!')
-                    raise NewApiError(ErrorCode.VerifyAccount, 'Account verification decode failed')
-                status = response_data.get('code')
-                status_desc = response_data.get('msg')
-                self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}')
-                if status in [ 100, 200 ]:
-                    isNeedFingerPring = False
-                else:
-                    isNeedFingerPring = True
-                    self.logger.warning(f'{self._log_key(funcName)} 指纹验证失败，跳过PIN验证')
-                    result.IsNeedFingerPrint = isNeedFingerPring
-                    return result
-            funcName = f'{baseName} - 基本信息'
-            request_data = self._build_verify_account_request(session_data)
-            response = self.retry_make_request(
-                method='POST',
-                url=url,
-                data=request_data,
-            )
-            self._log_response(funcName, response)
-            if not response:
-                raise NewApiError(ErrorCode.VerifyAccount, 'Account verification request failed')
-            status_code = response.status_code
-            if status_code != 200:
-                self.logger.error(f'{self._log_key(funcName)} HTTP状态码错误: {status_code}')
-                raise NewApiError(ErrorCode.VerifyAccount, 'Account verification request failed')
-            self.logger.info(f'{self._log_key(funcName)} HTTP请求成功!')
-            response_data = self._decode_indus_response(funcName, response.text)
-            if not response_data:
-                self.logger.error(f'{self._log_key(funcName)} 解码失败!')
-                raise NewApiError(ErrorCode.VerifyAccount, 'Account verification decode failed')
-            status = response_data.get('code')
-            status_desc = (response_data.get("data") or {}).get("msgCd", "无状态描述")
-            self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}')
-            if status in [ 503 ]:
-                raise NewApiError(ErrorCode.Retry, 'unstable network, please try agagin')
-            if status == 501 and status_desc == 'URM10004':
-                self.logger.warning(f'{self._log_key(funcName)} 检测到会话过期 (501 + URM10004)，需要强制下线')
-                result.IsNeedRelogin = True
-                result.IsSuccess = False
-                result.IsNeedFingerPrint = isNeedFingerPring
-                return result
-            if status not in [ 100, 200 ]:
-                if status_desc in [ 'URM40008' ]:
-                    result.IsInCoolDown = True
-                if status_desc in [ 'URM20060' ]:
-                    result.IsNeedRelogin = True
-                if status_desc in [ 'URM20008', 'URM20017' ]:
-                    result.IsNeedChangePin = True
-        if EASYPAISA_API_VERSION == 'v1.8':
-            result.IsNeedFingerPrint = False
-            self.logger.info(f'{self._log_key(funcName)} v1.8模式: 强制设置 IsNeedFingerPrint=False')
-        else:
-            result.IsNeedFingerPrint = isNeedFingerPring
-        if not result.IsInCoolDown and not result.IsNeedRelogin and not result.IsNeedChangePin and not result.IsNeedFingerPrint:
-            result.IsSuccess = True
-        else:
-            result.IsSuccess = False
-        return result
     async def _force_logout(self, payment_id, bankname, reason='UNKNOWN'):
         """
         强制下线账号，清理所有相关状态
@@ -2774,36 +2541,6 @@ class EasyPaisa:
             self.logger.info(f'{self._log_key(funcName)} 已清空 payment_id={payment_id} 的指纹路径')
         except Exception as e:
             self.logger.warning(f'{self._log_key(funcName)} 清理失败但忽略: {str(e)}')
-    async def _replay_saved_fingerprint(self, payment_id, phone) -> bool:
-        funcName = '重放本地指纹'
-        try:
-            fingerprint_path = self._get_payment_fingerprint_path(payment_id)
-            if not fingerprint_path:
-                return False
-            if not os.path.exists(fingerprint_path):
-                return False
-            with open(fingerprint_path, 'rb') as fp:
-                file_body = fp.read()
-            file_name = os.path.basename(fingerprint_path)
-            session_data = {
-                'bankname': SVRNAME,
-                'phone': phone,
-            }
-            request_data, files = self._build_upload_fingerprint_request(session_data, file_name, file_body)
-            response = self.retry_make_request(
-                method='',
-                url=self.API_ENDPOINTS['fingerprint_upload_url'],
-                data=request_data,
-                files=files,
-            )
-            if not response:
-                return False
-            if response.status_code != 200:
-                return False
-            return response.text == 'ok'
-        except Exception as e:
-            self.logger.warning(f'{self._log_key(funcName)} 重放失败: {str(e)}')
-            return False
     async def _query_accts(self, phone):
         funcName = '账户查询'
         url = self.API_ENDPOINTS['base_url']
@@ -3112,39 +2849,6 @@ class EasyPaisa:
             )
             raise NewApiError('10402', 'UPI already occupied by another user')
         return payment
-    async def _build_bound_second_login_session(self, bankname, payment_id):
-        payment = await self._query_bound_payment_for_current_partner(bankname, payment_id)
-        phone = getattr(payment, 'phone', None)
-        if not phone:
-            raise NewApiError(ErrorCode.PaymentPhoneMismatch, f'Phone number missing for payment {payment_id}')
-        is_registered = await self._is_account_registered(phone)
-        if not is_registered:
-            raise NewApiError(
-                'EP_CLOUD_NOT_REGISTERED',
-                'Bound EasyPaisa account is not registered on cloud machine; reset manually before first login'
-            )
-        now_ts = int(time.time())
-        return {
-            'id': payment_id,
-            'partner_id': getattr(payment, 'user_id', None),
-            'phone': phone,
-            'original_phone': phone,
-            'status': LoginStatus.SECOND_LOGIN_READY,
-            'status_history': [LoginStatus.SECOND_LOGIN_READY],
-            'time': now_ts,
-            'try_count': 0,
-            'bankname': bankname,
-            'pinCode': getattr(payment, 'pin', None),
-            'password': getattr(payment, 'net_trade_pw', None),
-            'name': getattr(payment, 'name', '') or '',
-            'is_new_user': False,
-            'last_status_change': now_ts,
-            'last_request_time': now_ts,
-            'account_entire': getattr(payment, 'account_entire', None),
-            'account_accno': getattr(payment, 'account_accno', None),
-            'account_iban': getattr(payment, 'account_iban', None),
-            'qr_channel': getattr(payment, 'channel', None) or 1001,
-        }
     async def _save_payment(self, session_data, name=None, pin=None, fingerprint_path=None):
         funcName = '保存payment数据到数据库'
         try:
