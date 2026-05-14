@@ -130,6 +130,9 @@ class EasyPaisa:
     PAYMENT_INTERFACE_LOCK_KEY = 'payment_interface_lock:{payment_id}:{operation_name}'
     FINGERPRINT_PATH = '/fingerprint/'
     FINGERPRINT_FILENAME = '{bankname}_{payment_id}_{phone}.zip'
+    URM90040_COUNT_KEY = 'easypaisa:urm90040_count:{payment_id}'
+    URM90040_LIMIT = 3
+    URM90040_WINDOW_SECONDS = 3600
     API_ENDPOINTS = {
         'base_url': conf.get('easypaisa_api_url', 'http://34.150.42.92:83'),
         'fingerprint_upload_url': 'https://easypaisa.zpay.today/upload_data',
@@ -1163,12 +1166,53 @@ class EasyPaisa:
             self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
             return {'outcome': 'rejected', 'message': str(e)}
 
-    async def _urm90040_fallback(self, redis_key, session_data, msg):
-        """Task 15 placeholder."""
-        return await self._force_terminal_needs_relogin(
-            redis_key=redis_key, session_data=session_data,
-            reason='URM90040 fallback stub', error_code='SL_NEEDS_RELOGIN',
+    async def _urm90040_fallback(self, redis_key, session_data, upstream_msg):
+        """spec §3.5：URM90040 fallback 限频 3 次/小时。"""
+        funcName = '_urm90040_fallback'
+        payment_id = session_data.get('id')
+        count_key = self.URM90040_COUNT_KEY.format(payment_id=payment_id)
+        cur = await self.redis.get(count_key)
+        try:
+            cur_count = int(cur) if cur else 0
+        except (TypeError, ValueError):
+            cur_count = 0
+        if cur_count >= self.URM90040_LIMIT:
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason=f'URM90040 count {cur_count} exceeded {self.URM90040_LIMIT}/hour',
+                error_code='SL_NEEDS_RELOGIN',
+                message='账号疑似被频繁占用，请联系运维介入',
+            )
+        # 计数 +1，状态 reset 到 PRE_LOGIN_CREATED 再走 loginStep1
+        new_count = cur_count + 1
+        await self.redis.setex(count_key, self.URM90040_WINDOW_SECONDS, new_count)
+        session_data['fallback_from_urm90040'] = True
+        # 状态 reset：当前可能在 PRE_LOGIN_CREATED 或 FINGERPRINT_VERIFIED
+        current = session_data.get('status')
+        if current != LoginStatus.PRE_LOGIN_CREATED:
+            self.logger.warning(f'{self._log_key(funcName)} 强制 reset {current} → PRE_LOGIN_CREATED')
+        session_data['status'] = LoginStatus.PRE_LOGIN_CREATED
+        session_data['status_history'].append(LoginStatus.PRE_LOGIN_CREATED)
+        # 调云机 loginStep1
+        await self._send_otp(session_data)
+        self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
+                                       LoginStatus.OTP_SENT, funcName)
+        session_data['status'] = LoginStatus.OTP_SENT
+        session_data['status_history'].append(LoginStatus.OTP_SENT)
+        session_data['sendOTPTime'] = int(time.time())
+        await self._persist_session_data(redis_key, session_data)
+        self.logger.warning(
+            f'{self._log_key(funcName)} URM90040 fallback 触发 count={new_count}/{self.URM90040_LIMIT}'
         )
+        return {
+            'status': 'error',
+            'message': '账号被抢登，已重新发送 OTP',
+            'data': {
+                'code': 'SL_NEEDS_OTP',
+                'next_step': 'verify_otp',
+                'phase': LoginStatus.OTP_SENT,
+            },
+        }
 
     async def _update_payment_fingerprint_path(self, payment_id, full_path):
         funcName = '_update_payment_fingerprint_path'
