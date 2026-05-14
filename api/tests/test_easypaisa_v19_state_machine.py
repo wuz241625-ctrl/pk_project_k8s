@@ -57,11 +57,6 @@ def test_otp_sent_cross_step_edges():
     assert LoginStatus.PRE_LOGIN_CREATED in otp_sent           # URM90040 reset
 
 
-def test_awaiting_pin_change_returns_to_fingerprint_verified():
-    transitions = STATUS_TRANSITIONS[LoginStatus.AWAITING_PIN_CHANGE]
-    assert LoginStatus.FINGERPRINT_VERIFIED in transitions
-
-
 def test_removed_states_absent():
     """spec §6.1：老状态必须删除。"""
     assert not hasattr(LoginStatus, 'FINGERPRINT_UPLOAD_REQUIRED')
@@ -105,3 +100,13 @@ def test_assert_transition_pre_login_to_account_selection(ep_for_transition):
     ep_for_transition._assert_status_transition(
         session, LoginStatus.PRE_LOGIN_CREATED, LoginStatus.ACCOUNT_SELECTION_REQUIRED, 'test'
     )
+
+
+def test_awaiting_pin_change_transitions_to_account_selection():
+    """hotfix-2 P0: change_pin 完成后直接进入 ACCOUNT_SELECTION_REQUIRED（不再经 FINGERPRINT_VERIFIED）。"""
+    targets = STATUS_TRANSITIONS[LoginStatus.AWAITING_PIN_CHANGE]
+    assert LoginStatus.ACCOUNT_SELECTION_REQUIRED in targets, \
+        'AWAITING_PIN_CHANGE 必须能转到 ACCOUNT_SELECTION_REQUIRED'
+    assert LoginStatus.FINGERPRINT_VERIFIED not in targets, \
+        'P0 改造：不再保留 AWAITING_PIN_CHANGE → FINGERPRINT_VERIFIED 边'
+    assert LoginStatus.NEEDS_RELOGIN in targets, '终态逃生门仍保留'

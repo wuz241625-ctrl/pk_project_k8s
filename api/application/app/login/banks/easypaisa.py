@@ -66,7 +66,7 @@ STATUS_TRANSITIONS = {
         LoginStatus.NEEDS_RELOGIN,
     ],
     LoginStatus.AWAITING_PIN_CHANGE: [
-        LoginStatus.FINGERPRINT_VERIFIED,
+        LoginStatus.ACCOUNT_SELECTION_REQUIRED,  # hotfix-2: change_pin 内部续推到选账号
         LoginStatus.NEEDS_RELOGIN,
     ],
     LoginStatus.ACCOUNT_SELECTION_REQUIRED: [
