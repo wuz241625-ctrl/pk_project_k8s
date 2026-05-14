@@ -2113,17 +2113,14 @@ class EasyPaisa:
             payment_ids = data['payment_ids']
             paymentIDArray = [x.strip() for x in payment_ids.split(",") if x.strip()]
             next_action_map = {
-                LoginStatus.PRE_LOGIN_CREATED: 'get_otp',
-                LoginStatus.OTP_SENT: 'verify_otp',
-                LoginStatus.OTP_VERIFIED: 'verify_otp',
-                LoginStatus.FINGERPRINT_UPLOAD_REQUIRED: 'upload_fingerprint',
-                LoginStatus.FINGERPRINT_UPLOADED: 'verify_fingerprint',
-                LoginStatus.FINGERPRINT_VERIFIED: 'second_login',
-                LoginStatus.SECOND_LOGIN_READY: 'second_login',
-                LoginStatus.SECOND_LOGIN_PASSED: 'query_accts',
-                LoginStatus.AWAITING_PIN_CHANGE: 'change_pin',
+                LoginStatus.PRE_LOGIN_CREATED:          'send_otp',
+                LoginStatus.OTP_SENT:                   'verify_otp',
+                LoginStatus.OTP_VERIFIED:               'upload_fingerprint',
+                LoginStatus.FINGERPRINT_VERIFIED:       'second_login',
+                LoginStatus.AWAITING_PIN_CHANGE:        'change_pin',
                 LoginStatus.ACCOUNT_SELECTION_REQUIRED: 'select_accts',
-                LoginStatus.ACTIVE_SUCCESSFUL: 'ready',
+                LoginStatus.ACTIVE_SUCCESSFUL:          'ready',
+                LoginStatus.NEEDS_RELOGIN:              'needs_relogin',
             }
             objs = []
             for payment_id in paymentIDArray:
