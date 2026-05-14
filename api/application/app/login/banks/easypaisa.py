@@ -1149,133 +1149,161 @@ class EasyPaisa:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
 
     async def verify_otp_http(self, data):
-        """OTP验证"""
+        """v1.9 重写：纯 loginStep2(should_verify_fingerprint=false) + 区分首次/fallback。spec §3.4。"""
         funcName = 'verify_otp_http'
         lockName = 'verify_otp'
         payment_lock_id = None
         payment_lock_value = None
         self.login_data = data
         try:
-            self.logger.info(f'{self._log_key(funcName)} 请求参数: {data}')
-            required_fields = ['bankname', 'payment_id', 'otp']
-            if not all(field in data for field in required_fields):
-                missing_fields = [field for field in required_fields if field not in data]
-                self.logger.error(f'{self._log_key(funcName)} 参数验证失败: 缺少必要参数 {required_fields}')
-                self.logger.error(f'{self._log_key(funcName)} 实际收到的参数: {list(data.keys())}')
-                raise NewApiError(ErrorCode.MissingParams, f"Missing required parameters: {', '.join(missing_fields)}")
+            required = ['bankname', 'payment_id', 'otp']
+            missing = [f for f in required if f not in data]
+            if missing:
+                raise NewApiError(ErrorCode.MissingParams, f"Missing: {', '.join(missing)}")
             bankname = data['bankname']
             payment_id = self._normalize_payment_id(data['payment_id'])
-            otp = data.get('otp', '').strip()
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            otp = data['otp'].strip()
             if not otp:
                 raise NewApiError(ErrorCode.MissingParams, 'OTP code cannot be empty')
-            try:
-                lock_result = await self._get_payment_interface_lock(payment_id, lockName)
-                payment_lock_id = lock_result.get('lock_id')
-                payment_lock_value = lock_result.get('lock_value')
-            except NewApiError as lock_error:
-                self.logger.warning(f'{self._log_key(funcName)} 接口锁限制: {lock_error.message}')
-                raise lock_error
-            self.logger.info(f'{self._log_key(funcName)} 正在从Redis获取会话数据...')
+            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=payment_id)
+            lock_result = await self._get_payment_interface_lock(payment_id, lockName)
+            payment_lock_id = lock_result.get('lock_id')
+            payment_lock_value = lock_result.get('lock_value')
             session_data = await self._get_session_data(redis_key)
             if not session_data:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不存在')
-                self.logger.error(f'{self._log_key(funcName)} 请确保按正确流程调用:')
-                self.logger.error(f'{self._log_key(funcName)}   1. pre_login_http (初始化会话)')
-                self.logger.error(f'{self._log_key(funcName)}   2. send_otp_http (OTP发送)')
-                self.logger.error(f'{self._log_key(funcName)}   3. verify_otp_http ← 当前步骤')
-                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist, please call send_otp_http first')
-            required_session_fields = ['phone', 'id', 'bankname']
-            missing_fields = []
-            for field in required_session_fields:
-                if not session_data.get(field):
-                    missing_fields.append(field)
-            if missing_fields:
-                self.logger.error(f'{self._log_key(funcName)} 会话数据不完整，缺少字段: {missing_fields}')
-                raise NewApiError(ErrorCode.SessionNotExist, f"Session data incomplete, missing fields: {', '.join(missing_fields)}")
-            session_phone = session_data.get('phone')
-            session_payment_id = session_data.get('id')
-            session_bankname = session_data.get('bankname')
-            if session_payment_id and await self.redis.get(self._login_lock_payment_key(session_payment_id)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            if session_phone and await self.redis.get(self._login_lock_phone_key(session_phone)):
-                raise NewApiError(ErrorCode.Logined, f'Account is in login process, please try again later')
-            self.logger.info(f'{self._log_key(funcName)} 成功获取会话数据！')
-            self.logger.info(f'{self._log_key(funcName)} === 会话数据详细信息 ===')
-            self.logger.info(f"{self._log_key(funcName)} 手机号: {session_data.get('phone', 'UNKNOWN')}")
-            self.logger.info(f"{self._log_key(funcName)} 当前状态: {session_data.get('status', 'UNKNOWN')}")
-            self.logger.info(f'{self._log_key(funcName)} 目标状态: {LoginStatus.OTP_VERIFIED}')
-            self.logger.info(f'{self._log_key(funcName)} 会话数据完整性检查通过！')
+                raise NewApiError(ErrorCode.SessionNotExist, 'Session data does not exist')
             self._assert_status_transition(
-                session_data,
-                LoginStatus.OTP_SENT,
-                LoginStatus.OTP_VERIFIED,
-                funcName,
+                session_data, LoginStatus.OTP_SENT, LoginStatus.OTP_VERIFIED, funcName
             )
-            self.logger.info(f'{self._log_key(funcName)} 状态转换验证通过！')
-            api_result_verify_otp = await self._verify_otp(session_data, otp)
-            session_data['serv_gen_id'] = api_result_verify_otp['data'].get('requestId')
+            # 调云机 loginStep2(should_verify_fingerprint=false)
+            api_result = await self._verify_otp(session_data, otp)
+            session_data['serv_gen_id'] = api_result.get('data', {}).get('requestId')
             name = session_data.get('name', '')
-            self.logger.info(f'{self._log_key(funcName)} 从session获取name: {name}')
             real_payment_id = await self._save_payment(session_data, name=name)
             if not real_payment_id:
                 raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
-            old_payment_id = self._normalize_payment_id(session_payment_id)
+            old_payment_id = self._normalize_payment_id(session_data.get('id'))
             real_payment_id_text = self._normalize_payment_id(real_payment_id)
-            old_redis_key = redis_key
-            redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id_text)
-            if old_redis_key != redis_key:
-                await self.redis.delete(old_redis_key)
-            login_lock_payment_key = self._login_lock_payment_key(real_payment_id)
-            await self.redis.setex(login_lock_payment_key, self.lock_time_login_duplicate_avoid, 1)
-            login_lock_phone_key = self._login_lock_phone_key(session_phone)
-            await self.redis.setex(login_lock_phone_key, self.lock_time_login_duplicate_avoid, 1)
-            self.logger.info(f'{self._log_key(funcName)} Payment锁: {login_lock_payment_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-            self.logger.info(f'{self._log_key(funcName)} Phone锁: {login_lock_phone_key} ({self.lock_time_login_duplicate_avoid / 60}分钟)')
-            now_ts = int(time.time())
+            if old_payment_id != real_payment_id_text:
+                await self.redis.delete(redis_key)
+                redis_key = self.PRELOGIN_KEY.format(bankname=bankname, payment_id=real_payment_id_text)
+            session_phone = session_data.get('phone')
+            await self.redis.setex(
+                self._login_lock_payment_key(real_payment_id),
+                self.lock_time_login_duplicate_avoid, 1
+            )
+            await self.redis.setex(
+                self._login_lock_phone_key(session_phone),
+                self.lock_time_login_duplicate_avoid, 1
+            )
             session_data.update({
                 'id': real_payment_id,
-                'redis_key': redis_key,
                 'real_payment_id': real_payment_id,
+                'previous_payment_id': old_payment_id,
                 'selected_upi': session_phone,
                 'upi_list': [session_phone],
-                'completion_time': now_ts,
+                'completion_time': int(time.time()),
                 'last_error': None,
-                'previous_payment_id': old_payment_id,
             })
-            self.logger.info(f"{self._log_key(funcName)} 正在更新会话状态. {session_data.get('status')} → {LoginStatus.OTP_VERIFIED}")
-            se_until = await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
-            # TODO Task 10: 重写 verify_otp_http 内 _replay_saved_fingerprint 调用后续逻辑
-            # 原代码已删除（Task 4），_replay_saved_fingerprint + LoginStatus.FINGERPRINT_UPLOADED/UPLOAD_REQUIRED 都已不存在
-            next_phase = LoginStatus.OTP_VERIFIED
-            result = {
+            await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
+            # 区分首次 / fallback
+            if session_data.get('fallback_from_urm90040'):
+                return await self._verify_otp_fallback_chain(redis_key, session_data)
+            # 首次：返回 next_phase='fingerprintUploadRequired'，APP 切到指纹采集 UI
+            return {
                 'status': 'success',
-                'message': 'OTP验证成功',
+                'message': 'OTP 验证成功',
                 'data': {
-                    'serv_gen_id': api_result_verify_otp['data'].get('serv_gen_id'),
-                    'se_until': se_until,
-                    'next_phase': next_phase,
+                    'next_phase': 'fingerprintUploadRequired',
                     'payment_id': real_payment_id,
                     'previous_payment_id': old_payment_id,
-                }
+                    'phase': LoginStatus.OTP_VERIFIED,
+                },
             }
-            self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
-            return result
         except NewApiError:
-            raise  # 重新抛出NewApiError，不要重新包装
+            raise
         except Exception as e:
-            self.logger.error(f'{self._log_key(funcName)} 异常: {str(e)}')
-            self.logger.error(f'异常类型: {type(e).__name__}')
-            self.logger.error(f'异常信息: {str(e)}')
-            import traceback
-            self.logger.error(f'完整异常堆栈:')
-            for line in traceback.format_exc().split('\n'):
-                if line.strip():
-                    self.logger.error(f'   {line}')
-            raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {str(e)}')
+            self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
+            raise NewApiError(ErrorCode.VerifyOTPFail, f'OTP verification failed: {e}')
         finally:
             await self._release_payment_interface_lock(payment_lock_id, payment_lock_value)
-            self.logger.info(f'{self._log_key(funcName)} 释放payment锁: id={payment_lock_id}, value={payment_lock_value}')
+
+    async def _verify_otp_fallback_chain(self, redis_key, session_data):
+        """spec §3.4 fallback 路径：upload_data + verifyFingerprint + secondLogin + queryAccountList。"""
+        funcName = '_verify_otp_fallback_chain'
+        payment_id = session_data.get('id')
+        payment = await self._query_payment(payment_id) if payment_id else None
+        fingerprint_path = payment.get('fingerprint_path') if payment else None
+        if not fingerprint_path or not os.path.exists(fingerprint_path):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason='fallback path: local fingerprint missing',
+                error_code='EP_FP_FILE_MISSING',
+            )
+        pushed = await self._call_upload_data(session_data, fingerprint_path)
+        if not pushed:
+            return {
+                'status': 'error',
+                'message': '上传指纹失败',
+                'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'phase': LoginStatus.OTP_VERIFIED},
+            }
+        fp = await self._call_verify_fingerprint(session_data)
+        if fp.get('outcome') != 'success':
+            return {
+                'status': 'error',
+                'message': '指纹验证被拒',
+                'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'phase': LoginStatus.OTP_VERIFIED},
+            }
+        sl = await self._call_second_login(session_data)
+        if sl.get('outcome') == 'urm90040':
+            # fallback 路径再 URM90040 → 不再 fallback，直接 needsRelogin
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason='fallback secondLogin URM90040 again', error_code='SL_NEEDS_RELOGIN',
+            )
+        if sl.get('outcome') == 'needs_pin_change':
+            self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
+                                           LoginStatus.AWAITING_PIN_CHANGE, funcName)
+            await self._update_session_status(redis_key, session_data, LoginStatus.AWAITING_PIN_CHANGE,
+                                              {'last_error': {'code': 'SL_NEEDS_PIN_CHANGE'}})
+            return {
+                'status': 'error',
+                'message': '需要修改 PIN',
+                'data': {'code': 'SL_NEEDS_PIN_CHANGE', 'next_step': 'change_pin'},
+            }
+        if sl.get('outcome') != 'success':
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key, session_data=session_data,
+                reason=f'fallback secondLogin {sl.get("outcome")}',
+                error_code='SL_NEEDS_RELOGIN' if sl.get('outcome') == 'session_expired' else 'SL_UPSTREAM_ERROR',
+            )
+        qal = await self._call_query_account_list(session_data)
+        if qal.get('outcome') != 'success':
+            await self._update_session_status(redis_key, session_data, LoginStatus.FINGERPRINT_VERIFIED,
+                                              {'last_error': {'code': 'SL_UPSTREAM_ERROR'}})
+            return {
+                'status': 'error',
+                'message': 'queryAccountList 失败',
+                'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'second_login',
+                         'phase': LoginStatus.FINGERPRINT_VERIFIED},
+            }
+        self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
+                                       LoginStatus.ACCOUNT_SELECTION_REQUIRED, funcName)
+        await self._update_session_status(redis_key, session_data, LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                                          {'account_entire': qal.get('accounts_json'),
+                                           'last_error': None})
+        return {
+            'status': 'success',
+            'message': 'fallback 续推成功',
+            'data': {
+                'next_phase': 'fingerprintUploaded',
+                'next_step': 'second_login',
+                'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+            },
+        }
+
     async def verify_fingerprint_http(self, data):
         """指纹验证。"""
         funcName = 'verify_fingerprint_http'
