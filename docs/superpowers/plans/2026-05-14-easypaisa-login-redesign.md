@@ -2807,3 +2807,47 @@ LoginStatus.NEEDS_RELOGIN,
 
 **APP P1（独立排期）**: APP `controller.dart` 补 `SL_NEEDS_OTP → awaitingOtp` 识别 → 真正闭环 UX(用户看到 OTP 屏而不是 failed 屏)。**不阻塞 hotfix-2 上线**。
 
+---
+
+## Hotfix 3: URM90040 指纹语义分流 (2026-05-15)
+
+**Trigger**: 复盘首次上号指纹未确认成功场景，发现 `URM90040` 不能单一解释为真实掉线。没有 MySQL 指纹时继续走 `loginStep1` 会把“指纹未验证成功”误处理成“掉线/抢登”，已上号状态下 `loginStep1` 又无法成功，形成反复失败。
+
+**核心不变量**: 只有 `verifyFingerprint` 确认成功后才会写 MySQL `payment.fingerprint_path`。因此是否存在可用 `fingerprint_path` 是 URM90040 语义分流依据。
+
+### 改动清单
+
+| # | 内容 | 测试 |
+|---|---|---|
+| 1 | 新增 `_route_to_fingerprint_upload`：无可用指纹时返回 `phase=otpVerified` / `next_step=upload_fingerprint` / `code=FP_REQUIRED_OR_UNVERIFIED` | `test_urm90040_without_confirmed_fingerprint_routes_to_upload_fingerprint` |
+| 2 | `_urm90040_fallback` 增加 `fingerprint_path` 前置条件；没有确认指纹时不调 `_send_otp`，不增加 URM90040 fallback 计数 | `test_urm90040_without_confirmed_fingerprint_routes_to_upload_fingerprint` |
+| 3 | `_pre_login_second_time_chain` 缺指纹时不再 `needsRelogin`，改为回到录指纹流程 | `test_u20_local_zip_missing_routes_to_upload_fingerprint` |
+| 4 | `_verify_otp_fallback_chain` 缺指纹时不再终止，改为回到录指纹流程 | 由 URM90040/fallback 相关测试覆盖 |
+| 5 | 已确认有指纹的 URM90040 原限频和 OTP envelope 行为保持不变 | `test_u4_first_urm90040_triggers_fallback`、`test_u5_fourth_urm90040_forces_needs_relogin`、`test_urm90040_atomic_concurrent_calls` |
+
+### 状态流转规则
+
+```text
+secondLogin -> URM90040
+  有 MySQL fingerprint_path 且本地 ZIP 存在:
+    _urm90040_fallback -> loginStep1 -> OTP_SENT
+  没有 MySQL fingerprint_path 或本地 ZIP 不存在:
+    OTP_VERIFIED -> upload_fingerprint
+```
+
+### 验收标准
+
+| 用例 | 期望 |
+|---|---|
+| H8a | 无指纹时 URM90040 不调用 `_send_otp` / loginStep1 |
+| H8b | 无指纹时不递增 `easypaisa:urm90040_count:{payment_id}` |
+| H8c | 无指纹时返回 `FP_REQUIRED_OR_UNVERIFIED`，`next_step='upload_fingerprint'`，`phase='otpVerified'` |
+| H8d | 有指纹时原 `SL_NEEDS_OTP` envelope 不变：`id`、`next_step='verify_otp'`、`expires_in=60`、`urm90040_count` |
+| H8e | 第 4 次有指纹 URM90040 仍进入 `needsRelogin` |
+
+### 本地验收结果
+
+```bash
+pytest api/tests/test_easypaisa_v19_*.py -v
+# 42 passed, 1 warning
+```

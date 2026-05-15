@@ -28,6 +28,12 @@
 - PIN 错 ≠ 指纹错；抢登 ≠ 指纹错
 - 唯一保留完整 `upload_data + verifyFingerprint + secondLogin` 路径：**URM90040 fallback 兜底**（secondLogin 带 pwd 救冻仍失败时）
 
+**Hotfix-3 补充：URM90040 必须先按 MySQL 指纹状态分流**：
+- `URM90040` 有两层含义：指纹未验证成功、真实掉线/抢登。
+- 只有 `verifyFingerprint` 成功后才会写 MySQL `payment.fingerprint_path`，因此 MySQL 指纹路径是能否进入真实掉线恢复的判定依据。
+- 没有 `fingerprint_path` 或本地 ZIP 不存在时，`URM90040` 不允许重置到 `preLoginCreated`，也不允许调用 `loginStep1`；必须返回 `phase=otpVerified`、`next_step=upload_fingerprint`，让 APP 继续录指纹。
+- 只有已确认有可用指纹时，才允许 `_urm90040_fallback` 执行 `loginStep1`/OTP 恢复，并继续受 3 次/小时限频保护。
+
 ## 3. 改动总览
 
 ### 3.1 `pre_login_http` 二次链路（去前置指纹）
@@ -38,7 +44,8 @@
 isAccountRegistered=true:
   ① secondLogin(account_id)  — 不带 pwd
      - success → queryAccountList → ACCOUNT_SELECTION_REQUIRED
-     - URM90040 → 进 _urm90040_fallback_from_pre_login（loginStep1 发 OTP）
+     - URM90040 + 已有可用 fingerprint_path → 进 _urm90040_fallback_from_pre_login（loginStep1 发 OTP）
+     - URM90040 + 无可用 fingerprint_path → OTP_VERIFIED / upload_fingerprint
      - URM20008/URM20017 → AWAITING_PIN_CHANGE
      - needs_relogin / 其他 → NEEDS_RELOGIN
      - cooldown → SL_COOLDOWN（状态不动）
@@ -80,6 +87,27 @@ APP change_pin(pin=用户输入的新 PIN):
 ⚠️ **不前置 upload_data / verifyFingerprint**；APP 不再需要调 `second_login_http`
 
 ### 3.4 `_urm90040_fallback_from_pre_login` envelope 补字段
+
+调用前置条件：
+
+```python
+fingerprint_path exists in MySQL and local ZIP exists
+```
+
+前置条件不满足时，不执行下面 envelope，而是返回：
+
+```python
+return {
+    'status': 'error',
+    'message': '请先完成指纹录入',
+    'data': {
+        'id': payment_id,
+        'code': 'FP_REQUIRED_OR_UNVERIFIED',
+        'phase': LoginStatus.OTP_VERIFIED,
+        'next_step': 'upload_fingerprint',
+    },
+}
+```
 
 ```python
 return {
@@ -156,6 +184,7 @@ LoginStatus.AWAITING_PIN_CHANGE: [
 |---|---|---|
 | AC1 | 二次上号正常账户 | pre_login 内部仅调 isAccountRegistered + secondLogin + queryAccountList = 3 次云机调用 → ACCOUNT_SELECTION_REQUIRED → select_accts → ACTIVE_SUCCESSFUL |
 | AC2 | 二次上号 URM90040 第一次 | pre_login → secondLogin URM90040 → loginStep1 → 返回 `{id, code:'SL_NEEDS_OTP', next_step:'verify_otp', expires_in:60}`；counter=1 |
+| AC2b | 二次上号 URM90040 但 MySQL 无可用指纹 | 不调 loginStep1、不增加 URM90040 OTP fallback 计数，返回 `{id, code:'FP_REQUIRED_OR_UNVERIFIED', next_step:'upload_fingerprint', phase:'otpVerified'}` |
 | AC3 | AC2 后 60s 内输对 OTP | verify_otp → loginStep2 成功 → secondLogin(带 pwd) 一次过 → queryAccountList → ACCOUNT_SELECTION_REQUIRED；**全程 0 次 upload_data / verifyFingerprint** |
 | AC4 | AC3 中 secondLogin(带 pwd) 仍 URM90040 | 兜底走 upload_data + verifyFingerprint + secondLogin(带 pwd)；仍失败 → 再次 fallback OTP；counter>3 → NEEDS_RELOGIN |
 | AC5 | URM20008/URM20017 PIN 错误 | pre_login → secondLogin URM20008 → AWAITING_PIN_CHANGE → APP 让用户输新 PIN → change_pin(新PIN) → changePinStep1+Step2+secondLogin(带新PIN)+queryAccountList → ACCOUNT_SELECTION_REQUIRED → select_accts → ACTIVE_SUCCESSFUL；**全程 0 次 upload_data / verifyFingerprint** |
@@ -180,6 +209,7 @@ LoginStatus.AWAITING_PIN_CHANGE: [
 |---|---|---|
 | AC15 | pre_login 任意路径返回 envelope | 必含 `data.id` |
 | AC16 | URM90040 fallback envelope | 必含 `next_step='verify_otp'`、`expires_in=60` |
+| AC16b | URM90040 指纹未完成 envelope | 必含 `next_step='upload_fingerprint'`、`phase='otpVerified'`、`code='FP_REQUIRED_OR_UNVERIFIED'` |
 | AC17 | change_pin 成功返回 | 必含 `data.id`、`data.next_step='select_accts'`、`data.accounts` |
 | AC18 | APP `exchange_api.dart` `preLogin` | 不抛 `pre_login_no_id`，能解析所有路径 |
 | AC19 | APP `_phaseAfterPreLogin` | 根据 next_step 正确路由（不进 default failed 屏）|

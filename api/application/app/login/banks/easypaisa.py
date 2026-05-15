@@ -970,22 +970,26 @@ class EasyPaisa:
     async def _pre_login_second_time_chain(self, redis_key, session_data, bound_payment):
         """hotfix-2 P0: 二次上号去前置指纹 — 仅 secondLogin + queryAccountList。
         云机端指纹一次性建立（loginStep2 时），secondLogin 不需要再验指纹。
-        本地 ZIP 缺失仍然防御性检查（数据完整性）。"""
+        本地 ZIP 缺失说明 MySQL 没有确认成功的指纹，不走 loginStep1，回到录指纹。"""
         funcName = '_pre_login_second_time_chain'
         fingerprint_path = (bound_payment or {}).get('fingerprint_path')
-        # 本地 ZIP 防御性检查：MySQL 说有 path 但实际不存在 → NEEDS_RELOGIN
+        # 只有 verifyFingerprint 成功后才会写 MySQL fingerprint_path；缺失时不能解释为真实掉线。
         if not fingerprint_path or not os.path.exists(fingerprint_path):
-            return await self._force_terminal_needs_relogin(
-                redis_key=redis_key, session_data=session_data,
+            return await self._route_to_fingerprint_upload(
+                redis_key,
+                session_data,
                 reason=f'Local fingerprint ZIP missing: {fingerprint_path}',
-                error_code='EP_FP_FILE_MISSING',
-                message='本地指纹文件缺失，请联系运维介入',
             )
         # secondLogin (无 pwd) — 云机已认指纹，直接登录
         sl_result = await self._call_second_login(session_data)
         outcome = sl_result.get('outcome')
         if outcome == 'urm90040':
-            return await self._urm90040_fallback(redis_key, session_data, sl_result.get('message', ''))
+            return await self._urm90040_fallback(
+                redis_key,
+                session_data,
+                sl_result.get('message', ''),
+                fingerprint_path=fingerprint_path,
+            )
         if outcome == 'needs_pin_change':
             self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
                                            LoginStatus.AWAITING_PIN_CHANGE, funcName)
@@ -1146,9 +1150,36 @@ class EasyPaisa:
             self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
             return {'outcome': 'rejected', 'message': str(e)}
 
-    async def _urm90040_fallback(self, redis_key, session_data, upstream_msg):
+    async def _route_to_fingerprint_upload(self, redis_key, session_data, reason):
+        """hotfix-3: 没有确认成功的 MySQL 指纹时，URM90040 代表指纹未完成，不走 loginStep1。"""
+        funcName = '_route_to_fingerprint_upload'
+        current = session_data.get('status')
+        if current != LoginStatus.OTP_VERIFIED:
+            self._assert_status_transition(session_data, current, LoginStatus.OTP_VERIFIED, funcName)
+            session_data['status'] = LoginStatus.OTP_VERIFIED
+            session_data['status_history'].append(LoginStatus.OTP_VERIFIED)
+        session_data['last_error'] = {'code': 'FP_REQUIRED_OR_UNVERIFIED', 'reason': reason}
+        await self._persist_session_data(redis_key, session_data)
+        return {
+            'status': 'error',
+            'message': '请先完成指纹录入',
+            'data': {
+                'id': session_data.get('id'),
+                'code': 'FP_REQUIRED_OR_UNVERIFIED',
+                'next_step': 'upload_fingerprint',
+                'phase': LoginStatus.OTP_VERIFIED,
+            },
+        }
+
+    async def _urm90040_fallback(self, redis_key, session_data, upstream_msg, fingerprint_path=None):
         """spec §3.5：URM90040 fallback 限频 3 次/小时。"""
         funcName = '_urm90040_fallback'
+        if not fingerprint_path or not os.path.exists(fingerprint_path):
+            return await self._route_to_fingerprint_upload(
+                redis_key,
+                session_data,
+                reason=f'URM90040 without confirmed fingerprint: {fingerprint_path}',
+            )
         payment_id = session_data.get('id')
         count_key = self.URM90040_COUNT_KEY.format(payment_id=payment_id)
         # Fix #3: 原子 INCR（不再 GET+SETEX race），首次自增后才设 TTL
@@ -1367,10 +1398,10 @@ class EasyPaisa:
         payment = await self._query_payment(payment_id) if payment_id else None
         fingerprint_path = payment.get('fingerprint_path') if payment else None
         if not fingerprint_path or not os.path.exists(fingerprint_path):
-            return await self._force_terminal_needs_relogin(
-                redis_key=redis_key, session_data=session_data,
-                reason='fallback path: local fingerprint missing',
-                error_code='EP_FP_FILE_MISSING',
+            return await self._route_to_fingerprint_upload(
+                redis_key,
+                session_data,
+                reason=f'fallback path: local fingerprint missing: {fingerprint_path}',
             )
 
         # 2. upload_data 推 ZIP
@@ -1400,7 +1431,12 @@ class EasyPaisa:
         outcome = sl.get('outcome')
         if outcome == 'urm90040':
             # fallback 路径上仍 URM90040 → 再走 _urm90040_fallback (counter++, 可能再发 OTP)
-            return await self._urm90040_fallback(redis_key, session_data, sl.get('message', ''))
+            return await self._urm90040_fallback(
+                redis_key,
+                session_data,
+                sl.get('message', ''),
+                fingerprint_path=fingerprint_path,
+            )
         if outcome == 'needs_pin_change':
             self._assert_status_transition(session_data, LoginStatus.OTP_VERIFIED,
                                            LoginStatus.AWAITING_PIN_CHANGE, funcName)

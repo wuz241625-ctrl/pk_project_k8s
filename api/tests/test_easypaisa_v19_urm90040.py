@@ -17,14 +17,18 @@ def ep():
 
 
 @pytest.mark.asyncio
-async def test_u4_first_urm90040_triggers_fallback(ep):
+async def test_u4_first_urm90040_triggers_fallback(ep, tmp_path):
+    zip_path = tmp_path / "ep_533290.zip"
+    zip_path.write_bytes(b'confirmed fp')
     session = {'id': 533290, 'phone': '03445021275', 'bankname': 'easypaisa',
                'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED]}
     ep.redis.incr = AsyncMock(return_value=1)
     ep.redis.expire = AsyncMock(return_value=True)
     ep._send_otp = AsyncMock(return_value={'status': 'success'})
     ep._persist_session_data = AsyncMock(return_value=123)
-    result = await ep._urm90040_fallback('pre_login_easypaisa_533290', session, 'URM90040')
+    result = await ep._urm90040_fallback(
+        'pre_login_easypaisa_533290', session, 'URM90040', fingerprint_path=str(zip_path)
+    )
     assert result['status'] == 'error'
     assert result['data']['code'] == 'SL_NEEDS_OTP'
     assert session['status'] == LoginStatus.OTP_SENT
@@ -32,21 +36,27 @@ async def test_u4_first_urm90040_triggers_fallback(ep):
 
 
 @pytest.mark.asyncio
-async def test_u5_fourth_urm90040_forces_needs_relogin(ep):
+async def test_u5_fourth_urm90040_forces_needs_relogin(ep, tmp_path):
     """U5: 1 小时内第 4 次 URM90040 直接 needsRelogin。"""
+    zip_path = tmp_path / "ep_533290.zip"
+    zip_path.write_bytes(b'confirmed fp')
     session = {'id': 533290, 'phone': '03445021275', 'bankname': 'easypaisa',
                'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED]}
     ep.redis.incr = AsyncMock(return_value=4)  # INCR returns 4 > LIMIT=3 → reject
     ep.redis.expire = AsyncMock(return_value=True)
-    result = await ep._urm90040_fallback('pre_login_easypaisa_533290', session, 'URM90040')
+    result = await ep._urm90040_fallback(
+        'pre_login_easypaisa_533290', session, 'URM90040', fingerprint_path=str(zip_path)
+    )
     assert result['status'] == 'error'
     assert result['data']['code'] == 'SL_NEEDS_RELOGIN'
     assert session['status'] == LoginStatus.NEEDS_RELOGIN
 
 
 @pytest.mark.asyncio
-async def test_urm90040_atomic_concurrent_calls(ep):
+async def test_urm90040_atomic_concurrent_calls(ep, tmp_path):
     """Fix #3: 模拟 5 个并发请求 INCR 返回 1,2,3,4,5；前 3 通过，后 2 拒。"""
+    zip_path = tmp_path / "ep_533290.zip"
+    zip_path.write_bytes(b'confirmed fp')
     ep.redis.incr = AsyncMock(side_effect=[1, 2, 3, 4, 5])
     ep.redis.expire = AsyncMock(return_value=True)
     ep.redis.setex = AsyncMock(return_value=True)
@@ -60,7 +70,9 @@ async def test_urm90040_atomic_concurrent_calls(ep):
             'status': LoginStatus.PRE_LOGIN_CREATED,
             'status_history': [LoginStatus.PRE_LOGIN_CREATED],
         }
-        r = await ep._urm90040_fallback('pre_login_easypaisa_533290', session, 'URM90040')
+        r = await ep._urm90040_fallback(
+            'pre_login_easypaisa_533290', session, 'URM90040', fingerprint_path=str(zip_path)
+        )
         results.append(r)
 
     # 前 3 个：SL_NEEDS_OTP（fallback 生效）
@@ -73,8 +85,10 @@ async def test_urm90040_atomic_concurrent_calls(ep):
 
 
 @pytest.mark.asyncio
-async def test_urm90040_first_call_sets_expire(ep):
+async def test_urm90040_first_call_sets_expire(ep, tmp_path):
     """Fix #3: INCR 返回 1 时必须调 EXPIRE 设 TTL 3600，避免 key 永不过期。"""
+    zip_path = tmp_path / "ep_533290.zip"
+    zip_path.write_bytes(b'confirmed fp')
     ep.redis.incr = AsyncMock(return_value=1)
     ep.redis.expire = AsyncMock(return_value=True)
     ep.redis.setex = AsyncMock(return_value=True)
@@ -86,15 +100,17 @@ async def test_urm90040_first_call_sets_expire(ep):
         'status': LoginStatus.PRE_LOGIN_CREATED,
         'status_history': [LoginStatus.PRE_LOGIN_CREATED],
     }
-    await ep._urm90040_fallback('k', session, 'URM90040')
+    await ep._urm90040_fallback('k', session, 'URM90040', fingerprint_path=str(zip_path))
 
     # 必须调用过 expire 且 TTL=3600
     ep.redis.expire.assert_called_with('easypaisa:urm90040_count:533290', 3600)
 
 
 @pytest.mark.asyncio
-async def test_urm90040_envelope_contains_all_p0_fields(ep):
+async def test_urm90040_envelope_contains_all_p0_fields(ep, tmp_path):
     """hotfix-2 P0: URM90040 fallback envelope 必含 id + next_step + expires_in:60 + urm90040_count (修真实事故 03194834960)。"""
+    zip_path = tmp_path / "ep_533302.zip"
+    zip_path.write_bytes(b'confirmed fp')
     ep.redis.incr = AsyncMock(return_value=1)
     ep.redis.expire = AsyncMock(return_value=True)
     ep.redis.setex = AsyncMock(return_value=True)
@@ -106,7 +122,9 @@ async def test_urm90040_envelope_contains_all_p0_fields(ep):
         'status': LoginStatus.PRE_LOGIN_CREATED,
         'status_history': [LoginStatus.PRE_LOGIN_CREATED],
     }
-    result = await ep._urm90040_fallback('pre_login_easypaisa_533302', session, 'URM90040')
+    result = await ep._urm90040_fallback(
+        'pre_login_easypaisa_533302', session, 'URM90040', fingerprint_path=str(zip_path)
+    )
 
     assert result['status'] == 'error'
     data = result['data']
@@ -117,6 +135,35 @@ async def test_urm90040_envelope_contains_all_p0_fields(ep):
     assert data['phase'] == LoginStatus.OTP_SENT
     assert data['expires_in'] == 60, 'OTP 实际 60s 过期（云机实战值），不是 120'
     assert data['urm90040_count'] == 1, 'envelope 暴露当前限频计数让 APP/监控可见'
+
+
+@pytest.mark.asyncio
+async def test_urm90040_without_confirmed_fingerprint_routes_to_upload_fingerprint(ep):
+    """hotfix-3: 没有 MySQL 指纹时，URM90040 表示指纹未验证成功，不得调 loginStep1。"""
+    session = {
+        'id': 533302,
+        'phone': '03194834960',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.OTP_VERIFIED,
+        'status_history': [LoginStatus.OTP_VERIFIED],
+    }
+    ep.redis.incr = AsyncMock(side_effect=Exception('没有指纹时不应该增加 URM90040 OTP fallback 计数'))
+    ep._send_otp = AsyncMock(side_effect=Exception('没有指纹时不应该调用 loginStep1'))
+    ep._persist_session_data = AsyncMock(return_value=True)
+
+    result = await ep._urm90040_fallback(
+        'pre_login_easypaisa_533302',
+        session,
+        'URM90040',
+        fingerprint_path=None,
+    )
+
+    assert result['status'] == 'error'
+    assert result['data']['code'] == 'FP_REQUIRED_OR_UNVERIFIED'
+    assert result['data']['next_step'] == 'upload_fingerprint'
+    assert result['data']['phase'] == LoginStatus.OTP_VERIFIED
+    ep._send_otp.assert_not_awaited()
+    ep.redis.incr.assert_not_awaited()
 
 
 @pytest.mark.asyncio

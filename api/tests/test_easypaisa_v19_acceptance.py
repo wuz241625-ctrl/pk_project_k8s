@@ -93,15 +93,18 @@ async def test_u2_second_time_login_success(ep_mock, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_u20_local_zip_missing_force_terminal(ep_mock):
-    """U20: 本地 ZIP 文件丢失 → needsRelogin。"""
+async def test_u20_local_zip_missing_routes_to_upload_fingerprint(ep_mock):
+    """hotfix-3: MySQL 没有可用指纹时，不当作真实掉线，回到录指纹流程。"""
     bound = {'id': 1, 'phone': 'x', 'fingerprint_path': '/nonexistent/file.zip', 'wallet_status': 0}
     session = {'id': 1, 'phone': 'x', 'bankname': 'easypaisa',
                'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED]}
+    ep_mock._persist_session_data = AsyncMock(return_value=True)
     result = await ep_mock._pre_login_second_time_chain('pre_login_easypaisa_1', session, bound)
     assert result['status'] == 'error'
-    assert result['data']['code'] == 'EP_FP_FILE_MISSING'
-    assert session['status'] == LoginStatus.NEEDS_RELOGIN
+    assert result['data']['code'] == 'FP_REQUIRED_OR_UNVERIFIED'
+    assert result['data']['next_step'] == 'upload_fingerprint'
+    assert result['data']['phase'] == LoginStatus.OTP_VERIFIED
+    assert session['status'] == LoginStatus.OTP_VERIFIED
 
 
 @pytest.mark.asyncio

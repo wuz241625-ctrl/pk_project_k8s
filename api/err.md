@@ -235,3 +235,29 @@ PYTHONPATH=api python3 -m pytest api/tests/test_jazzcash_auto_payout_v16.py api/
 python3 -c "import ast; ast.parse(open('api/application/app/login/banks/easypaisa.py').read())"
 python3 -m py_compile api/application/app/login/banks/easypaisa.py
 ```
+
+## 0.11 EasyPaisa URM90040 被误当成真实掉线
+
+现象：
+
+- 首次上号中指纹未确认成功，后续 `secondLogin` 返回 `501 / URM90040`。
+- 代码把所有 `URM90040` 都当作掉线/抢登，重置到 `preLoginCreated` 并调用 `loginStep1`。
+- 已上号或指纹未完成状态下 `loginStep1` 无法成功，用户可能反复失败直到 URM90040 限频打满。
+
+原因：
+
+- `URM90040` 有两层含义：指纹没有验证成功、真实掉线/抢登。
+- 本项目只有 `verifyFingerprint` 确认成功后才写 MySQL `payment.fingerprint_path`。
+- 因此没有可用 `fingerprint_path` 时，不应进入 `_urm90040_fallback` 的 `loginStep1` 恢复链路。
+
+处理：
+
+- `_urm90040_fallback` 增加指纹前置条件：只有 MySQL 有 `fingerprint_path` 且本地 ZIP 存在时，才允许 `loginStep1` / OTP fallback。
+- 无指纹或本地 ZIP 缺失时，返回 `code=FP_REQUIRED_OR_UNVERIFIED`、`phase=otpVerified`、`next_step=upload_fingerprint`，让 APP 继续录指纹。
+- `_pre_login_second_time_chain` 缺指纹不再直接 `needsRelogin`。
+
+验证：
+
+```bash
+pytest api/tests/test_easypaisa_v19_urm90040.py api/tests/test_easypaisa_v19_acceptance.py api/tests/test_easypaisa_v19_change_pin.py api/tests/test_easypaisa_v19_state_machine.py -v
+```
