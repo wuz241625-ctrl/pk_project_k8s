@@ -45,6 +45,14 @@ def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=Non
     return {'field': 'utr', 'value': utr, 'message_key': 10229}
 
 
+def manual_settle_bank_record_query():
+    return """select * from bank_record where utr=%s and amount=%s and callback=0 and trade_type=1 and invalid in (0,1) order by invalid asc, id desc limit 1"""
+
+
+def manual_settle_bank_record_update_sql():
+    return """update bank_record set callback=1,invalid=0,order_code=%s where id=%s and callback=0"""
+
+
 async def requeue_df_if_online(handler, payment_id):
     """代付回队已退役，MySQL payout_status 是唯一资格源。"""
     return False
@@ -1015,9 +1023,9 @@ class handleOrder(BaseHandler):
         # 查找订单
         sql_select_order = """select * from orders_ds where code=%s and status in (-1,1,2) order by id desc limit 1"""
         # 查询银行记录
-        sql_select_bank_record = """select * from bank_record where utr=%s and amount=%s and callback=0 and trade_type=1 and invalid=0 order by id desc limit 1"""
+        sql_select_bank_record = manual_settle_bank_record_query()
         # 修改银行记录
-        sql_update_bank_record = """update bank_record set callback=1,order_code=%s where id=%s and callback=0"""
+        sql_update_bank_record = manual_settle_bank_record_update_sql()
         # 商户代理费率
         sql_select_rates_merchant = """select mid as id,rate from (select @orgId mid, (select @orgId:=pid from merchant 
                                             where id=@orgId) pid from (select @orgId:=%s) vars,merchant) t inner join 

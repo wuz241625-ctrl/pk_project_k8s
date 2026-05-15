@@ -2509,7 +2509,6 @@
         "name": "Name",
         "confirm_delete_record": "Confirm Abolition of This Record?",
         "delete_1": "delete",
-        "restore_1": "restore",
         "delete": {
             "title": "Warning",
             "confirmButton": "Confirm Delete",
@@ -2518,7 +2517,6 @@
             "success": "Deletion Successful"
         },
         "delete_success": "Deletion Successful",
-        "restore_success": "Restoration Successful",
         "disable": "Disable",
         "enable": "Enable",
         "confirm_action": "Confirm {action} This Partner?",

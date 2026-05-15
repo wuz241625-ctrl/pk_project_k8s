@@ -18,7 +18,7 @@ npm install
 npm run d7pay:prod
 ```
 
-银行流水废除/恢复前端变更可用 D7pay 构建验收：
+银行流水废除前端变更可用 D7pay 构建验收：
 
 ```bash
 cd /Users/tear/pk_project_k8s/admin-h5
@@ -28,8 +28,8 @@ npm run d7pay:prod
 页面口径：
 
 - `invalid != 1` 显示“废除”。
-- `invalid = 1 且 callback != 1` 显示“↩️ 恢复”。
-- 已回调流水不提供恢复入口。
+- `invalid = 1` 不显示恢复入口。
+- 误废除确认付款后，回到代收订单补单接口直接核销。
 
 构建产物输出到：
 

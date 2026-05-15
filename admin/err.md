@@ -26,7 +26,7 @@ PYTHONPATH=admin python3 -m py_compile main.py router.py application/partner/par
 现象：
 
 - admin 废除一条 `bank_record.callback=0` 流水后，同一官方流水后续又被 worker 采集出一条新记录。
-- 运营后续可能拿新记录再次补单/核销，造成“废除”没有真正挡住同一官方交易号。
+- 运营后续可能拿新记录再次补单/核销，造成同一官方交易号存在多个可处理入口。
 
 根因：
 
@@ -36,12 +36,13 @@ PYTHONPATH=admin python3 -m py_compile main.py router.py application/partner/par
 处理：
 
 - 废除只更新 `invalid=1` 和 `memo`，保留原始 `utr/trans_id`。
-- 商户后续确认已付款时，不新增同一官方流水，改用 `/partner/restorebank_recoed` 恢复原记录。
-- 历史已经被改成 `原值_id` 的废除记录，恢复时还原原始值，并先检查是否已经存在活跃重复流水。
-- 新增恢复接口后要执行 `api/sql/20260515_add_bank_record_restore_permission.sql`，否则 `BaseHandler.check_auth()` 找不到权限路径时会默认允许访问。
+- 商户后续确认已付款时，不新增同一官方流水，也不先恢复流水；直接在代收订单补单接口用订单号、UTR、金额核销。
+- 补单接口会选中 `callback=0 AND trade_type=1 AND invalid IN (0,1)` 的流水；废除流水被选中后会写回 `callback=1, invalid=0, order_code=订单号`。
+- 补单后的资金事务继续沿用现有逻辑：超时/非本码商订单扣码商，商户加款，订单状态置成功并通知商户。
+- `/partner/restorebank_recoed` 已取消；历史环境如存在该权限，执行 `api/sql/20260515_disable_bank_record_restore_permission.sql` 禁用。
 
 验证：
 
 ```bash
-PYTHONPATH=admin python3 -m unittest admin.tests.test_bank_record_void_restore
+PYTHONPATH=admin python3 -m unittest admin.tests.test_bank_record_void_restore admin.tests.test_manual_settle_bank_record
 ```

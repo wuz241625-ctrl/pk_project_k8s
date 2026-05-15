@@ -87,45 +87,10 @@ def batch_disable_payment_update_sql(payment_count):
     )
 
 
-def strip_bank_record_void_suffix(value, record_id):
-    value = str(value or '')
-    suffix = "_{id}".format(id=record_id)
-    if value and value.endswith(suffix):
-        return value[:-len(suffix)]
-    return value
-
-
 def bank_record_void_update_data(bank_record, memo):
     return {
         'invalid': 1,
-        'memo': memo or '废除流水，保留原始 UTR 和交易号用于采集幂等',
-    }
-
-
-def bank_record_restore_update_data(bank_record, memo):
-    original_utr = strip_bank_record_void_suffix(bank_record.get('utr'), bank_record.get('id'))
-    original_trans_id = strip_bank_record_void_suffix(bank_record.get('trans_id'), bank_record.get('id'))
-    old_memo = bank_record.get('memo') or ''
-    restore_memo = '恢复废除: {memo}'.format(memo=memo or '确认该流水可核销')
-    if old_memo:
-        restore_memo = '{old_memo} | {restore_memo}'.format(old_memo=old_memo, restore_memo=restore_memo)
-    return {
-        'invalid': 0,
-        'utr': original_utr,
-        'trans_id': original_trans_id,
-        'memo': restore_memo,
-    }
-
-
-def bank_record_active_duplicate_condition(bank_record):
-    trans_id = strip_bank_record_void_suffix(bank_record.get('trans_id'), bank_record.get('id')).strip()
-    if not trans_id:
-        return None
-    return {
-        'payment_id': bank_record.get('payment_id'),
-        'trade_type': bank_record.get('trade_type'),
-        'trans_id': trans_id,
-        'invalid': 0,
+        'memo': memo or '废除流水，保留原始 UTR 和交易号；若确认已付款，走代收补单直接人工补单核销',
     }
 
 
@@ -1607,51 +1572,6 @@ class delBank_recoed(BaseHandler):
                 results.append({'id': record_id, 'status': 'update failed'})
 
         result = dict(code=20000, msg='删除成功', results=results)
-        return await self.json_response(result)
-
-
-class restoreBank_recoed(BaseHandler):
-    @tornado.web.authenticated
-    async def post(self):
-        data = json.loads(self.request.body)
-        if await self.is_null(data, ['id']):
-            return await self.json_response(data=msg[10004])
-
-        results = []
-        record_ids = data['id'] if isinstance(data['id'], list) else [data['id']]
-        for record_id in record_ids:
-            bank_record = await self.get_result_by_condition(
-                'bank_record',
-                ['id', 'payment_id', 'trade_type', 'utr', 'invalid', 'callback', 'trans_id', 'memo'],
-                {'id': record_id},
-            )
-            if not bank_record or bank_record.get('invalid') != 1 or bank_record.get('callback') == 1:
-                results.append({'id': record_id, 'status': 'not found or not restorable'})
-                continue
-
-            duplicate_condition = bank_record_active_duplicate_condition(bank_record)
-            if duplicate_condition:
-                duplicate = await self.get_result_by_condition(
-                    'bank_record',
-                    ['id'],
-                    duplicate_condition,
-                )
-                if duplicate and duplicate.get('id') != bank_record.get('id'):
-                    results.append({'id': record_id, 'status': 'active duplicate exists'})
-                    continue
-
-            update_data = bank_record_restore_update_data(bank_record, data.get('memo'))
-            success = await self.update_result(
-                'bank_record',
-                update_data,
-                {'id': record_id, 'callback': 0, 'invalid': 1},
-            )
-            if success:
-                results.append({'id': record_id, 'status': 'success'})
-            else:
-                results.append({'id': record_id, 'status': 'update failed'})
-
-        result = dict(code=20000, msg='恢复成功', results=results)
         return await self.json_response(result)
 
 class uploadBankStatement(BaseHandler):

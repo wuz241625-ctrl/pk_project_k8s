@@ -299,14 +299,6 @@ export function delBank_recoed(data) {
   })
 }
 
-export function restoreBank_recoed(data) {
-  return request({
-    url: '/partner/restorebank_recoed',
-    method: 'post',
-    data
-  })
-}
-
 
 export function get_phonepe(data) {
   return request({
