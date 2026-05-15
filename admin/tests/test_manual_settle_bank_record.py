@@ -15,9 +15,12 @@ from application.order.order import (  # noqa: E402
 
 
 class ManualSettleBankRecordTests(unittest.TestCase):
-    def test_manual_settle_query_accepts_voided_bank_record(self):
+    def test_manual_settle_query_uses_trans_id_and_accepts_voided_bank_record(self):
         query = manual_settle_bank_record_query()
 
+        self.assertIn("trans_id=%s", query)
+        self.assertNotIn("utr=%s", query)
+        self.assertIn("amount=%s", query)
         self.assertIn("callback=0", query)
         self.assertIn("trade_type=1", query)
         self.assertIn("invalid in (0,1)", query)

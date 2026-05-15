@@ -36,8 +36,9 @@ PYTHONPATH=admin python3 -m py_compile main.py router.py application/partner/par
 处理：
 
 - 废除只更新 `invalid=1` 和 `memo`，保留原始 `utr/trans_id`。
-- 商户后续确认已付款时，不新增同一官方流水，也不先恢复流水；直接在代收订单补单接口用订单号、UTR、金额核销。
-- 补单接口会选中 `callback=0 AND trade_type=1 AND invalid IN (0,1)` 的流水；废除流水被选中后会写回 `callback=1, invalid=0, order_code=订单号`。
+- 商户后续确认已付款时，不新增同一官方流水，也不先恢复流水；直接在代收普通补单接口用订单号和官方 `trans_id` 核销。
+- 普通补单接口会按 `trans_id + 订单金额` 选中 `callback=0 AND trade_type=1 AND invalid IN (0,1)` 的流水；废除流水被选中后会写回 `callback=1, invalid=0, order_code=订单号`。
+- 补单成功后，订单的 `utr/trans_id` 均来自选中的 `bank_record`；三方补单仍按现有 `utr`/付款手机号逻辑查询第三方，不在这里处理。
 - 补单后的资金事务继续沿用现有逻辑：超时/非本码商订单扣码商，商户加款，订单状态置成功并通知商户。
 - `/partner/restorebank_recoed` 已取消；历史环境如存在该权限，执行 `api/sql/20260515_disable_bank_record_restore_permission.sql` 禁用。
 

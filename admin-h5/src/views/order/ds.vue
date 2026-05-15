@@ -291,10 +291,7 @@
     :visible.sync="dialogVisibleUtr"
     width="30%">
     <el-form :model="formData" ref="orderForm">
-        <el-form-item :label="$t('method.enter_phone')" prop="utr" required>
-            <el-input v-model="formData.utr"></el-input>
-        </el-form-item>
-        <el-form-item :label="$t('method.enter_trx') + ' (' + $t('method.optional') + ')'" prop="trans_id">
+        <el-form-item :label="$t('method.enter_trx')" prop="trans_id" required>
             <el-input v-model="formData.trans_id"></el-input>
         </el-form-item>
     </el-form>
@@ -327,7 +324,6 @@ export default {
             dialogVisibleEdit: false,
             dialogVisibleUtr: false,
             formData: {
-                utr: '',
                 trans_id: ''
             },
             merchant_finish_: false,
@@ -564,18 +560,24 @@ exportData: {
     methods: {
         handleOrderView(scope) {
           this.currentCode = scope.row.code;
-          this.formData.utr = scope.row.utr;
           this.formData.trans_id = scope.row.trans_id;
           this.dialogVisibleUtr = true;
         },
         async submitOrder() {
+          const transId = (this.formData.trans_id || '').trim()
+          if (!transId) {
+              this.$message({
+                  type: 'warning',
+                  message: this.$t('method.enter_trx')
+              })
+              return
+          }
           this.$refs.orderForm.validate(async (valid) => {
               if (valid) {
                   try {
                       await handleOrder({
                           'code': this.currentCode,
-                          'utr': this.formData.utr,
-                          'trans_id': this.formData.trans_id
+                          'trans_id': transId
                       });
                       this.$message({
                           type: 'success',
@@ -769,9 +771,11 @@ exportData: {
     },
     /* 补单 */
     handleOrder(scope) {
-        this.$prompt(this.$t('method.enter_utr'), this.$t('method.supplement_order'), {
+        this.$prompt(this.$t('method.enter_trx'), this.$t('method.supplement_order'), {
             type: 'warning',
             confirmButtonText: this.$t('method.confirm'),
+            inputPattern: /\S+/,
+            inputErrorMessage: this.$t('method.enter_trx'),
             cancelButtonText: this.$t('method.cancel')
         }).then(async({
             value
@@ -779,7 +783,7 @@ exportData: {
             try {
                 await handleOrder({
                     'code': scope.row.code,
-                    'utr': value
+                    'trans_id': value.trim()
                 })
             } catch (err) {
                 return

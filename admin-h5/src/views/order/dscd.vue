@@ -752,9 +752,11 @@ exportData: {
     },
     /* 补单 */
     handleOrder(scope) {
-        this.$prompt(this.$t('method.enter_utr'), this.$t('method.supplement_order'), {
+        this.$prompt(this.$t('method.enter_trx'), this.$t('method.supplement_order'), {
             type: 'warning',
             confirmButtonText: this.$t('method.confirm'),
+            inputPattern: /\S+/,
+            inputErrorMessage: this.$t('method.enter_trx'),
             cancelButtonText: this.$t('method.cancel')
         }).then(async({
             value
@@ -762,7 +764,7 @@ exportData: {
             try {
                 await handleOrder({
                     'code': scope.row.code,
-                    'utr': value
+                    'trans_id': value.trim()
                 })
             } catch (err) {
                 return

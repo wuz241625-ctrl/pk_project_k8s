@@ -28,7 +28,8 @@ PYTHONPATH=admin python3 -m unittest admin.tests.test_bank_record_void_restore a
 验收口径：
 
 - `/partner/delbank_recoed` 只把未回调流水置为 `invalid=1`，不修改 `utr/trans_id`。
-- `/order/handleorder` 人工补单查询允许 `callback=0 AND trade_type=1 AND invalid IN (0,1)` 的银行流水。
-- 人工补单消费流水时统一更新 `callback=1, invalid=0, order_code=订单号`，后续资金处理继续走既有扣码商、加商户、写成功订单事务。
+- `/order/handleorder` 普通人工补单只接收 `code + trans_id`，按 `trans_id + 订单金额` 查询 `callback=0 AND trade_type=1 AND invalid IN (0,1)` 的银行流水。
+- 人工补单消费流水时统一更新 `callback=1, invalid=0, order_code=订单号`，并把订单的 `utr/trans_id` 写为选中的 `bank_record.utr/trans_id`，后续资金处理继续走既有扣码商、加商户、写成功订单事务。
+- `/order/handleOrderFromThird` 三方补单保持现有 `utr`/付款手机号口径，不随普通补单改名。
 - 不再提供 `/partner/restorebank_recoed`，误废除确认付款后直接在代收补单接口核销。
 - 如果历史环境已经写入恢复权限，发布 admin 前执行 `api/sql/20260515_disable_bank_record_restore_permission.sql` 禁用残留权限。

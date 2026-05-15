@@ -46,7 +46,7 @@ def build_third_duplicate_lookup_payload(third_party_name, utr, query_result=Non
 
 
 def manual_settle_bank_record_query():
-    return """select * from bank_record where utr=%s and amount=%s and callback=0 and trade_type=1 and invalid in (0,1) order by invalid asc, id desc limit 1"""
+    return """select * from bank_record where trans_id=%s and amount=%s and callback=0 and trade_type=1 and invalid in (0,1) order by invalid asc, id desc limit 1"""
 
 
 def manual_settle_bank_record_update_sql():
@@ -1060,26 +1060,11 @@ class handleOrder(BaseHandler):
                     order = (await cur.fetchall())[0]
                     code = order['code']
 
-                    # ==================== 变更开始：新增 UTR 并发/频率锁====================
-                    # 定义 UTR 锁的键名和过期时间
-                    UTR_LOCK_PREFIX = "utr_submission_lock:"
-                    UTR_LOCK_EXPIRY_SECONDS = 10 # 锁的有效期，10秒
-                    utr_lock_key = f'{UTR_LOCK_PREFIX}{data['utr']}:{code}'
-                    # 先使用 setnx 尝试获取锁，如果成功，再使用 expire 设置过期时间
-                    got_utr_lock = await self.redis.setnx(utr_lock_key, 1)
-                    
-                    if got_utr_lock: # 只有当成功获取锁时，才设置过期时间
-                        await self.redis.expire(utr_lock_key, UTR_LOCK_EXPIRY_SECONDS)
-                        self.logger.info(f'订单：{code}，上传的卡密信息：{data['utr']} 提交频率锁获取成功并设置过期时间。')
-                    else: # 未能获取锁 (键已存在且未过期)
-                        self.logger.warning(f'UTR {data['utr']} 提交过于频繁或正在被其他请求处理，放弃操作。')
-                        self.logger.info(f"订单：{code}，上传的卡密信息：{data['utr']} UTR submitted too frequently or already processing.")
-                        return await self.json_response(msg[10032]) # UTR 提交频率过高/处理中
-                    
-                    trans_id_param = data['trans_id']
+                    trans_id_param = str(data.get('trans_id') or '').strip()
                     # 1. 检查是否为非空字符串
-                    if not trans_id_param or not isinstance(trans_id_param, str):
+                    if not trans_id_param:
                         self.logger.info("错误：交易ID不能为空或非字符串类型。")
+                        return await self.json_response(msg[10330])
                     else:
                         # 2. 检查长度
                         if len(trans_id_param) > 50:
@@ -1093,78 +1078,54 @@ class handleOrder(BaseHandler):
                                 self.logger.info(f"错误：交易ID包含特殊或非法字符。无效的ID为: {trans_id_param}")
                                 return await self.json_response(msg[10330])
                             else:
-                                # --- 验证通过，执行业务逻辑 ---
                                 self.logger.info(f"交易ID '{trans_id_param}' 格式有效，开始处理补单请求...")
-                                
-                    if 'trans_id' in data.keys() and data['trans_id']:
-                        count_circle = 0
-                        while True:
-                            busy_key = 'success_busy_{trans_id}'.format(trans_id=data['trans_id'])
-                            if await self.redis.setnx(busy_key, 1):
-                                await self.redis.expire(busy_key, 10)
-                                break
-                            if count_circle >= 10:
-                                self.logger.warning(
-                                    'trans_id:{trans_id}Do not operate frequently'.format(trans_id=data['trans_id']))
-                                res = dict(code=99, msg='Do not operate frequently')
-                                return await self.json_response(res)
-                            time.sleep(0.2)
-                            count_circle = count_circle + 1
+
+                    count_circle = 0
+                    while True:
+                        busy_key = 'success_busy_{trans_id}'.format(trans_id=trans_id_param)
+                        if await self.redis.setnx(busy_key, 1):
+                            await self.redis.expire(busy_key, 10)
+                            break
+                        if count_circle >= 10:
+                            self.logger.warning(
+                                'trans_id:{trans_id}Do not operate frequently'.format(trans_id=trans_id_param))
+                            res = dict(code=99, msg='Do not operate frequently')
+                            return await self.json_response(res)
+                        time.sleep(0.2)
+                        count_circle = count_circle + 1
 
 
                     # ----------------- 交易ID重复校验逻辑 -----------------
-                    if 'trans_id' in data.keys() and data['trans_id']:
-                        sql_check_trans_id = """
-                            SELECT code FROM orders_ds WHERE trans_id=%s AND id != %s LIMIT 1
-                        """
-                        # 这里的 _order[0]['id'] 是当前找到的订单的ID
-                        existing_order = await self.query(sql_check_trans_id, data['trans_id'], order['id'])
-                        
-                        # 打印即将执行的查询日志，包含SQL和参数
-                        self.logger.info(
-                            f"新增：交易ID重复校验查询 | SQL: {sql_check_trans_id.strip()} | 参数: ({data['trans_id']}, {order['id']})"
-                        )
-                        
-                        # 如果查询结果不为空，则说明有其他订单已使用此交易ID
-                        if existing_order:
-                            self.logger.warning(f"交易ID {data['trans_id']} 已被其他订单使用。冲突订单号: {existing_order[0]['code']}")
-                            # 返回一个错误提示
-                            return await self.json_response(msg[10330])
+                    sql_check_trans_id = """
+                        SELECT code FROM orders_ds WHERE trans_id=%s AND id != %s LIMIT 1
+                    """
+                    # 这里的 _order[0]['id'] 是当前找到的订单的ID
+                    existing_order = await self.query(sql_check_trans_id, trans_id_param, order['id'])
+
+                    # 打印即将执行的查询日志，包含SQL和参数
+                    self.logger.info(
+                        f"新增：交易ID重复校验查询 | SQL: {sql_check_trans_id.strip()} | 参数: ({trans_id_param}, {order['id']})"
+                    )
+
+                    # 如果查询结果不为空，则说明有其他订单已使用此交易ID
+                    if existing_order:
+                        self.logger.warning(f"交易ID {trans_id_param} 已被其他订单使用。冲突订单号: {existing_order[0]['code']}")
+                        # 返回一个错误提示
+                        return await self.json_response(msg[10330])
                         
                     # ==================== 变更结束 ====================
 
                     amount = order['amount']
                     # 查询银行记录
-                    if not await cur.execute(sql_select_bank_record, (data['utr'], amount)):
+                    if not await cur.execute(sql_select_bank_record, (trans_id_param, amount)):
                         return await self.json_response(msg[10014])
                     bank_record = (await cur.fetchall())[0]
                     payment_id = bank_record['payment_id']
                     trans_id = bank_record['trans_id']
                     self.logger.info(f"交易ID trans_id_param: {trans_id_param} , trans_id: {trans_id}")
-                    if trans_id_param and trans_id and trans_id_param != trans_id:
+                    if trans_id_param != str(trans_id or ''):
                         self.logger.warning(f"交易ID trans_id_param: {trans_id_param} , trans_id: {trans_id}")
-                        # 返回一个错误提示
                         return await self.json_response(msg[10330])
-                    
-                    # ----------------- 交易ID重复校验逻辑 -----------------
-                    if trans_id:
-                        sql_check_trans_id = """
-                            SELECT code FROM orders_ds WHERE trans_id=%s AND id != %s LIMIT 1
-                        """
-                        # 这里的 _order[0]['id'] 是当前找到的订单的ID
-                        existing_order = await self.query(sql_check_trans_id, trans_id, order['id'])
-                        
-                        # 打印即将执行的查询日志，包含SQL和参数
-                        self.logger.info(
-                            f"新增：交易ID重复校验查询 | SQL: {sql_check_trans_id.strip()} | 参数: ({trans_id}, {order['id']})"
-                        )
-                        
-                        # 如果查询结果不为空，则说明有其他订单已使用此交易ID
-                        if existing_order:
-                            self.logger.warning(f"交易ID {trans_id} 已被其他订单使用。冲突订单号: {existing_order[0]['code']}")
-                            # 返回一个错误提示
-                            return await self.json_response(msg[10330])
-                    # ==================== 变更结束 ====================
 
                     # 修改银行记录
                     if not await cur.execute(sql_update_bank_record, (code, bank_record['id'])):
@@ -1244,7 +1205,7 @@ class handleOrder(BaseHandler):
                     # 修改订单状态
                     time_now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     if not await cur.execute(sql_update_order, (earn_merchant, earn_partner, earn_system, partner_id,
-                                                                payment_id, data['utr'], time_now, _payment['upi'], trans_id, code)):
+                                                                payment_id, bank_record['utr'], time_now, _payment['upi'], trans_id, code)):
                         await conn.rollback()
                         return await self.json_response(msg[10007])
                     self.logger.info('更新订单状态%s' % cur._last_executed)
