@@ -84,3 +84,21 @@ VUE_APP_SYSTEM=d7pay ./node_modules/.bin/eslint src/utils/partnerPassword.js
 VUE_APP_SYSTEM=d7pay npm run test:unit -- tests/unit/utils/partnerPassword.spec.js --runInBand
 npm run d7pay:prod
 ```
+
+## 银行流水误废除后的处理
+
+现象：
+
+- admin 在银行流水页废除了一条 `bank_record`，后续商户反馈该笔确实付款。
+- 如果重新新增同一官方流水，会绕开“同一笔流水只有一个核销入口”的操作闭环。
+
+处理：
+
+- 在银行流水页筛选废除记录。
+- 对 `invalid=1 且 callback=0` 的记录点击“↩️ 恢复”。
+- 恢复后原记录回到 `invalid=0`，再走正常补单/核销。
+
+注意：
+
+- 不应通过新增同一 `trans_id` 流水来处理误废除。
+- 若恢复失败并提示存在活跃重复流水，先核对是否已经被重新采集成另一条可补单记录。

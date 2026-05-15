@@ -16,5 +16,18 @@ PYTHONPATH=admin python3 -m py_compile main.py router.py application/partner/par
 ## 验收测试
 
 ```bash
-PYTHONPATH=admin python3 -m unittest admin.tests.test_count_balance admin.tests.test_client_ip admin.tests.test_timezone_policy admin.tests.test_order_ds_default_filter admin.tests.test_partner_mysql_final_state
+PYTHONPATH=admin python3 -m unittest admin.tests.test_count_balance admin.tests.test_client_ip admin.tests.test_timezone_policy admin.tests.test_order_ds_default_filter admin.tests.test_partner_mysql_final_state admin.tests.test_bank_record_void_restore
 ```
+
+## 银行流水废除/恢复验收
+
+```bash
+PYTHONPATH=admin python3 -m unittest admin.tests.test_bank_record_void_restore
+```
+
+验收口径：
+
+- `/partner/delbank_recoed` 只把未回调流水置为 `invalid=1`，不修改 `utr/trans_id`。
+- `/partner/restorebank_recoed` 只恢复 `callback=0 AND invalid=1` 的流水。
+- 恢复历史废除数据时，若 `utr/trans_id` 带 `_{id}` 后缀，先还原原始值并检查活跃重复流水。
+- 发布 admin 前先执行 `api/sql/20260515_add_bank_record_restore_permission.sql`，避免新恢复接口因权限表缺路径而默认放行。

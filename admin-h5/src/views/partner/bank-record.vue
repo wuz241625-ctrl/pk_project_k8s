@@ -91,9 +91,10 @@
           {{ scope.row.memo }}
         </template>
       </el-table-column>
-      <el-table-column fixed="right" align="center" :label="$t('method.ds.form.formLabels.operation')" width="120">
+      <el-table-column fixed="right" align="center" :label="$t('method.ds.form.formLabels.operation')" width="160">
         <template slot-scope="scope">
-          <el-button v-if="scope.row.invalid !== 1" type="danger" size="mini" @click="deleteUtrMemoView(scope.row.id)">{{ $t('method.ds.form.formLabels.delete') }}</el-button>
+          <el-button v-if="scope.row.invalid != 1" type="danger" size="mini" @click="deleteUtrMemoView(scope.row.id)">{{ $t('method.ds.form.formLabels.delete') }}</el-button>
+          <el-button v-if="scope.row.invalid == 1 && scope.row.callback != 1" type="warning" size="mini" @click="restoreUtrMemoView(scope.row.id)">↩️ {{ $t('method.restore_1') }}</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -153,7 +154,7 @@
     </el-dialog>
 
 
-    <el-dialog :visible.sync="deleteUtrMemo" :title="$t('method.ds.form.formLabels.delete')"
+    <el-dialog :visible.sync="deleteUtrMemo" :title="bankRecordAction === 'restore' ? $t('method.restore_1') : $t('method.ds.form.formLabels.delete')"
       :close-on-click-modal="false">
       <el-form label-width="80px" label-position="left">
         <el-form-item :label="$t('method.ds.form.formLabels.memo')">
@@ -195,6 +196,7 @@ import {
     getBank_recoed,
     addBank_recoed,
     delBank_recoed,
+    restoreBank_recoed,
     import_bank_record,
     checkUtrPermission
 } from '@/api/partner'
@@ -207,6 +209,7 @@ export default {
             ids: [], //ids
             is_batch: false,
             deleteUtrMemo: false,
+            bankRecordAction: 'void',
             deleteMemo: '',
             id: '',
             new_record: {},
@@ -299,6 +302,7 @@ export default {
               return
           }
           this.id = this.ids
+          this.bankRecordAction = 'void'
           this.deleteUtrMemo = true
           this.is_batch = true
         },
@@ -318,7 +322,8 @@ export default {
         },
         async deleteUtrMemoSubmit() {
           try {
-                await delBank_recoed({
+                const request = this.bankRecordAction === 'restore' ? restoreBank_recoed : delBank_recoed
+                await request({
                     'id': this.id,
                     'memo': this.deleteMemo
                 })
@@ -327,13 +332,22 @@ export default {
             }
             this.$message({
                 type: 'success',
-                message: this.$t('method.delete_success')
+                message: this.bankRecordAction === 'restore' ? this.$t('method.restore_success') : this.$t('method.delete_success')
             })
             this.deleteUtrMemo = false
+            this.deleteMemo = ''
             this.getData()
         },
         async deleteUtrMemoView(id) {
           this.id = id
+          this.bankRecordAction = 'void'
+          this.deleteMemo = ''
+          this.deleteUtrMemo = true
+        },
+        async restoreUtrMemoView(id) {
+          this.id = id
+          this.bankRecordAction = 'restore'
+          this.deleteMemo = ''
           this.deleteUtrMemo = true
         },
         /* 获取银行*/

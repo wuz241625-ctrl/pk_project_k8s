@@ -146,6 +146,7 @@ urls = [
     url("/partner/getbank_recoed", partner.getBank_recoed, name='getBank_recoed'),
     url("/partner/addbank_recoed", partner.addBank_recoed, name='addBank_recoed'),
     url("/partner/delbank_recoed", partner.delBank_recoed, name='delBank_recoed'),
+    url("/partner/restorebank_recoed", partner.restoreBank_recoed, name='restoreBank_recoed'),
     url("/partner/resettingPayment", partner.resettingPayment, name='resettingPayment'),
     url("/partner/batchDisablePayment", partner.batchDisablePayment, name='resettingPayment'),  # 收款资料批量禁用
     url("/partner/getBankType", partner.getBankType, name='getBankType'),  # 银行管理查询
