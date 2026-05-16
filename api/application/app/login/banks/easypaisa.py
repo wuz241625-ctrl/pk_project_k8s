@@ -871,6 +871,7 @@ class EasyPaisa:
                     bound_payment = {
                         'id': existing_payment.id,
                         'phone': existing_payment.phone,
+                        'pin': existing_payment.pin,
                         'user_id': existing_payment.user_id,
                         'wallet_status': getattr(existing_payment, 'wallet_status', 0),
                         'fingerprint_path': getattr(existing_payment, 'fingerprint_path', None),
@@ -992,8 +993,15 @@ class EasyPaisa:
                 session_data,
                 reason=f'Local fingerprint ZIP missing: {fingerprint_path}',
             )
-        # secondLogin (无 pwd) — 云机已认指纹，直接登录
-        sl_result = await self._call_second_login(session_data)
+        # secondLogin 带 pwd；普通二次登录 PIN 以后端数据库 Payment.pin 为准。
+        if not await self._hydrate_second_login_pin_from_db(session_data, bound_payment):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key,
+                session_data=session_data,
+                reason='secondLogin missing DB pin',
+                error_code='SL_UPSTREAM_ERROR',
+            )
+        sl_result = await self._call_second_login(session_data, with_pwd=True)
         outcome = sl_result.get('outcome')
         if outcome == 'urm90040':
             return await self._urm90040_fallback(
@@ -1147,6 +1155,25 @@ class EasyPaisa:
         except Exception as e:
             self.logger.error(f'{self._log_key(funcName)} 异常: {e}', exc_info=True)
             return {'outcome': 'upstream_error', 'message': str(e)}
+
+    async def _hydrate_second_login_pin_from_db(self, session_data, payment=None):
+        """普通 secondLogin 的 pwd 只允许来自数据库 Payment.pin。"""
+        funcName = '读取secondLogin数据库PIN'
+        payment_id = session_data.get('real_payment_id') or session_data.get('id')
+        saved_pin = None
+        if isinstance(payment, dict):
+            saved_pin = payment.get('pin')
+        if not saved_pin and payment_id:
+            payment = await self._query_payment(payment_id)
+            if isinstance(payment, dict):
+                saved_pin = payment.get('pin')
+        if saved_pin in [None, '']:
+            self.logger.warning(
+                f'{self._log_key(funcName)} 未找到数据库PIN: payment_id={payment_id}'
+            )
+            return False
+        session_data['pinCode'] = str(saved_pin)
+        return True
 
     async def _call_query_account_list(self, session_data):
         """spec v1.9 queryAccountList action。"""
@@ -1415,6 +1442,13 @@ class EasyPaisa:
                 session_data,
                 reason=f'fallback path: local fingerprint missing: {fingerprint_path}',
             )
+        if not await self._hydrate_second_login_pin_from_db(session_data, payment):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key,
+                session_data=session_data,
+                reason='fallback secondLogin missing DB pin',
+                error_code='SL_UPSTREAM_ERROR',
+            )
 
         # 2. upload_data 推 ZIP
         pushed = await self._call_upload_data(session_data, fingerprint_path)
@@ -1681,7 +1715,14 @@ class EasyPaisa:
             if cur != LoginStatus.FINGERPRINT_VERIFIED:
                 raise NewApiError('INVALID_TRANSITION',
                                   f'second_login expected FINGERPRINT_VERIFIED, got {cur}')
-            sl = await self._call_second_login(session_data)
+            if not await self._hydrate_second_login_pin_from_db(session_data):
+                return await self._force_terminal_needs_relogin(
+                    redis_key=redis_key,
+                    session_data=session_data,
+                    reason='second_login_http missing DB pin',
+                    error_code='SL_UPSTREAM_ERROR',
+                )
+            sl = await self._call_second_login(session_data, with_pwd=True)
             outcome = sl.get('outcome')
             if outcome == 'urm90040':
                 return await self._force_terminal_needs_relogin(

@@ -1,5 +1,27 @@
 # API 排错记录
 
+## 0.11 EasyPaisa 普通 secondLogin 不能使用客户端 PIN
+
+现象：
+
+- EasyPaisa 已绑定钱包走 `second_login` 时，上游要求 `secondLogin` 请求带 `pwd`。
+- App 普通二次登录链路不展示钱包官方 PIN，如果后端信任请求里的 `pin/pwd`，会出现错 PIN、假 PIN 或旧 PIN 被带给上游的问题。
+- 只有 `change_pin` 场景里的 `pin` 是用户本次输入的新 PIN。
+
+处理：
+
+- 普通 `second_login_http`、二次上号 `_pre_login_second_time_chain`、URM90040 fallback `_verify_otp_fallback_chain` 都先读取数据库 `Payment.pin`。
+- 读取到 DB PIN 后覆盖当前 session 的 `pinCode`，再调用 `_call_second_login(..., with_pwd=True)`。
+- 如果 DB PIN 缺失，不使用 App 请求里的 PIN 兜底，直接终止为 `SL_UPSTREAM_ERROR`/needsRelogin，避免把不可信 PIN 送给上游。
+- `change_pin_http` 保持例外：用户传入新 PIN，先 `_change_pin()`，再 `_save_payment(..., pin=新PIN)`，最后用新 PIN 续推 secondLogin。
+
+验证：
+
+```bash
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py api/tests/test_easypaisa_v19_change_pin.py api/tests/test_easypaisa_v19_urm90040.py -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
 ## 0.0 EasyPaisa verify_fingerprint 读取 pending ZIP 触发 UTF-8 解码失败
 
 现象：

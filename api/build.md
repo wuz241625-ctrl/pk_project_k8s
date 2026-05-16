@@ -18,6 +18,23 @@
 PYTHONPATH=api python3 -m py_compile main.py router.py router_lakshmi.py application/jazzcash_gateway.py application/pay/pay.py application/pay/order.py application/pay/thirdPart.py application/app/login/banks/easypaisa.py application/app/login/banks/jazzcash.py jobs/pakistanpay_v2.py jobs/easypaisa/auto_payout.py jobs/easypaisa/easypaisa_monitor.py jobs/jazzcash/jazzcash_auto_payout.py jobs/jazzcash/jazzcash_monitor.py jobs/Jazzcashpay_v2.py
 ```
 
+## EasyPaisa secondLogin 数据库 PIN 验收
+
+普通 `secondLogin` 需要带 `pwd`，但除 `change_pin` 外，`pwd` 必须从数据库 `payment.pin` 读取，不信任 App 请求里的 `pin/pwd`。
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py api/tests/test_easypaisa_v19_change_pin.py api/tests/test_easypaisa_v19_urm90040.py -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
+验收重点：
+
+- `second_login_http` 会先读取 `Payment.pin`，再调用 `_call_second_login(..., with_pwd=True)`。
+- 二次上号 `_pre_login_second_time_chain` 使用绑定钱包 DB PIN 覆盖 session `pinCode`。
+- URM90040 fallback 使用 DB PIN 覆盖 session `pinCode`。
+- `change_pin_http` 是唯一用户输入 PIN 例外：先用新 PIN 修改上游和写 DB，再用新 PIN 续推 secondLogin。
+
 ## 资金一致性约束检查
 
 D7pay 资金链路必须先执行 SQL 约束迁移，再发布应用镜像。迁移文件：

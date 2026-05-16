@@ -69,12 +69,14 @@ async def test_u2_second_time_login_success(ep_mock, tmp_path):
     bound_payment = {
         'id': 533264,
         'phone': '03421904953',
+        'pin': 'db_pin_11223',
         'fingerprint_path': str(zip_path),
         'wallet_status': 0,
     }
     session_data = {
         'id': 533264, 'phone': '03421904953', 'bankname': 'easypaisa',
         'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+        'pinCode': 'client_pin_should_not_be_used',
     }
     ep_mock._call_upload_data = AsyncMock(return_value=True)
     ep_mock._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
@@ -90,6 +92,9 @@ async def test_u2_second_time_login_success(ep_mock, tmp_path):
     assert result['status'] == 'success'
     assert result['data']['next_step'] == 'second_login'
     assert session_data['status'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
+    args, kwargs = ep_mock._call_second_login.await_args
+    assert kwargs.get('with_pwd') is True
+    assert args[0]['pinCode'] == 'db_pin_11223'
 
 
 @pytest.mark.asyncio
@@ -177,6 +182,52 @@ async def test_second_login_idempotent_after_active(ep_mock):
     assert result['data']['phase'] == LoginStatus.ACTIVE_SUCCESSFUL
 
 
+@pytest.mark.asyncio
+async def test_second_login_http_uses_db_pin_not_request_pin(ep_mock):
+    """普通 second_login 带 pwd，但 pwd 必须来自 DB Payment.pin，不能信 App 请求里的 pin/pwd。"""
+    session = {
+        'id': '533302',
+        'phone': '03194834960',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.FINGERPRINT_VERIFIED,
+        'status_history': [LoginStatus.FINGERPRINT_VERIFIED],
+        'pinCode': 'client_pin_should_not_be_used',
+    }
+    ep_mock._resolve_session_context = AsyncMock(return_value={
+        'session_data': session,
+        'redis_key': 'pre_login_easypaisa_533302',
+        'resolved_payment_id': '533302',
+    })
+    ep_mock._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'k', 'lock_value': 'v'}
+    )
+    ep_mock._release_payment_interface_lock = AsyncMock(return_value=True)
+    ep_mock._query_payment = AsyncMock(return_value={
+        'id': 533302,
+        'phone': '03194834960',
+        'pin': 'db_pin_77889',
+    })
+    ep_mock._call_second_login = AsyncMock(return_value={'outcome': 'success'})
+    ep_mock._call_query_account_list = AsyncMock(return_value={
+        'outcome': 'success',
+        'accounts_json': json.dumps([{'accno': '96699538', 'accountStatus': 'ACTIVE'}]),
+    })
+
+    result = await ep_mock.second_login_http({
+        'bankname': 'easypaisa',
+        'payment_id': '533302',
+        'pin': 'client_pin_should_not_be_used',
+        'pwd': 'client_pwd_should_not_be_used',
+    })
+
+    assert result['status'] == 'success'
+    ep_mock._query_payment.assert_awaited_once_with('533302')
+    ep_mock._call_second_login.assert_awaited_once()
+    args, kwargs = ep_mock._call_second_login.await_args
+    assert kwargs.get('with_pwd') is True
+    assert args[0]['pinCode'] == 'db_pin_77889'
+
+
 def test_build_verify_account_request_with_pwd_includes_phone_and_pwd():
     """hotfix-2 P0: with_pwd=True 时 request body 必含 phone + pwd 字段。"""
     handler = MagicMock()
@@ -216,12 +267,14 @@ async def test_pre_login_second_time_chain_skips_upload_and_verify_fingerprint(e
     bound_payment = {
         'id': 533264,
         'phone': '03421904953',
+        'pin': 'db_pin_55667',
         'fingerprint_path': str(zip_path),
         'wallet_status': 0,
     }
     session_data = {
         'id': 533264, 'phone': '03421904953', 'bankname': 'easypaisa',
         'status': LoginStatus.PRE_LOGIN_CREATED, 'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+        'pinCode': 'client_pin_should_not_be_used',
     }
     # 这两个不应该被调用！
     ep_mock._call_upload_data = AsyncMock(
@@ -248,4 +301,7 @@ async def test_pre_login_second_time_chain_skips_upload_and_verify_fingerprint(e
     ep_mock._call_upload_data.assert_not_awaited()
     ep_mock._call_verify_fingerprint.assert_not_awaited()
     ep_mock._call_second_login.assert_awaited_once()
+    args, kwargs = ep_mock._call_second_login.await_args
+    assert kwargs.get('with_pwd') is True
+    assert args[0]['pinCode'] == 'db_pin_55667'
     ep_mock._call_query_account_list.assert_awaited_once()

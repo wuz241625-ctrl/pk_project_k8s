@@ -174,12 +174,13 @@ async def test_fallback_chain_full_with_pwd_to_account_selection(ep, tmp_path):
     zip_path.write_bytes(b'fake')
 
     session = {
-        'id': 533302, 'phone': '03194834960', 'pinCode': '11223',
+        'id': 533302, 'phone': '03194834960', 'pinCode': 'client_pin_should_not_be_used',
         'bankname': 'easypaisa', 'status': LoginStatus.OTP_VERIFIED,
         'status_history': [LoginStatus.OTP_VERIFIED], 'fallback_from_urm90040': True,
     }
     ep._query_payment = AsyncMock(return_value={
-        'id': 533302, 'phone': '03194834960', 'fingerprint_path': str(zip_path),
+        'id': 533302, 'phone': '03194834960', 'pin': 'db_pin_11223',
+        'fingerprint_path': str(zip_path),
     })
     ep._call_upload_data = AsyncMock(return_value=True)
     ep._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
@@ -203,6 +204,7 @@ async def test_fallback_chain_full_with_pwd_to_account_selection(ep, tmp_path):
     # secondLogin 必须 with_pwd=True
     args, kwargs = ep._call_second_login.await_args
     assert kwargs.get('with_pwd') is True, 'fallback secondLogin 必须 with_pwd=True 救冻'
+    assert args[0]['pinCode'] == 'db_pin_11223', 'fallback secondLogin pwd 必须来自 DB PIN'
 
 
 @pytest.mark.asyncio
@@ -217,7 +219,8 @@ async def test_fallback_chain_urm90040_recurses_to_urm90040_fallback(ep, tmp_pat
         'status_history': [LoginStatus.OTP_VERIFIED], 'fallback_from_urm90040': True,
     }
     ep._query_payment = AsyncMock(return_value={
-        'id': 533302, 'phone': '03194834960', 'fingerprint_path': str(zip_path),
+        'id': 533302, 'phone': '03194834960', 'pin': 'db_pin_11223',
+        'fingerprint_path': str(zip_path),
     })
     ep._call_upload_data = AsyncMock(return_value=True)
     ep._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
