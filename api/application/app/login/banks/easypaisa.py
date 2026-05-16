@@ -2401,12 +2401,18 @@ class EasyPaisa:
                 'SL_UPSTREAM_ERROR',
                 'Invalid EasyPaisa cloud registration response'
             )
-        if response_data.get('code') != 200:
+        code = response_data.get('code')
+        data_field = response_data.get('data')
+        if code == 200 and data_field is True:
+            return True
+        if code == 403 and data_field is False:
+            return False
+        if code != 200:
             raise NewApiError(
                 'SL_UPSTREAM_ERROR',
                 response_data.get('msg') or 'EasyPaisa cloud registration check failed'
             )
-        return response_data.get('data') is True
+        return False
     async def _send_otp(self, session_data):
         funcName = 'OTP发送'
         url = self.API_ENDPOINTS['base_url']

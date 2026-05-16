@@ -1,5 +1,38 @@
 # API 排错记录
 
+## 0.13 EasyPaisa isAccountRegistered 403/false 被误判为上游异常
+
+现象：
+
+- 03009208353 上号停在 `pre_login`。
+- 日志显示上游 `isAccountRegistered` 返回：
+
+```json
+{"code":403,"msg":"isAccountRegistered查询: pk_easypaisa_03009208353","data":false}
+```
+
+- 旧代码把所有非 `code=200` 都抛为 `SL_UPSTREAM_ERROR`，导致 App 没有拿到 `next_step=send_otp`。
+
+根因：
+
+- EasyPaisa v2.2 文档定义 `code=403/data=false` 是“云机不存在或账户未完成云机绑定流程”，属于正常未注册分支。
+- D7pay 的 `_is_account_registered()` 把它误判成接口异常。
+
+处理：
+
+- `_is_account_registered()` 改为：
+  - `code=200/data=true` 返回 `True`。
+  - `code=403/data=false` 返回 `False`。
+  - 其他响应继续抛 `SL_UPSTREAM_ERROR`。
+- `pre_login_http` 收到 `False` 后继续首次上号，返回 `next_step=send_otp`。
+
+验证：
+
+```bash
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py::test_is_account_registered_403_false_means_not_registered api/tests/test_easypaisa_v19_acceptance.py::test_is_account_registered_rejects_unexpected_codes api/tests/test_easypaisa_v19_acceptance.py::test_pre_login_treats_unregistered_cloud_account_as_send_otp -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
 ## 0.12 EasyPaisa loginStep1 code=200 不能当作 OTP 已发送
 
 现象：

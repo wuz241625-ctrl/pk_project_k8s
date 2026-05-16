@@ -8,6 +8,7 @@ import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from application.app.login.banks.easypaisa import EasyPaisa, LoginStatus
+from application.lakshmi_api.exceptions.api_error import NewApiError
 
 
 @pytest.fixture
@@ -152,6 +153,79 @@ async def test_send_otp_http_direct_login_routes_to_fingerprint_upload(ep_mock):
     assert session['real_payment_id'] == 533999
     ep_mock._send_otp.assert_awaited_once()
     ep_mock._save_payment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_is_account_registered_403_false_means_not_registered(ep_mock):
+    """v2.2: isAccountRegistered 的 code=403/data=false 是未注册，不是上游异常。"""
+    response = MagicMock()
+    response.status_code = 200
+    response.text = '{"code":403,"msg":"isAccountRegistered查询: pk_easypaisa_03009208353","data":false}'
+    ep_mock.retry_make_request = MagicMock(return_value=response)
+    ep_mock._decode_indus_response = MagicMock(return_value={
+        'code': 403,
+        'msg': 'isAccountRegistered查询: pk_easypaisa_03009208353',
+        'data': False,
+    })
+
+    assert await ep_mock._is_account_registered('03009208353') is False
+
+
+@pytest.mark.asyncio
+async def test_is_account_registered_rejects_unexpected_codes(ep_mock):
+    """非 200/true 与 403/false 的响应仍作为云机异常处理。"""
+    response = MagicMock()
+    response.status_code = 200
+    response.text = '{"code":500,"msg":"CommonError","data":{}}'
+    ep_mock.retry_make_request = MagicMock(return_value=response)
+    ep_mock._decode_indus_response = MagicMock(return_value={
+        'code': 500,
+        'msg': 'CommonError',
+        'data': {},
+    })
+
+    with pytest.raises(NewApiError):
+        await ep_mock._is_account_registered('03009208353')
+
+
+@pytest.mark.asyncio
+async def test_pre_login_treats_unregistered_cloud_account_as_send_otp(ep_mock):
+    """03009208353 回归：云机 code=403/data=false 时 pre_login 应继续首次上号。"""
+    with patch('bcrypt.checkpw', return_value=True):
+        payment = MagicMock()
+        payment.id = 533296
+        payment.phone = '03009208353'
+        payment.pin = '44624'
+        payment.user_id = 1
+        payment.wallet_status = 0
+        payment.fingerprint_path = '/fingerprint/easypaisa_533296_03009208353.zip'
+        db_session = MagicMock()
+        db_session.query.return_value.filter.return_value.first.return_value = payment
+        ep_mock.handler.db_orm.sessionmaker.return_value.__enter__.return_value = db_session
+        ep_mock._get_bank_type_id = AsyncMock(return_value=97)
+        ep_mock._get_payment_interface_lock = AsyncMock(
+            return_value={'lock_id': 'k', 'lock_value': 'v'}
+        )
+        ep_mock._release_payment_interface_lock = AsyncMock(return_value=True)
+        ep_mock._get_session_data = AsyncMock(return_value=None)
+        ep_mock._persist_session_data = AsyncMock(return_value=True)
+        ep_mock._select_proxy_ip = AsyncMock(return_value='')
+        ep_mock._is_account_registered = AsyncMock(return_value=False)
+
+        result = await ep_mock.pre_login_http({
+            'bankname': 'easypaisa',
+            'phone': '03009208353',
+            'password': 'tradepwd',
+            'pin': '44624',
+            'name': 'Muhammad Arsalan',
+            'step': 'complete_login',
+            'payment_id': '533296',
+        })
+
+    assert result['status'] == 'success'
+    assert result['data']['id'] == '533296'
+    assert result['data']['next_step'] == 'send_otp'
+    ep_mock._is_account_registered.assert_awaited_once_with('03009208353')
 
 
 @pytest.mark.asyncio

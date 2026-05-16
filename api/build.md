@@ -53,6 +53,22 @@ python3 -m py_compile api/application/app/login/banks/easypaisa.py
 - URM90040 fallback 直登成功时不再要求 OTP，继续内部 fallback 链路。
 - `loginStep1` 请求不包含 `should_verify_fingerprint`。
 
+## EasyPaisa isAccountRegistered 未注册验收
+
+上游 `isAccountRegistered` 返回 `code=403/data=false` 表示云机未注册或未绑定账户，D7pay 应继续首次上号，不能当作 `SL_UPSTREAM_ERROR`。
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py::test_is_account_registered_403_false_means_not_registered api/tests/test_easypaisa_v19_acceptance.py::test_is_account_registered_rejects_unexpected_codes api/tests/test_easypaisa_v19_acceptance.py::test_pre_login_treats_unregistered_cloud_account_as_send_otp -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
+验收重点：
+
+- `code=200/data=true` 进入二次上号。
+- `code=403/data=false` 返回未注册，`pre_login` 输出 `next_step=send_otp`。
+- 其他上游错误码仍抛 `SL_UPSTREAM_ERROR`。
+
 ## 资金一致性约束检查
 
 D7pay 资金链路必须先执行 SQL 约束迁移，再发布应用镜像。迁移文件：
