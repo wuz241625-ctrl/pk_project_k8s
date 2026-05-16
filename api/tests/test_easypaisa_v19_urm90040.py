@@ -36,6 +36,52 @@ async def test_u4_first_urm90040_triggers_fallback(ep, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_urm90040_login_step1_direct_success_continues_fallback_chain(ep, tmp_path):
+    """v2.2: URM90040 fallback 的 loginStep1 若直接成功，不再要求用户输入 OTP。"""
+    zip_path = tmp_path / "ep_533290.zip"
+    zip_path.write_bytes(b'confirmed fp')
+    session = {
+        'id': 533290,
+        'phone': '03445021275',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.PRE_LOGIN_CREATED,
+        'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+        'partner_id': 33057,
+        'pinCode': '11223',
+        'name': 'Fallback Direct',
+    }
+    ep.redis.incr = AsyncMock(return_value=1)
+    ep.redis.expire = AsyncMock(return_value=True)
+    ep.redis.delete = AsyncMock(return_value=True)
+    ep.redis.setex = AsyncMock(return_value=True)
+    ep._send_otp = AsyncMock(return_value={
+        'status': 'success',
+        'message': 'loginStep1成功',
+        'direct_login': True,
+    })
+    ep._save_payment = AsyncMock(return_value=533290)
+    ep._verify_otp_fallback_chain = AsyncMock(return_value={
+        'status': 'success',
+        'message': 'fallback 续推成功',
+        'data': {
+            'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+            'next_step': 'second_login',
+            'id': 533290,
+        },
+    })
+
+    result = await ep._urm90040_fallback(
+        'pre_login_easypaisa_533290', session, 'URM90040', fingerprint_path=str(zip_path)
+    )
+
+    assert result['status'] == 'success'
+    assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
+    assert session['fallback_from_urm90040'] is True
+    assert session['status'] == LoginStatus.OTP_VERIFIED
+    ep._verify_otp_fallback_chain.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_u5_fourth_urm90040_forces_needs_relogin(ep, tmp_path):
     """U5: 1 小时内第 4 次 URM90040 直接 needsRelogin。"""
     zip_path = tmp_path / "ep_533290.zip"

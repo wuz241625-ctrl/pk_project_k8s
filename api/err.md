@@ -1,5 +1,27 @@
 # API 排错记录
 
+## 0.12 EasyPaisa loginStep1 code=200 不能当作 OTP 已发送
+
+现象：
+
+- 上游 `doc_EasyPaisa v2.2.txt` 新增/明确 `loginStep1` 可直接返回 `code=200`。
+- 旧代码把 `code=100` 和 `code=200` 都当作 `OTP发送成功`，导致 App 继续等待 OTP。
+- 实际 `code=200` 表示设备复用直接登录成功，无需再提交 `loginStep2`。
+
+处理：
+
+- `_send_otp()` 返回 `direct_login` 标志：`code=100` 为 `False`，`code=200` 为 `True`。
+- `send_otp_http` 收到 `direct_login=True` 后保存/更新 `Payment`，推进 session 到 `OTP_VERIFIED`，返回 `fingerprintUploadRequired`。
+- URM90040 fallback 收到 `direct_login=True` 后不返回 `SL_NEEDS_OTP`，直接继续 `_verify_otp_fallback_chain()`。
+- D7pay 不使用上游 `should_verify_fingerprint`，指纹上传与验证仍走本地 `upload_fingerprint` / `verify_fingerprint` 链路。
+
+验证：
+
+```bash
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py::test_send_otp_http_direct_login_routes_to_fingerprint_upload api/tests/test_easypaisa_v19_urm90040.py::test_urm90040_login_step1_direct_success_continues_fallback_chain api/tests/test_easypaisa_v19_acceptance.py::test_build_send_otp_request_does_not_use_upstream_fingerprint_flag -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
 ## 0.11 EasyPaisa 普通 secondLogin 不能使用客户端 PIN
 
 现象：

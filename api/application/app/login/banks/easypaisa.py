@@ -1210,6 +1210,63 @@ class EasyPaisa:
             },
         }
 
+    async def _complete_login_step1_direct_success(self, redis_key, session_data, continue_fallback_chain=False):
+        """loginStep1 返回 code=200 时，按本地 OTP 已验证后的链路继续。"""
+        funcName = '_complete_login_step1_direct_success'
+        current = session_data.get('status', LoginStatus.PRE_LOGIN_CREATED)
+        if current != LoginStatus.OTP_VERIFIED:
+            self._assert_status_transition(session_data, current, LoginStatus.OTP_VERIFIED, funcName)
+        name = session_data.get('name', '')
+        real_payment_id = await self._save_payment(session_data, name=name)
+        if not real_payment_id:
+            raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
+        old_payment_id = self._normalize_payment_id(session_data.get('id'))
+        real_payment_id_text = self._normalize_payment_id(real_payment_id)
+        if old_payment_id != real_payment_id_text:
+            await self.redis.delete(redis_key)
+            redis_key = self.PRELOGIN_KEY.format(
+                bankname=session_data.get('bankname'),
+                payment_id=real_payment_id_text,
+            )
+        session_phone = session_data.get('phone')
+        await self.redis.setex(
+            self._login_lock_payment_key(real_payment_id),
+            self.lock_time_login_duplicate_avoid,
+            1,
+        )
+        if session_phone:
+            await self.redis.setex(
+                self._login_lock_phone_key(session_phone),
+                self.lock_time_login_duplicate_avoid,
+                1,
+            )
+        session_data.update({
+            'id': real_payment_id,
+            'real_payment_id': real_payment_id,
+            'previous_payment_id': old_payment_id,
+            'selected_upi': session_phone,
+            'upi_list': [session_phone] if session_phone else [],
+            'completion_time': int(time.time()),
+            'last_error': None,
+        })
+        await self._update_session_status(redis_key, session_data, LoginStatus.OTP_VERIFIED)
+        self.logger.info(
+            f'{self._log_key(funcName)} loginStep1 code=200，直接进入 {LoginStatus.OTP_VERIFIED}: '
+            f'payment_id={real_payment_id}'
+        )
+        if continue_fallback_chain:
+            return await self._verify_otp_fallback_chain(redis_key, session_data)
+        return {
+            'status': 'success',
+            'message': '登录成功，请继续上传指纹',
+            'data': {
+                'next_phase': 'fingerprintUploadRequired',
+                'payment_id': real_payment_id,
+                'previous_payment_id': old_payment_id,
+                'phase': LoginStatus.OTP_VERIFIED,
+            },
+        }
+
     async def _urm90040_fallback(self, redis_key, session_data, upstream_msg, fingerprint_path=None):
         """spec §3.5：URM90040 fallback 限频 3 次/小时。"""
         funcName = '_urm90040_fallback'
@@ -1241,7 +1298,13 @@ class EasyPaisa:
         session_data['status'] = LoginStatus.PRE_LOGIN_CREATED
         session_data['status_history'].append(LoginStatus.PRE_LOGIN_CREATED)
         # 调云机 loginStep1
-        await self._send_otp(session_data)
+        otp_result = await self._send_otp(session_data)
+        if otp_result.get('direct_login'):
+            return await self._complete_login_step1_direct_success(
+                redis_key,
+                session_data,
+                continue_fallback_chain=True,
+            )
         self._assert_status_transition(session_data, LoginStatus.PRE_LOGIN_CREATED,
                                        LoginStatus.OTP_SENT, funcName)
         session_data['status'] = LoginStatus.OTP_SENT
@@ -1317,6 +1380,8 @@ class EasyPaisa:
                 )
             # 调云机 loginStep1
             api_result = await self._send_otp(session_data)
+            if api_result.get('direct_login'):
+                return await self._complete_login_step1_direct_success(redis_key, session_data)
             is_resend = current_status == LoginStatus.OTP_SENT
             await self._update_session_status(
                 redis_key, session_data, LoginStatus.OTP_SENT,
@@ -2371,10 +2436,13 @@ class EasyPaisa:
             status = response_data.get('code')
             status_desc = response_data.get('msg', '无状态描述')
             self.logger.info(f'{self._log_key(funcName)} 银行响应状态分析: status: {status}, statusDesc: {status_desc}')
-        if status in [ 100, 200 ]:
+        if status in [100, 200]:
+            direct_login = status == 200
             return {
                 'status': 'success',
-                'message': 'OTP发送成功'
+                'message': status_desc or ('loginStep1成功' if direct_login else 'OTP发送成功'),
+                'direct_login': direct_login,
+                'upstream_code': status,
             }
         else:
             raise NewApiError(ErrorCode.SendOTPFail, f'OTP Sending failed: {status_desc}')

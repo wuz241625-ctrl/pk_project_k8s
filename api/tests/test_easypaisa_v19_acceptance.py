@@ -113,6 +113,48 @@ async def test_u20_local_zip_missing_routes_to_upload_fingerprint(ep_mock):
 
 
 @pytest.mark.asyncio
+async def test_send_otp_http_direct_login_routes_to_fingerprint_upload(ep_mock):
+    """v2.2: loginStep1 返回 code=200 时无需 OTP，直接进入本地指纹上传链路。"""
+    session = {
+        'id': '03130268536',
+        'phone': '03130268536',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.PRE_LOGIN_CREATED,
+        'status_history': [LoginStatus.PRE_LOGIN_CREATED],
+        'partner_id': 33057,
+        'pinCode': '12345',
+        'name': 'Direct Login User',
+    }
+    ep_mock._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'k', 'lock_value': 'v'}
+    )
+    ep_mock._release_payment_interface_lock = AsyncMock(return_value=True)
+    ep_mock._get_session_data = AsyncMock(return_value=session)
+    ep_mock._send_otp = AsyncMock(return_value={
+        'status': 'success',
+        'message': 'loginStep1成功',
+        'direct_login': True,
+    })
+    ep_mock._save_payment = AsyncMock(return_value=533999)
+    ep_mock.redis.delete = AsyncMock(return_value=True)
+    ep_mock.redis.setex = AsyncMock(return_value=True)
+
+    result = await ep_mock.send_otp_http({
+        'bankname': 'easypaisa',
+        'payment_id': '03130268536',
+    })
+
+    assert result['status'] == 'success'
+    assert result['data']['next_phase'] == 'fingerprintUploadRequired'
+    assert result['data']['phase'] == LoginStatus.OTP_VERIFIED
+    assert result['data']['payment_id'] == 533999
+    assert session['status'] == LoginStatus.OTP_VERIFIED
+    assert session['real_payment_id'] == 533999
+    ep_mock._send_otp.assert_awaited_once()
+    ep_mock._save_payment.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_u17_payment_status_returns_new_enum_strings(ep_mock):
     """U17: payment_status_http 返回新 8 状态枚举字符串。"""
     session = {'status': LoginStatus.FINGERPRINT_VERIFIED, 'phone': 'x', 'id': '1',
@@ -257,6 +299,26 @@ def test_build_verify_account_request_with_pwd_includes_phone_and_pwd():
     assert '"account_id": "03194834960"' in pwd_payload
     assert '"phone": "03194834960"' in pwd_payload
     assert '"pwd": "11223"' in pwd_payload
+
+
+def test_build_send_otp_request_does_not_use_upstream_fingerprint_flag():
+    """本地维护指纹流程，loginStep1 不使用 should_verify_fingerprint。"""
+    handler = MagicMock()
+    ep = EasyPaisa(handler)
+    captured_payloads = []
+
+    def fake_encode(funcName, endpoint, json_str):
+        captured_payloads.append(json_str)
+        return b'encoded_bytes'
+
+    ep._encode_indus_request = fake_encode
+    ep._build_send_otp_request({'phone': '03130268536', 'pinCode': '12345'})
+
+    payload = captured_payloads[-1]
+    assert '"account_id": "03130268536"' in payload
+    assert '"phone": "03130268536"' in payload
+    assert '"pwd": "12345"' in payload
+    assert 'should_verify_fingerprint' not in payload
 
 
 @pytest.mark.asyncio

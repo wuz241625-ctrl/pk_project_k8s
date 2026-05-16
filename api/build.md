@@ -35,6 +35,24 @@ python3 -m py_compile api/application/app/login/banks/easypaisa.py
 - URM90040 fallback 使用 DB PIN 覆盖 session `pinCode`。
 - `change_pin_http` 是唯一用户输入 PIN 例外：先用新 PIN 修改上游和写 DB，再用新 PIN 续推 secondLogin。
 
+## EasyPaisa loginStep1 直登成功验收
+
+上游 `doc_EasyPaisa v2.2.txt` 允许 `loginStep1` 因设备复用直接返回 `code=200`。D7pay 不使用上游 `should_verify_fingerprint`，直登成功后仍进入本地 `OTP_VERIFIED -> upload_fingerprint` 链路。
+
+```bash
+cd /Users/tear/pk_project_k8s
+python3 -m pytest api/tests/test_easypaisa_v19_acceptance.py::test_send_otp_http_direct_login_routes_to_fingerprint_upload api/tests/test_easypaisa_v19_urm90040.py::test_urm90040_login_step1_direct_success_continues_fallback_chain api/tests/test_easypaisa_v19_acceptance.py::test_build_send_otp_request_does_not_use_upstream_fingerprint_flag -q
+python3 -m py_compile api/application/app/login/banks/easypaisa.py
+```
+
+验收重点：
+
+- `loginStep1 code=100` 仍返回 `OTP_SENT`，App 输入 OTP。
+- `loginStep1 code=200` 保存/更新 `Payment` 后直接进入 `OTP_VERIFIED`。
+- 首次直登成功返回 `fingerprintUploadRequired`，由 App 上传本地指纹 ZIP。
+- URM90040 fallback 直登成功时不再要求 OTP，继续内部 fallback 链路。
+- `loginStep1` 请求不包含 `should_verify_fingerprint`。
+
 ## 资金一致性约束检查
 
 D7pay 资金链路必须先执行 SQL 约束迁移，再发布应用镜像。迁移文件：
