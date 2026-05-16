@@ -27,10 +27,11 @@ ipip = ipdb.City('ipipfree.ipdb')
 
 
 class Application(tornado.web.Application):
-    def __init__(self, db, db_orm, redispool, redis_pub, redis_sub, logger):
+    def __init__(self, db, db_orm, redispool, redis_binary, redis_pub, redis_sub, logger):
         self.db = db
         self.db_orm = db_orm
         self.redis = redispool
+        self.redis_binary = redis_binary
         self.redis_pub = redis_pub
         self.redis_sub = redis_sub
         self.logger = logger
@@ -80,6 +81,7 @@ async def main():
 
         # redis连接池
         redis = aioredis.from_url('redis://%s' % conf['redis_host'], encoding="utf-8", decode_responses=True)
+        redis_binary = aioredis.from_url('redis://%s' % conf['redis_host'], decode_responses=False)
         # redis启动后，删除旧的 websocket 连接信息
         await redis.delete(RedisKeys.REDIS_WS_CLIENTS)
 
@@ -128,7 +130,7 @@ async def main():
                 pool_recycle=3600,
                 connect_timeout=60
         ) as db:
-            app = Application(db, db_orm, redis, redis_pub, redis_sub, logger)
+            app = Application(db, db_orm, redis, redis_binary, redis_pub, redis_sub, logger)
             await app._init_business()  # 做一些业务级别的启动初始化工作
             app.listen(options.port, xheaders=True)
             shutdown_event = tornado.locks.Event()

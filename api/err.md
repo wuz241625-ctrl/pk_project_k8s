@@ -1,5 +1,38 @@
 # API 排错记录
 
+## 0.0 EasyPaisa verify_fingerprint 读取 pending ZIP 触发 UTF-8 解码失败
+
+现象：
+
+- EasyPaisa `upload_fingerprint_http` 把指纹 ZIP 暂存到 `easypaisa:pending_fp:{payment_id}`。
+- `verify_fingerprint_http` 再读取该 key，准备上传云机并执行 `verifyFingerprint`。
+- API 主 Redis 客户端使用 `decode_responses=True`，读取 ZIP bytes 时可能触发 `UnicodeDecodeError`，典型错误形态为：`'utf-8' codec can't decode byte ... invalid start byte`。
+- 失败发生在读取 Redis pending 阶段，尚未进入云机上传、指纹验证、落盘或 `payment.fingerprint_path` 更新。
+
+根因：
+
+- `api/main.py` 的 `application.redis` 是字符串 Redis 客户端，适合 session、锁、JSON 等文本数据。
+- 指纹 ZIP 是二进制 payload，不能用 decoded Redis 客户端读取。
+- 当前流程把二进制 ZIP 和文本业务数据混用同一个 Redis 客户端。
+
+处理：
+
+- API 启动时新增 `redis_binary = aioredis.from_url(..., decode_responses=False)`。
+- `Application` 挂载 `redis_binary`，保留原 `redis` 的 decoded 行为不变。
+- `EasyPaisa` 新增 pending ZIP 专用 helper：
+  - `_set_pending_fingerprint_zip()` 写 ZIP bytes。
+  - `_get_pending_fingerprint_zip()` 读 ZIP bytes。
+- `upload_fingerprint_http` 和 `verify_fingerprint_http` 的 pending ZIP 读写改走 binary helper。
+
+验收：
+
+```bash
+python3 -m pytest api/tests/test_easypaisa_v19_fingerprint.py::test_verify_fingerprint_reads_pending_zip_from_binary_redis -q
+python3 -m pytest api/tests/test_easypaisa_v19_fingerprint.py -q
+python3 -m py_compile api/main.py api/application/app/login/banks/easypaisa.py
+npx gitnexus detect-changes
+```
+
 ## 0.1 不允许恢复 运行时 模块
 
 现象：

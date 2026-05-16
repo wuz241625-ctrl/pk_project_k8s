@@ -147,6 +147,8 @@ class EasyPaisa:
     def __init__(self, request_handler):
         self.handler = request_handler
         self.redis = request_handler.redis
+        app = vars(request_handler).get('application')
+        self.redis_binary = vars(app).get('redis_binary') if app is not None else None
         self.logger = logging.getLogger(self.__class__.__name__)
         self.name = SVRNAME
         self.login_data = {}  # 登录数据，用于错误日志
@@ -156,6 +158,16 @@ class EasyPaisa:
         self.expire_time_login_pending = 300
         self.RESEND_COOLDOWN_SECONDS = 20
         self.error_manager = ErrorManager()
+
+    def _get_binary_redis(self):
+        return self.redis_binary or self.redis
+
+    async def _set_pending_fingerprint_zip(self, key, ttl, body):
+        return await self._get_binary_redis().setex(key, ttl, body)
+
+    async def _get_pending_fingerprint_zip(self, key):
+        return await self._get_binary_redis().get(key)
+
     def _determine_account_type(self, account_entire, account_accno=None, account_iban=None):
         """
         判断账户类型：钱包 / 银行账户 / 商户账户
@@ -1530,7 +1542,7 @@ class EasyPaisa:
                 raise NewApiError('INVALID_TRANSITION',
                                   f'verify_fingerprint expected OTP_VERIFIED, got {cur_status}')
             pending_key = f'easypaisa:pending_fp:{resolved_payment_id}'
-            zip_body = await self.redis.get(pending_key)
+            zip_body = await self._get_pending_fingerprint_zip(pending_key)
             if not zip_body:
                 return {
                     'status': 'error',
@@ -1935,7 +1947,7 @@ class EasyPaisa:
                     f'upload_fingerprint expected OTP_VERIFIED, got {session_data.get("status")}'
                 )
             pending_key = f'easypaisa:pending_fp:{resolved_payment_id}'
-            await self.redis.setex(pending_key, 600, file["body"])
+            await self._set_pending_fingerprint_zip(pending_key, 600, file["body"])
             self.logger.info(f'{self._log_key(funcName)} 已存 pending: key={pending_key} size={len(file["body"])}')
             return {
                 'status': 'success',

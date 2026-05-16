@@ -87,3 +87,104 @@ async def test_verify_fingerprint_rollback_on_mysql_fail(ep_fp, tmp_path):
     # 验证：.new 临时文件不存在（已被删）
     tmp_zip = tmp_path / "easypaisa_1_03445021275.zip.new"
     assert not tmp_zip.exists(), '.new tmp file should be cleaned up'
+
+
+@pytest.mark.asyncio
+async def test_verify_fingerprint_reads_pending_zip_from_binary_redis(tmp_path):
+    """verify_fingerprint 读取 ZIP pending 必须避开 decoded Redis。"""
+    decoded_redis = AsyncMock()
+    decoded_redis.get = AsyncMock(
+        side_effect=UnicodeDecodeError(
+            'utf-8', b'PK\x03\x04\xafzip', 4, 5, 'invalid start byte'
+        )
+    )
+    decoded_redis.delete = AsyncMock(return_value=True)
+    binary_redis = AsyncMock()
+    zip_body = b'PK\x03\x04\xafzip'
+    binary_redis.get = AsyncMock(return_value=zip_body)
+
+    handler = MagicMock()
+    handler.redis = decoded_redis
+    handler.db_orm = MagicMock()
+    handler.application = MagicMock(redis_binary=binary_redis)
+    ep = EasyPaisa(handler)
+    ep.FINGERPRINT_PATH = str(tmp_path) + '/'
+
+    session = {
+        'id': 1,
+        'phone': '03445021275',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.OTP_VERIFIED,
+        'status_history': [],
+    }
+    ep._resolve_session_context = AsyncMock(return_value={
+        'redis_key': 'k',
+        'session_data': session,
+        'resolved_payment_id': 1,
+    })
+    ep._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'lock', 'lock_value': 'value'}
+    )
+    ep._release_payment_interface_lock = AsyncMock(return_value=True)
+    ep._call_upload_data_bytes = AsyncMock(return_value=True)
+    ep._call_verify_fingerprint = AsyncMock(return_value={'outcome': 'success'})
+    ep._update_payment_fingerprint_path = AsyncMock(return_value=True)
+    ep._update_session_status = AsyncMock(return_value=1)
+
+    result = await ep.verify_fingerprint_http({
+        'bankname': 'easypaisa',
+        'payment_id': 1,
+    })
+
+    assert result['status'] == 'success'
+    ep._call_upload_data_bytes.assert_awaited_once_with(session, zip_body)
+    binary_redis.get.assert_awaited_once_with('easypaisa:pending_fp:1')
+    decoded_redis.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upload_fingerprint_stores_pending_zip_with_binary_redis(tmp_path):
+    """upload_fingerprint 暂存 ZIP 时也必须使用二进制 Redis。"""
+    decoded_redis = AsyncMock()
+    decoded_redis.setex = AsyncMock()
+    binary_redis = AsyncMock()
+    binary_redis.setex = AsyncMock(return_value=True)
+
+    handler = MagicMock()
+    handler.redis = decoded_redis
+    handler.db_orm = MagicMock()
+    handler.application = MagicMock(redis_binary=binary_redis)
+    ep = EasyPaisa(handler)
+    ep.FINGERPRINT_PATH = str(tmp_path) + '/'
+
+    session = {
+        'id': 1,
+        'phone': '03445021275',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.OTP_VERIFIED,
+        'status_history': [],
+    }
+    ep._resolve_session_context = AsyncMock(return_value={
+        'redis_key': 'k',
+        'session_data': session,
+        'resolved_payment_id': 1,
+    })
+    ep._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'lock', 'lock_value': 'value'}
+    )
+    ep._release_payment_interface_lock = AsyncMock(return_value=True)
+
+    zip_body = b'PK\x03\x04\xafzip'
+    result = await ep.upload_fingerprint_http({
+        'bankname': 'easypaisa',
+        'payment_id': 1,
+        'file': {
+            'filename': 'fingerprint.zip',
+            'body': zip_body,
+            'content_type': 'application/zip',
+        },
+    })
+
+    assert result['status'] == 'success'
+    binary_redis.setex.assert_awaited_once_with('easypaisa:pending_fp:1', 600, zip_body)
+    decoded_redis.setex.assert_not_called()

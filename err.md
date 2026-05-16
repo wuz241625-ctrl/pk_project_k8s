@@ -1,5 +1,23 @@
 # 项目排错索引
 
+## 0.0 EasyPaisa 指纹 pending ZIP 二进制 Redis
+
+现象：
+
+- `verify_fingerprint` 读取 `easypaisa:pending_fp:*` 中的 ZIP bytes 时，可能被主 Redis 客户端按 UTF-8 解码并失败。
+
+处理：
+
+- API 增加 `redis_binary`，EasyPaisa pending ZIP 读写改走二进制 Redis helper。
+- 详细记录见 [api/err.md](/Users/tear/pk_project_k8s/api/err.md) 的 `0.0 EasyPaisa verify_fingerprint 读取 pending ZIP 触发 UTF-8 解码失败`。
+
+验收：
+
+```bash
+python3 -m pytest api/tests/test_easypaisa_v19_fingerprint.py -q
+python3 -m py_compile api/main.py api/application/app/login/banks/easypaisa.py
+```
+
 ## 0.1 D7pay 清理不用项目和 运行时 残留
 
 本项目当前不再保留：
