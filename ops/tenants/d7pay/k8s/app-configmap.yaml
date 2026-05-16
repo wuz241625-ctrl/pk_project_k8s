@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: d7pay-config
+  name: d7pay-runtime-config
   namespace: pk-d7pay
   labels:
     tenant: d7pay

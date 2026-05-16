@@ -371,9 +371,9 @@ D7PAY_SECRET_YAML 指向的文件不存在
 处理：
 
 ```bash
-cp ops/tenants/d7pay/k8s/app-secret.example.yaml /opt/cicd/secrets/d7pay-secret.yaml
-chmod 600 /opt/cicd/secrets/d7pay-secret.yaml
-vi /opt/cicd/secrets/d7pay-secret.yaml
+cp ops/tenants/d7pay/k8s/app-secret.example.yaml /opt/cicd/secrets/d7pay-runtime-secret.yaml
+chmod 600 /opt/cicd/secrets/d7pay-runtime-secret.yaml
+vi /opt/cicd/secrets/d7pay-runtime-secret.yaml
 ```
 
 替换所有真实密钥后再执行 preflight。

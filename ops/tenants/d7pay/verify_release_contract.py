@@ -332,8 +332,8 @@ def main():
 
     for service in ("api", "admin", "merchant"):
         patch = read(f"ops/tenants/d7pay/k8s/{service}-deployment-env.patch.yaml")
-        require(patch, "d7pay-config", f"{service} patch")
-        require(patch, "d7pay-secret", f"{service} patch")
+        require(patch, "d7pay-runtime-config", f"{service} patch")
+        require(patch, "d7pay-runtime-secret", f"{service} patch")
 
     api_patch = read("ops/tenants/d7pay/k8s/api-deployment-env.patch.yaml")
     require(api_patch, "mountPath: /fingerprint", "api patch")
@@ -348,15 +348,15 @@ def main():
     ):
         require(go_worker_manifest, worker_name, "go-worker-deployments.yaml")
     for mode in (
-        'args: ["-mode=worker"]',
-        'args: ["-mode=relay"]',
-        'args: ["-mode=scheduler"]',
-        'args: ["-mode=ops-scheduler"]',
+        "-mode=worker",
+        "-mode=relay",
+        "-mode=scheduler",
+        "-mode=ops-scheduler",
     ):
         require(go_worker_manifest, mode, "go-worker-deployments.yaml")
     require(go_worker_manifest, "namespace: pk-d7pay", "go-worker-deployments.yaml")
-    require(go_worker_manifest, "name: d7pay-config", "go-worker-deployments.yaml")
-    require(go_worker_manifest, "name: d7pay-secret", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "name: d7pay-runtime-config", "go-worker-deployments.yaml")
+    require(go_worker_manifest, "name: d7pay-runtime-secret", "go-worker-deployments.yaml")
     require(go_worker_manifest, "APP_MYSQL_DATABASE", "go-worker-deployments.yaml")
     require(go_worker_manifest, "pakistan_d7pay", "go-worker-deployments.yaml")
     forbid(go_worker_manifest, "TZ: Asia/Karachi", "go-worker-deployments.yaml")

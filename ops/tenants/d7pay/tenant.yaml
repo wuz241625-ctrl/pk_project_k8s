@@ -21,8 +21,8 @@ kubernetes:
   fingerprint_host_path: /data/pk-d7pay/fingerprint
   apkdownload_mount: /usr/share/nginx/html/files/android/d7pay
   apkdownload_host_path: /data/pk-d7pay/apkdownload/d7pay
-  config_map: d7pay-config
-  secret: d7pay-secret
+  config_map: d7pay-runtime-config
+  secret: d7pay-runtime-secret
   app_signing_secret: d7pay-android-signing
   public_api_service: api-public
   public_api_strategy: host_nginx_rewrites_api_prefix_to_api_public_nodeport

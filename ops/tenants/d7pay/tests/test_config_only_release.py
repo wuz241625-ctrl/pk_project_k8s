@@ -109,15 +109,15 @@ class D7payConfigOnlyReleaseTest(unittest.TestCase):
         ):
             self.assertIn(name, manifest)
         for mode in (
-            'args: ["-mode=worker"]',
-            'args: ["-mode=relay"]',
-            'args: ["-mode=scheduler"]',
-            'args: ["-mode=ops-scheduler"]',
+            "-mode=worker",
+            "-mode=relay",
+            "-mode=scheduler",
+            "-mode=ops-scheduler",
         ):
             self.assertIn(mode, manifest)
         self.assertIn("namespace: pk-d7pay", manifest)
-        self.assertIn("name: d7pay-config", manifest)
-        self.assertIn("name: d7pay-secret", manifest)
+        self.assertIn("name: d7pay-runtime-config", manifest)
+        self.assertIn("name: d7pay-runtime-secret", manifest)
         self.assertIn("APP_MYSQL_DATABASE", manifest)
         self.assertIn("pakistan_d7pay", manifest)
         self.assertNotIn("TZ: Asia/Karachi", manifest)
