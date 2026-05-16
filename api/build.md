@@ -6,7 +6,7 @@
 - EasyPaisa 派单读取 MySQL `collection_status` / `payout_status`。
 - JazzCashBusiness 业务逻辑参考 `/Users/tear/pk_project`：使用 `application/jazzcash_gateway.py` 的 v1.6 FormBody 封装、MySQL `wallet_status` / `collection_status` / `payout_status` 作为资格源，不再写 Redis 运行时 session/snapshot/index。
 - PayFast 代收、查询和收银台跳转逻辑参考 `/Users/tear/pk_project`。
-- D7pay 配置由 `config.example.py` 读取环境变量，K8s 通过 `d7pay-config` 与 `d7pay-secret` 注入。
+- D7pay 配置由 `config.example.py` 读取环境变量；当前线上 K8s 运行时对象为 `d7pay-runtime-config` 与 `d7pay-runtime-secret`，旧文档中的 `d7pay-config` / `d7pay-secret` 只作为历史命名参考。
 - API 仓库不再保留 `api/docker-compose.yml`、`api/docker/`、`api/static/v2`、`api/jobs/freecharge-monitor/php/` 和 `*.bak` 备份文件；D7pay 发布以 Jenkins/K8s 为准。
 - D7pay 分支不再保留 `api/application/app/login/banks/gcash_bank.py`、`api/application/app/login/banks/indus_bank.py`、`api/jobs/induspay/`、`api/jobs/jio/`、`api/jobs/maha/` 和 tracked Vim swap 文件。
 - D7pay 分支不再保留旧印度钱包 service、`api/application/phonepe/`、旧 Redis 维护脚本、Indus/Jio/Maha/ULCASH 旧 SQL 和 PhonePe 静态图标；服务注册表只保留 `EASYPAISA` 与 `JAZZCASH`。

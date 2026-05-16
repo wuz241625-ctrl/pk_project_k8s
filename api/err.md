@@ -47,7 +47,7 @@ npx gitnexus detect-changes
 - EasyPaisa 代收派单读取 MySQL `collection_status`。
 - EasyPaisa 代付派单读取 MySQL `payout_status`。
 - JazzCashBusiness 使用当前业务主线，不写 运行时 session/snapshot/index。
-- D7pay K8s 环境注入统一命名为 `d7pay-config` / `d7pay-secret`。
+- D7pay K8s 环境注入统一使用线上实际对象 `d7pay-runtime-config` / `d7pay-runtime-secret`；旧 `d7pay-config` / `d7pay-secret` 命名只允许出现在历史备份或未应用的模板说明中。
 
 验证：
 

@@ -100,7 +100,7 @@ go test ./internal/collect -run TestParseStatementTimeTreatsNaiveTradeTimeAsPaki
 
 - MySQL `now()` 比 `utc_timestamp()` 大 5 小时。
 - D7pay Pod 或 Redis 容器内 `date` 显示 `PKT`。
-- `d7pay-config` 出现 `TZ=Asia/Karachi` 或 `MYSQL_DEFAULT_TIME_ZONE`。
+- `d7pay-runtime-config` 出现 `TZ=Asia/Karachi` 或 `MYSQL_DEFAULT_TIME_ZONE`。
 
 原因：
 
@@ -122,7 +122,7 @@ kubectl -n pk-d7pay rollout status deployment/merchant-deploy --timeout=180s
 验收：
 
 ```bash
-kubectl -n pk-d7pay get cm d7pay-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
+kubectl -n pk-d7pay get cm d7pay-runtime-config -o yaml | grep -E 'BUSINESS_TIMEZONE|APP_DISPLAY_TIMEZONE|TZ|MYSQL_DEFAULT_TIME_ZONE'
 kubectl -n pk-d7pay exec statefulset/mysql -- mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -NBe 'select @@global.time_zone,@@session.time_zone,@@system_time_zone,now(),utc_timestamp();'
 kubectl -n pk-d7pay exec deploy/api-deploy -- python - <<'PY'
 from application.timezone import get_business_timezone_name, get_display_timezone_name, format_for_display
@@ -222,7 +222,7 @@ bash ops/tenants/d7pay/scripts/apply-config.sh
 # 然后用现有发布脚本重发对应服务
 ```
 
-D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过 `d7pay-config`、`d7pay-secret` 注入真实配置。
+D7pay 发布脚本必须在构建 `api/admin/merchant` 时把 `config.example.py` 复制为镜像内 `config.py`，并通过线上实际 `d7pay-runtime-config`、`d7pay-runtime-secret` 注入真实配置。
 
 当前职责边界：D7pay 运维脚本只负责检查和应用 ConfigMap/Secret/PVC 等公共配置；镜像构建和滚动发布由现有发布脚本负责。如果容器仍读旧配置，先执行配置应用入口修复 K8s 配置，再用现有发布脚本重发对应服务。
 
@@ -420,18 +420,18 @@ APP_API_BASE_URL=http://api.customer-domain.com
 - API 日志出现 `Unsupported JazzCash API version`。
 - JCB 上号、代收或代付没有走 `application.jazzcash_gateway` 的 FormBody 封装。
 
-原因：`d7pay-config` 缺少 `JAZZCASH_API_VERSION`，或 Jenkins 渲染配置时没有带入该字段。
+原因：当前线上 `d7pay-runtime-config` 没有显式注入 `JAZZCASH_API_VERSION` 时，应由 `config.example.py` 默认值 `v1.6` 生效；如果 API 日志仍出现版本错误，说明镜像内配置没有走环境变量默认值，或 Jenkins 渲染配置时覆盖了该字段。
 
 处理：
 
 ```bash
-kubectl get configmap d7pay-config -n pk-d7pay -o yaml | grep JAZZCASH_API_VERSION
+kubectl get configmap d7pay-runtime-config -n pk-d7pay -o yaml | grep JAZZCASH_API_VERSION || true
 ```
 
 期望为：
 
 ```text
-JAZZCASH_API_VERSION: v1.6
+有显式注入时为 `JAZZCASH_API_VERSION: v1.6`；未显式注入时，容器内 `config.example.py` 默认值也必须解析为 `v1.6`。
 ```
 
 如果缺失，重新用 D7pay 配置渲染脚本生成配置，然后按现有 Jenkins 发布 API。
