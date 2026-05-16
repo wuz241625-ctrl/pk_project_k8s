@@ -24,7 +24,11 @@ D7pay 资金链路必须先执行 SQL 约束迁移，再发布应用镜像。迁
 
 ```bash
 api/sql/20260509_add_fund_integrity_constraints.sql
+api/sql/20260510_go_worker_phase0_schema.sql
+api/sql/20260516_go_worker_transfer_attempts.sql
 ```
+
+`20260516_go_worker_transfer_attempts.sql` 为 Go 代付追加审计迁移：新增 `worker_transfer_attempt`，并给 `worker_transfer_intent` 增加 `latest_attempt_id` / `success_attempt_id` 指针。上线后查真实出款次数看 attempt 表，查订单当前状态看 intent 表。
 
 上线前只读检查重复数据；如果重复数不为 0，先清理业务脏数据，再执行迁移：
 

@@ -151,6 +151,8 @@ CREATE TABLE IF NOT EXISTS `worker_transfer_intent` (
     `payment_id` BIGINT NULL,
     `amount` DECIMAL(14, 4) NOT NULL,
     `request_id` VARCHAR(96) NOT NULL,
+    `latest_attempt_id` BIGINT UNSIGNED NULL,
+    `success_attempt_id` BIGINT UNSIGNED NULL,
     `status` ENUM('created','submitted','success_pending_settlement','success','failed_retryable','failed_final','unknown_manual','settlement_failed_manual','cancelled') NOT NULL DEFAULT 'created',
     `official_transaction_id` VARCHAR(128) NULL,
     `official_status` VARCHAR(64) NULL,
@@ -167,7 +169,40 @@ CREATE TABLE IF NOT EXISTS `worker_transfer_intent` (
     PRIMARY KEY (`id`),
     UNIQUE KEY `uk_worker_transfer_intent_order` (`order_code`),
     UNIQUE KEY `uk_worker_transfer_intent_request` (`request_id`),
-    KEY `idx_worker_transfer_intent_status` (`status`, `updated_at`)
+    KEY `idx_worker_transfer_intent_status` (`status`, `updated_at`),
+    KEY `idx_worker_transfer_intent_latest_attempt` (`latest_attempt_id`),
+    KEY `idx_worker_transfer_intent_success_attempt` (`success_attempt_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `worker_transfer_attempt` (
+    `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `order_code` VARCHAR(64) NOT NULL,
+    `attempt_no` INT UNSIGNED NOT NULL,
+    `request_id` VARCHAR(96) NOT NULL,
+    `payment_id` BIGINT NOT NULL,
+    `partner_id` BIGINT NOT NULL,
+    `channel` VARCHAR(32) NOT NULL,
+    `amount` DECIMAL(14, 4) NOT NULL,
+    `action` VARCHAR(64) NOT NULL,
+    `request_payload_raw` LONGTEXT NULL COMMENT '官方请求原文，用于监控和人工复盘，不做脱敏或字段截断',
+    `response_payload_raw` LONGTEXT NULL COMMENT '官方响应原文，用于监控和人工复盘，不做脱敏或字段截断',
+    `official_code` VARCHAR(32) NULL,
+    `official_message` VARCHAR(512) NULL,
+    `official_transaction_id` VARCHAR(128) NULL,
+    `result` ENUM('failed_retryable','failed_final','unknown_manual','success_pending_settlement','success') NOT NULL,
+    `error_message` VARCHAR(512) NULL,
+    `submitted_at` DATETIME NOT NULL,
+    `finished_at` DATETIME NULL,
+    `settled_at` DATETIME NULL,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_worker_transfer_attempt_request` (`request_id`),
+    UNIQUE KEY `uk_worker_transfer_attempt_order_no` (`order_code`, `attempt_no`),
+    KEY `idx_worker_transfer_attempt_order` (`order_code`, `created_at`),
+    KEY `idx_worker_transfer_attempt_payment` (`payment_id`, `channel`, `created_at`),
+    KEY `idx_worker_transfer_attempt_result` (`result`, `created_at`),
+    KEY `idx_worker_transfer_attempt_official_txn` (`official_transaction_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 DROP PROCEDURE IF EXISTS add_column_if_missing;

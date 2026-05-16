@@ -261,3 +261,39 @@ python3 -m py_compile api/application/app/login/banks/easypaisa.py
 ```bash
 pytest api/tests/test_easypaisa_v19_urm90040.py api/tests/test_easypaisa_v19_acceptance.py api/tests/test_easypaisa_v19_change_pin.py api/tests/test_easypaisa_v19_state_machine.py -v
 ```
+
+## 0.12 Go 代付重派覆盖历史导致无法核对出款钱包
+
+现象：
+
+- 同一 `orders_df.code` 经历 402 重派或本地结算失败恢复。
+- 只看 `worker_transfer_intent` 时只能看到最后一次状态，无法判断哪些钱包曾调用官方 transfer。
+- 线上枚举不包含旧方案中的 `402_redispatch`，写入会失败。
+
+处理：
+
+- 执行 `api/sql/20260516_go_worker_transfer_attempts.sql`。
+- `worker_transfer_attempt` 作为追加事实表，每次钱包出款尝试写一行。
+- `worker_transfer_intent` 作为当前状态表，只保存 `latest_attempt_id` 和 `success_attempt_id`。
+- 402 重派写 `failed_retryable`，不再写 `402_redispatch`。
+- 本地结算失败恢复时，从 `success_attempt_id` 关联的 attempt 取 `payment_id`、`partner_id`、`channel` 和 `official_transaction_id`，不再次调用官方 transfer。
+
+验证：
+
+```sql
+SHOW CREATE TABLE worker_transfer_attempt;
+SHOW COLUMNS FROM worker_transfer_intent LIKE 'latest_attempt_id';
+SHOW COLUMNS FROM worker_transfer_intent LIKE 'success_attempt_id';
+
+SELECT order_code, status, latest_attempt_id, success_attempt_id,
+       payment_id, channel, official_transaction_id, updated_at
+FROM worker_transfer_intent
+WHERE order_code='<orders_df.code>';
+
+SELECT id, attempt_no, request_id, payment_id, partner_id, channel,
+       official_code, official_message, official_transaction_id, result,
+       error_message, submitted_at, settled_at
+FROM worker_transfer_attempt
+WHERE order_code='<orders_df.code>'
+ORDER BY attempt_no ASC;
+```
