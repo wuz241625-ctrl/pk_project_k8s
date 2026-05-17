@@ -1,5 +1,37 @@
 # API 排错记录
 
+## 0.15 EasyPaisa 已绑定账号旧指纹没有被复用
+
+现象：
+
+- 已绑定账号 `secondLogin` 快路径失败后回退到 OTP 流程。
+- MySQL `payment.fingerprint_path` 存在且本地 ZIP 可读，但 `verify_otp_http` 仍返回 `fingerprintUploadRequired`，要求 App 重新上传指纹。
+- `loginStep1 direct_success` 且本地旧指纹存在时，会调用不存在的 `_fallback_chain_after_verify_otp`，触发 `AttributeError`。
+
+根因：
+
+- `pre_login_http` 只写入 `reuse_local_fingerprint_after_otp` / `local_fingerprint_path`，但 `verify_otp_http` 没有消费这些字段。
+- 旧计划中的 `_fallback_chain_after_verify_otp` 没有落到当前代码，当前文件只保留了 `_verify_otp_fallback_chain`。
+
+处理：
+
+- 新增 `_reuse_local_fingerprint_after_otp()`，统一执行旧指纹复用链路：
+  - `upload_data` 推本地旧 ZIP。
+  - `verifyFingerprint` 验证旧指纹。
+  - `secondLogin(with_pwd=True)`。
+  - `queryAccountList` 后进入 `ACCOUNT_SELECTION_REQUIRED`。
+- `pre_login_http` 的 `direct_success + local_zip_path` 改用新 helper。
+- `verify_otp_http` 在 OTP 成功后，如果 session 有旧指纹标记，先调用新 helper；旧指纹推送或验证失败时返回 `upload_fingerprint` 让 App 重新采集。
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_pre_login_branching.py -q
+python3 -m pytest tests/ -q -k easypaisa
+python3 -m py_compile application/app/login/banks/easypaisa.py
+```
+
 ## 0.14 TimeOutGuard 不应恢复到 Python timeout job
 
 现象：

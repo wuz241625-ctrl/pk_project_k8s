@@ -35,6 +35,23 @@ go test ./internal/timeout ./tasks
 - `api/jobs/time_out.py` 不包含 `class TimeOutGuard`。
 - Go worker 注册 `timeout:collect_order` 与 `timeout:payout_claim` handler。
 
+## EasyPaisa 旧指纹复用验收
+
+已绑定账号 `secondLogin` 快路径失败后，如果 MySQL `payment.fingerprint_path` 存在且本地 ZIP 可读，OTP 成功后应优先复用旧指纹。只有旧指纹推送或验证失败时，才让 App 重新 `upload_fingerprint`。
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_pre_login_branching.py -q
+python3 -m pytest tests/test_easypaisa_v19_acceptance.py tests/test_easypaisa_v19_urm90040.py tests/test_easypaisa_v19_fingerprint.py -q
+python3 -m py_compile application/app/login/banks/easypaisa.py
+```
+
+验收重点：
+
+- `verify_otp_http` 读取 `reuse_local_fingerprint_after_otp/local_fingerprint_path` 并优先复用旧 ZIP。
+- `loginStep1 direct_success + local_zip_path` 不再调用缺失的 `_fallback_chain_after_verify_otp`。
+- 旧 ZIP 被拒绝时返回 `next_step=upload_fingerprint`。
+
 ## EasyPaisa secondLogin 数据库 PIN 验收
 
 普通 `secondLogin` 需要带 `pwd`，但除 `change_pin` 外，`pwd` 必须从数据库 `payment.pin` 读取，不信任 App 请求里的 `pin/pwd`。

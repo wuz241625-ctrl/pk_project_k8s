@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -148,6 +149,119 @@ class PreLoginBranchingTests(unittest.TestCase):
             self.assertEqual(result["data"]["phase"], LoginStatus.OTP_SENT)
             ep._try_secondlogin_fastpath.assert_awaited_once()
             ep._perform_loginstep1.assert_awaited_once()
+
+        asyncio.run(run())
+
+    def test_bound_payment_otp_success_reuses_local_fingerprint(self):
+        async def run():
+            ep = _make_ep()
+            redis_key = "pre_login_easypaisa_533264"
+            zip_path = Path(__file__).with_name("old_fp.zip")
+            zip_path.write_bytes(b"old-fingerprint")
+            self.addCleanup(lambda: zip_path.unlink(missing_ok=True))
+            session = {
+                "id": 533264,
+                "phone": "03445021275",
+                "bankname": "easypaisa",
+                "status": LoginStatus.OTP_SENT,
+                "status_history": [LoginStatus.PRE_LOGIN_CREATED, LoginStatus.OTP_SENT],
+                "pinCode": "client_pin_should_not_be_used",
+                "reuse_local_fingerprint_after_otp": True,
+                "local_fingerprint_path": str(zip_path),
+            }
+            ep.redis.storage[redis_key] = json.dumps(session)
+            ep._verify_otp = AsyncMock(return_value={"data": {"requestId": "req-1"}})
+            ep._save_payment = AsyncMock(return_value=533264)
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_upload_data = AsyncMock(return_value=True)
+            ep._call_verify_fingerprint = AsyncMock(return_value={"outcome": "success"})
+            ep._call_second_login = AsyncMock(return_value={"outcome": "success"})
+            ep._call_query_account_list = AsyncMock(
+                return_value={
+                    "outcome": "success",
+                    "accounts_json": json.dumps([{"accno": "88521642", "accountStatus": "ACTIVE"}]),
+                }
+            )
+
+            result = await ep.verify_otp_http(
+                {"bankname": "easypaisa", "payment_id": 533264, "otp": "123456"}
+            )
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["data"]["phase"], LoginStatus.ACCOUNT_SELECTION_REQUIRED)
+            self.assertEqual(result["data"]["next_step"], "second_login")
+            ep._call_upload_data.assert_awaited_once()
+            ep._call_verify_fingerprint.assert_awaited_once()
+            ep._call_second_login.assert_awaited_once()
+            ep._call_query_account_list.assert_awaited_once()
+
+        asyncio.run(run())
+
+    def test_bound_payment_direct_success_reuses_local_fingerprint_without_missing_helper(self):
+        async def run():
+            ep = _make_ep()
+            zip_path = Path(__file__).with_name("old_fp_direct.zip")
+            zip_path.write_bytes(b"old-fingerprint")
+            self.addCleanup(lambda: zip_path.unlink(missing_ok=True))
+            bound = _bound()
+            bound["fingerprint_path"] = str(zip_path)
+            ep._try_secondlogin_fastpath = AsyncMock(return_value=None)
+            ep._perform_loginstep1 = AsyncMock(
+                return_value={"outcome": "direct_success", "code": 200, "message": "ok"}
+            )
+            ep._save_payment = AsyncMock(return_value=533264)
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_upload_data = AsyncMock(return_value=True)
+            ep._call_verify_fingerprint = AsyncMock(return_value={"outcome": "success"})
+            ep._call_second_login = AsyncMock(return_value={"outcome": "success"})
+            ep._call_query_account_list = AsyncMock(
+                return_value={
+                    "outcome": "success",
+                    "accounts_json": json.dumps([{"accno": "88521642", "accountStatus": "ACTIVE"}]),
+                }
+            )
+
+            with patch.object(ep, "_check_payment", new=AsyncMock(return_value=bound)):
+                result = await ep.pre_login_http(_payload(phone="03445021275"))
+
+            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["data"]["phase"], LoginStatus.ACCOUNT_SELECTION_REQUIRED)
+            self.assertEqual(result["data"]["next_step"], "second_login")
+            ep._call_upload_data.assert_awaited_once()
+            ep._call_verify_fingerprint.assert_awaited_once()
+            ep._call_second_login.assert_awaited_once()
+
+        asyncio.run(run())
+
+    def test_bound_payment_local_fingerprint_rejected_routes_to_upload(self):
+        async def run():
+            ep = _make_ep()
+            zip_path = Path(__file__).with_name("old_fp_rejected.zip")
+            zip_path.write_bytes(b"old-fingerprint")
+            self.addCleanup(lambda: zip_path.unlink(missing_ok=True))
+            session = {
+                "id": 533264,
+                "phone": "03445021275",
+                "bankname": "easypaisa",
+                "status": LoginStatus.OTP_VERIFIED,
+                "status_history": [LoginStatus.PRE_LOGIN_CREATED, LoginStatus.OTP_VERIFIED],
+                "pinCode": "11223",
+            }
+            ep._call_upload_data = AsyncMock(return_value=True)
+            ep._call_verify_fingerprint = AsyncMock(
+                return_value={"outcome": "rejected", "message": "FingerprintRejected"}
+            )
+
+            result = await ep._reuse_local_fingerprint_after_otp(
+                "pre_login_easypaisa_533264", session, str(zip_path)
+            )
+
+            self.assertEqual(result["status"], "error")
+            self.assertEqual(result["data"]["code"], "FP_UPSTREAM_REJECTED")
+            self.assertEqual(result["data"]["next_step"], "upload_fingerprint")
+            self.assertEqual(result["data"]["phase"], LoginStatus.OTP_VERIFIED)
+            ep._call_upload_data.assert_awaited_once()
+            ep._call_verify_fingerprint.assert_awaited_once()
 
         asyncio.run(run())
 

@@ -1031,7 +1031,7 @@ class EasyPaisa:
                 )
 
                 if local_zip_path:
-                    return await self._fallback_chain_after_verify_otp(
+                    return await self._reuse_local_fingerprint_after_otp(
                         redis_key, session_data, local_zip_path,
                     )
 
@@ -1443,6 +1443,113 @@ class EasyPaisa:
             },
         }
 
+    async def _reuse_local_fingerprint_after_otp(self, redis_key, session_data, local_zip_path):
+        """OTP 已验证后优先复用 MySQL 已确认的本地指纹 ZIP。"""
+        funcName = '_reuse_local_fingerprint_after_otp'
+        if not local_zip_path or not os.path.exists(local_zip_path):
+            return await self._route_to_fingerprint_upload(
+                redis_key,
+                session_data,
+                reason=f'Local fingerprint ZIP missing: {local_zip_path}',
+            )
+
+        pushed = await self._call_upload_data(session_data, local_zip_path)
+        if not pushed:
+            session_data['last_error'] = {
+                'code': 'FP_UPSTREAM_REJECTED',
+                'reason': f'local fingerprint upload_data failed: {local_zip_path}',
+            }
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': '旧指纹推送失败，请重新上传指纹',
+                'data': {
+                    'code': 'FP_UPSTREAM_REJECTED',
+                    'next_step': 'upload_fingerprint',
+                    'phase': LoginStatus.OTP_VERIFIED,
+                    'id': session_data.get('id'),
+                },
+            }
+
+        fp = await self._call_verify_fingerprint(session_data)
+        if fp.get('outcome') != 'success':
+            session_data['last_error'] = {
+                'code': 'FP_UPSTREAM_REJECTED',
+                'reason': fp.get('message') or fp.get('outcome') or 'local fingerprint rejected',
+            }
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': fp.get('message') or '旧指纹验证失败，请重新上传指纹',
+                'data': {
+                    'code': 'FP_UPSTREAM_REJECTED',
+                    'next_step': 'upload_fingerprint',
+                    'phase': LoginStatus.OTP_VERIFIED,
+                    'id': session_data.get('id'),
+                },
+            }
+
+        if not await self._hydrate_second_login_pin_from_db(session_data):
+            return await self._force_terminal_needs_relogin(
+                redis_key=redis_key,
+                session_data=session_data,
+                reason='reuse local fingerprint secondLogin missing DB pin',
+                error_code='SL_UPSTREAM_ERROR',
+            )
+
+        sl = await self._call_second_login(session_data, with_pwd=True)
+        outcome = sl.get('outcome')
+        if outcome == 'success':
+            self.logger.info(
+                f'{self._log_key(funcName)} 旧指纹复用成功，续推 queryAccountList'
+            )
+            return await self._fallback_finish_with_query_accts(redis_key, session_data, funcName)
+        if outcome == 'needs_pin_change':
+            self._assert_status_transition(
+                session_data,
+                LoginStatus.OTP_VERIFIED,
+                LoginStatus.AWAITING_PIN_CHANGE,
+                funcName,
+            )
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.AWAITING_PIN_CHANGE,
+                {'last_error': {'code': 'SL_NEEDS_PIN_CHANGE'}},
+            )
+            return {
+                'status': 'error',
+                'message': '需要修改 PIN',
+                'data': {
+                    'code': 'SL_NEEDS_PIN_CHANGE',
+                    'next_step': 'change_pin',
+                    'phase': LoginStatus.AWAITING_PIN_CHANGE,
+                    'id': session_data.get('id'),
+                },
+            }
+        if outcome == 'cooldown':
+            session_data['last_error'] = {
+                'code': 'SL_COOLDOWN',
+                'cd_until': sl.get('cd_until', 0),
+            }
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': 'secondLogin 冷却中',
+                'data': {
+                    'code': 'SL_COOLDOWN',
+                    'cd_until': sl.get('cd_until', 0),
+                    'phase': LoginStatus.OTP_VERIFIED,
+                    'id': session_data.get('id'),
+                },
+            }
+        return await self._force_terminal_needs_relogin(
+            redis_key=redis_key,
+            session_data=session_data,
+            reason=f'reuse local fingerprint secondLogin outcome={outcome} msg={sl.get("message", "")}',
+            error_code='SL_NEEDS_RELOGIN' if outcome == 'session_expired' else 'SL_UPSTREAM_ERROR',
+        )
+
     async def _complete_login_step1_direct_success(self, redis_key, session_data, continue_fallback_chain=False):
         """loginStep1 返回 code=200 时，按本地 OTP 已验证后的链路继续。"""
         funcName = '_complete_login_step1_direct_success'
@@ -1701,6 +1808,13 @@ class EasyPaisa:
             # 区分首次 / fallback
             if session_data.get('fallback_from_urm90040'):
                 return await self._verify_otp_fallback_chain(redis_key, session_data)
+            local_zip_path = session_data.get('local_fingerprint_path')
+            if session_data.get('reuse_local_fingerprint_after_otp') and local_zip_path:
+                return await self._reuse_local_fingerprint_after_otp(
+                    redis_key,
+                    session_data,
+                    local_zip_path,
+                )
             # 首次：返回 next_phase='fingerprintUploadRequired'，APP 切到指纹采集 UI
             return {
                 'status': 'success',
