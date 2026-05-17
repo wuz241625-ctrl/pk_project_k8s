@@ -189,8 +189,8 @@ async def test_is_account_registered_rejects_unexpected_codes(ep_mock):
 
 
 @pytest.mark.asyncio
-async def test_pre_login_treats_unregistered_cloud_account_as_send_otp(ep_mock):
-    """03009208353 回归：云机 code=403/data=false 时 pre_login 应继续首次上号。"""
+async def test_pre_login_ignores_cloud_registration_probe_and_uses_loginstep1(ep_mock):
+    """03009208353 回归：pre_login 不再用 isAccountRegistered 做分流。"""
     with patch('bcrypt.checkpw', return_value=True):
         payment = MagicMock()
         payment.id = 533296
@@ -210,7 +210,13 @@ async def test_pre_login_treats_unregistered_cloud_account_as_send_otp(ep_mock):
         ep_mock._get_session_data = AsyncMock(return_value=None)
         ep_mock._persist_session_data = AsyncMock(return_value=True)
         ep_mock._select_proxy_ip = AsyncMock(return_value='')
-        ep_mock._is_account_registered = AsyncMock(return_value=False)
+        ep_mock._is_account_registered = AsyncMock(
+            side_effect=AssertionError('pre_login 不得调用 isAccountRegistered')
+        )
+        ep_mock._try_secondlogin_fastpath = AsyncMock(return_value=None)
+        ep_mock._perform_loginstep1 = AsyncMock(
+            return_value={'outcome': 'otp_sent', 'code': 100, 'message': 'otp'}
+        )
 
         result = await ep_mock.pre_login_http({
             'bankname': 'easypaisa',
@@ -224,8 +230,11 @@ async def test_pre_login_treats_unregistered_cloud_account_as_send_otp(ep_mock):
 
     assert result['status'] == 'success'
     assert result['data']['id'] == '533296'
-    assert result['data']['next_step'] == 'send_otp'
-    ep_mock._is_account_registered.assert_awaited_once_with('03009208353')
+    assert result['data']['next_step'] == 'verify_otp'
+    assert result['data']['phase'] == LoginStatus.OTP_SENT
+    ep_mock._is_account_registered.assert_not_awaited()
+    ep_mock._try_secondlogin_fastpath.assert_awaited_once()
+    ep_mock._perform_loginstep1.assert_awaited_once()
 
 
 @pytest.mark.asyncio

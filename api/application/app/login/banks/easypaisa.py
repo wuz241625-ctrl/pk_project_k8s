@@ -952,25 +952,165 @@ class EasyPaisa:
                 'fallback_from_urm90040': False,
             }
             await self._persist_session_data(redis_key, session_data)
-            # spec §3.3 ⑨：调云机 isAccountRegistered
-            is_registered = await self._is_account_registered(phone)
-            if not is_registered:
-                # 首次上号：仅 session 初始化，不调 loginStep1
-                self.logger.info(f'{self._log_key(funcName)} 首次上号 next_step=send_otp')
+            if bound_payment:
+                fastpath_result = await self._try_secondlogin_fastpath(
+                    redis_key, session_data, bound_payment,
+                )
+                if fastpath_result is not None:
+                    self.logger.info(
+                        f'{self._log_key(funcName)} secondLogin 快路径命中: {fastpath_result}'
+                    )
+                    return fastpath_result
+                self.logger.info(
+                    f'{self._log_key(funcName)} secondLogin 探测失败，回退 loginStep1'
+                )
+
+            local_zip_path = None
+            if bound_payment:
+                if isinstance(bound_payment, dict):
+                    local_zip_path = bound_payment.get('fingerprint_path')
+                else:
+                    local_zip_path = getattr(bound_payment, 'fingerprint_path', None)
+                if isinstance(local_zip_path, str) and local_zip_path.strip() and os.path.exists(local_zip_path):
+                    local_zip_path = local_zip_path.strip()
+                    session_data['is_new_user'] = False
+                    session_data['reuse_local_fingerprint_after_otp'] = True
+                    session_data['local_fingerprint_path'] = local_zip_path
+                    await self._persist_session_data(redis_key, session_data)
+                else:
+                    local_zip_path = None
+
+            ls1 = await self._perform_loginstep1(session_data)
+            outcome = ls1.get('outcome')
+
+            if outcome == 'direct_success':
+                self._assert_status_transition(
+                    session_data,
+                    LoginStatus.PRE_LOGIN_CREATED,
+                    LoginStatus.OTP_VERIFIED,
+                    funcName,
+                )
+                real_payment_id = await self._save_payment(session_data, name=name)
+                if not real_payment_id:
+                    raise NewApiError(ErrorCode.DBWriteFail, 'Database write failed, please retry')
+
+                old_payment_id = self._normalize_payment_id(payment_id)
+                real_payment_id_text = self._normalize_payment_id(real_payment_id)
+                old_redis_key = redis_key
+                redis_key = self.PRELOGIN_KEY.format(
+                    bankname=bankname,
+                    payment_id=real_payment_id_text,
+                )
+                if old_redis_key != redis_key:
+                    await self.redis.delete(old_redis_key)
+
+                await self.redis.setex(
+                    self._login_lock_payment_key(real_payment_id),
+                    self.lock_time_login_duplicate_avoid,
+                    1,
+                )
+                await self.redis.setex(
+                    self._login_lock_phone_key(phone),
+                    self.lock_time_login_duplicate_avoid,
+                    1,
+                )
+
+                session_data.update({
+                    'id': real_payment_id,
+                    'redis_key': redis_key,
+                    'real_payment_id': real_payment_id,
+                    'selected_upi': phone,
+                    'upi_list': [phone],
+                    'completion_time': int(time.time()),
+                    'last_error': None,
+                    'previous_payment_id': old_payment_id,
+                    'login_step1_direct_success': True,
+                })
+                se_until = await self._update_session_status(
+                    redis_key, session_data, LoginStatus.OTP_VERIFIED,
+                )
+
+                if local_zip_path:
+                    return await self._fallback_chain_after_verify_otp(
+                        redis_key, session_data, local_zip_path,
+                    )
+
                 return {
                     'status': 'success',
-                    'message': '成功',
+                    'message': 'loginStep1直接登录成功，本地无指纹，请重新采集',
                     'data': {
-                        'id': payment_id,
-                        'redis_key': redis_key,
-                        'expires_in': expire_second,
-                        'is_new_user': True,
-                        'bank_type': self.LOGIN_TYPE,
-                        'next_step': 'send_otp',
+                        'id': real_payment_id_text,
+                        'phase': LoginStatus.OTP_VERIFIED,
+                        'se_until': se_until,
+                        'next_step': 'upload_fingerprint',
+                        'next_phase': 'fingerprintUploadRequired',
+                        'payment_id': real_payment_id,
+                        'previous_payment_id': old_payment_id,
                     },
                 }
-            # spec §3.3 ⑩：二次上号续推（详细路径在 Task 8）
-            return await self._pre_login_second_time_chain(redis_key, session_data, bound_payment)
+
+            if outcome == 'otp_sent':
+                self._assert_status_transition(
+                    session_data,
+                    LoginStatus.PRE_LOGIN_CREATED,
+                    LoginStatus.OTP_SENT,
+                    funcName,
+                )
+                await self._update_session_status(
+                    redis_key,
+                    session_data,
+                    LoginStatus.OTP_SENT,
+                    {
+                        'sendOTPTime': int(time.time()),
+                        'resend_count': 0,
+                        'last_error': None,
+                    },
+                )
+                return {
+                    'status': 'success',
+                    'message': 'OTP发送成功，请输入收到的验证码',
+                    'data': {
+                        'id': payment_id,
+                        'phase': LoginStatus.OTP_SENT,
+                        'next_step': 'verify_otp',
+                        'next_status': LoginStatus.OTP_VERIFIED,
+                        'phone': phone,
+                        'is_new_user': bool(session_data.get('is_new_user', True)),
+                        'expires_in': 60,
+                        'instruction': f'请查看手机 {phone} 收到的OTP验证码短信',
+                    },
+                }
+
+            if outcome == 'offline_501':
+                return await self._force_terminal_needs_relogin(
+                    redis_key,
+                    session_data,
+                    reason=f'loginStep1 returned 501: {ls1.get("message")}',
+                    error_code='SL_NEEDS_RELOGIN',
+                )
+
+            if outcome == 'server_busy':
+                return {
+                    'status': 'error',
+                    'message': 'EasyPaisa 云机繁忙，请稍后重试',
+                    'data': {
+                        'code': 'EP_RETRY',
+                        'phase': LoginStatus.PRE_LOGIN_CREATED,
+                        'id': payment_id,
+                        'next_step': 'pre_login',
+                    },
+                }
+
+            return {
+                'status': 'error',
+                'message': ls1.get('message') or 'loginStep1 上游错误',
+                'data': {
+                    'code': 'EP_UPSTREAM_ERROR',
+                    'phase': LoginStatus.PRE_LOGIN_CREATED,
+                    'id': payment_id,
+                    'next_step': 'pre_login',
+                },
+            }
         except NewApiError:
             raise
         except Exception as e:
@@ -1062,6 +1202,99 @@ class EasyPaisa:
                 'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
             },
         }
+
+    async def _try_secondlogin_fastpath(self, redis_key, session_data, bound_payment):
+        """已绑定 Payment 的 secondLogin-first 快路径。"""
+        funcName = '_try_secondlogin_fastpath'
+        if not await self._hydrate_second_login_pin_from_db(session_data, bound_payment):
+            self.logger.info(
+                f'{self._log_key(funcName)} 已绑定账号缺少数据库PIN，回退 loginStep1'
+            )
+            return None
+
+        sl_result = await self._call_second_login(session_data, with_pwd=True)
+        outcome = sl_result.get('outcome')
+
+        if outcome == 'success':
+            self.logger.info(f'{self._log_key(funcName)} secondLogin 成功，续推 queryAccountList')
+            qal_result = await self._call_query_account_list(session_data)
+            if qal_result.get('outcome') != 'success':
+                self.logger.warning(
+                    f'{self._log_key(funcName)} queryAccountList 失败，回退 loginStep1'
+                )
+                return None
+            self._assert_status_transition(
+                session_data,
+                LoginStatus.PRE_LOGIN_CREATED,
+                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                funcName,
+            )
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                {
+                    'account_entire': qal_result.get('accounts_json'),
+                    'last_error': None,
+                },
+            )
+            return {
+                'status': 'success',
+                'message': '二次登录成功',
+                'data': {
+                    'id': session_data.get('id'),
+                    'next_step': 'select_accts',
+                    'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                },
+            }
+
+        if outcome == 'needs_pin_change':
+            self._assert_status_transition(
+                session_data,
+                LoginStatus.PRE_LOGIN_CREATED,
+                LoginStatus.AWAITING_PIN_CHANGE,
+                funcName,
+            )
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.AWAITING_PIN_CHANGE,
+                {'last_error': {'code': 'SL_NEEDS_PIN_CHANGE'}},
+            )
+            return {
+                'status': 'error',
+                'message': '需要修改 PIN',
+                'data': {
+                    'code': 'SL_NEEDS_PIN_CHANGE',
+                    'next_step': 'change_pin',
+                    'phase': LoginStatus.AWAITING_PIN_CHANGE,
+                    'id': session_data.get('id'),
+                },
+            }
+
+        if outcome == 'cooldown':
+            session_data['last_error'] = {
+                'code': 'SL_COOLDOWN',
+                'cd_until': sl_result.get('cd_until', 0),
+            }
+            await self._persist_session_data(redis_key, session_data)
+            return {
+                'status': 'error',
+                'message': '当前处于冷却期',
+                'data': {
+                    'code': 'SL_COOLDOWN',
+                    'cd_until': sl_result.get('cd_until', 0),
+                    'next_step': 'pre_login',
+                    'phase': LoginStatus.PRE_LOGIN_CREATED,
+                    'id': session_data.get('id'),
+                },
+            }
+
+        self.logger.info(
+            f'{self._log_key(funcName)} secondLogin outcome={outcome} '
+            f'msg={sl_result.get("message", "")}，回退 loginStep1'
+        )
+        return None
 
     async def _call_upload_data(self, session_data, fingerprint_path):
         """二次上号续推用：从本地路径读 ZIP 推云机 upload_data。"""
@@ -2741,6 +2974,44 @@ class EasyPaisa:
         if message in ['URM20008', 'URM20017']:
             return {'outcome': 'needs_pin_change', 'message': message}
         return {'outcome': 'upstream_error', 'message': message or response.text}
+
+    async def _perform_loginstep1(self, session_data):
+        """loginStep1 非 raise 分类器，供 pre_login_http 账号类别分流使用。"""
+        funcName = 'loginStep1分类'
+        url = self.API_ENDPOINTS['base_url']
+        request_data = self._build_send_otp_request(session_data)
+
+        response = self.retry_make_request(method='POST', url=url, data=request_data)
+        self._log_response(funcName, response)
+
+        if not response:
+            return {'outcome': 'network_error', 'code': None, 'message': 'empty response'}
+        if response.status_code != 200:
+            return {'outcome': 'network_error', 'code': None, 'message': f'http {response.status_code}'}
+
+        response_data = self._decode_indus_response(funcName, response.text)
+        if not isinstance(response_data, dict):
+            return {'outcome': 'rejected', 'code': None, 'message': response.text}
+
+        code = response_data.get('code')
+        msg = response_data.get('msg', '')
+
+        if code == 501:
+            await self._mark_payment_official_501_offline(
+                session_data.get('id') or session_data.get('payment_id'),
+                f'loginStep1 returned 501: {msg}',
+            )
+            return {'outcome': 'offline_501', 'code': 501, 'message': msg}
+        if code == 200:
+            return {'outcome': 'direct_success', 'code': 200, 'message': msg}
+        if code == 100:
+            return {'outcome': 'otp_sent', 'code': 100, 'message': msg}
+        if code == 423:
+            return {'outcome': 'server_busy', 'code': 423, 'message': msg}
+        if code == 503:
+            return {'outcome': 'network_error', 'code': 503, 'message': msg}
+        return {'outcome': 'rejected', 'code': code, 'message': msg}
+
     def _is_server_busy(self, message: str) -> bool:
         return '423' in str(message) or 'ServerBusy' in str(message)
     async def _fallback_to_first_login(self, session_data: dict, redis_key: str, reason: str) -> dict:

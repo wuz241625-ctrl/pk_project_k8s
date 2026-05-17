@@ -407,3 +407,30 @@ FROM worker_transfer_attempt
 WHERE order_code='<orders_df.code>'
 ORDER BY attempt_no ASC;
 ```
+
+## 0.13 EasyPaisa pre_login 继续依赖 isAccountRegistered 导致分流抖动
+
+现象：
+
+- 已绑定 EasyPaisa 账号重新上号时，`pre_login_http` 仍调用云机 `isAccountRegistered` 做新号/二次号分流。
+- 云机池化回收或绑定实例漂移时，同一账号可能短时间内返回 true/false 抖动。
+- 抖动会让已绑定号误入首次上号路径，或让新号路径依赖一个实时探针。
+
+原因：
+
+- `isAccountRegistered` 表示“当前云机实例是否正在绑定该号”，不是“该号是否曾经在本系统绑定过”的持久事实。
+- 旧流程先 check 再 act，`isAccountRegistered` 与后续 `loginStep1` / `secondLogin` 之间有竞态窗口。
+
+处理：
+
+- `pre_login_http` 改为按本地账号类别分流：命中 `bound_payment` 先走 `_try_secondlogin_fastpath`，fastpath 返回 `None` 时回退 `_perform_loginstep1`；新号直接走 `_perform_loginstep1`。
+- `_perform_loginstep1` 对 `loginStep1` 做非 raise 分类：`200 direct_success`、`100 otp_sent`、`501 offline_501`、`423 server_busy`、`503 network_error`、其余 `rejected`。
+- `_try_secondlogin_fastpath` 对 `success/needs_pin_change/cooldown` 直接返回契约信封，其余结果统一回退 `loginStep1`，不在 pre_login fastpath 内杀 session。
+- 新增 `test_easypaisa_v19_branching_invariants.py` 守护：`pre_login_http` 不得调用 `_is_account_registered`，且仓库源码不应出现旧 `_second_login_chain_from_pre_login`。
+
+验证：
+
+```bash
+cd api && python3 -m pytest tests/test_easypaisa_v19_loginstep1_classifier.py tests/test_easypaisa_v19_fastpath.py tests/test_easypaisa_v19_pre_login_branching.py tests/test_easypaisa_v19_branching_invariants.py -q
+cd api && python3 -m pytest tests/ -q -k easypaisa
+```
