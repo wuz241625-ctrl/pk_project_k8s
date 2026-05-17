@@ -257,23 +257,25 @@ BOUND = {"id": 533264, "phone": "03445021275", "pin": "11223"}
 
 
 class FastpathTests(unittest.TestCase):
-    def test_success_delegates_to_post_secondlogin_query_accts(self):
+    def test_success_queries_accounts_and_enters_account_selection(self):
         async def run():
             ep = _make_ep()
-            ep._perform_second_login = AsyncMock(return_value={"outcome": "success"})
-            ep._post_secondlogin_query_accts = AsyncMock(return_value={
-                "status": "success",
-                "data": {"phase": LoginStatus.ACCOUNT_SELECTION_REQUIRED, "next_step": "select_accts"},
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_second_login = AsyncMock(return_value={"outcome": "success"})
+            ep._call_query_account_list = AsyncMock(return_value={
+                "outcome": "success",
+                "accounts_json": '[{"accno":"1","accountStatus":"ACTIVE"}]',
             })
             out = await ep._try_secondlogin_fastpath(REDIS_KEY, _session(), BOUND)
-            ep._post_secondlogin_query_accts.assert_awaited_once()
+            ep._call_query_account_list.assert_awaited_once()
             self.assertEqual(out["data"]["phase"], LoginStatus.ACCOUNT_SELECTION_REQUIRED)
         asyncio.run(run())
 
     def test_needs_pin_change_returns_awaiting_pin_envelope(self):
         async def run():
             ep = _make_ep()
-            ep._perform_second_login = AsyncMock(return_value={"outcome": "needs_pin_change"})
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_second_login = AsyncMock(return_value={"outcome": "needs_pin_change"})
             out = await ep._try_secondlogin_fastpath(REDIS_KEY, _session(), BOUND)
             self.assertEqual(out["data"]["code"], "SL_NEEDS_PIN_CHANGE")
             self.assertEqual(out["data"]["phase"], LoginStatus.AWAITING_PIN_CHANGE)
@@ -282,7 +284,8 @@ class FastpathTests(unittest.TestCase):
     def test_cooldown_keeps_pre_login_state(self):
         async def run():
             ep = _make_ep()
-            ep._perform_second_login = AsyncMock(return_value={"outcome": "cooldown"})
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_second_login = AsyncMock(return_value={"outcome": "cooldown"})
             out = await ep._try_secondlogin_fastpath(REDIS_KEY, _session(), BOUND)
             self.assertEqual(out["data"]["code"], "SL_COOLDOWN")
             self.assertEqual(out["data"]["phase"], LoginStatus.PRE_LOGIN_CREATED)
@@ -291,7 +294,8 @@ class FastpathTests(unittest.TestCase):
     def test_needs_relogin_returns_none_for_fallthrough(self):
         async def run():
             ep = _make_ep()
-            ep._perform_second_login = AsyncMock(return_value={"outcome": "needs_relogin"})
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_second_login = AsyncMock(return_value={"outcome": "needs_relogin"})
             out = await ep._try_secondlogin_fastpath(REDIS_KEY, _session(), BOUND)
             self.assertIsNone(out)
         asyncio.run(run())
@@ -299,7 +303,8 @@ class FastpathTests(unittest.TestCase):
     def test_urm90040_returns_none_for_fallthrough(self):
         async def run():
             ep = _make_ep()
-            ep._perform_second_login = AsyncMock(
+            ep._hydrate_second_login_pin_from_db = AsyncMock(return_value=True)
+            ep._call_second_login = AsyncMock(
                 return_value={"outcome": "session_expired", "message": "URM90040"})
             out = await ep._try_secondlogin_fastpath(REDIS_KEY, _session(), BOUND)
             self.assertIsNone(out)
@@ -315,9 +320,9 @@ if __name__ == "__main__":
 Run: `(cd api && python3 -m pytest tests/test_easypaisa_v19_fastpath.py -q)`
 Expected: FAIL — `AttributeError: 'EasyPaisa' object has no attribute '_try_secondlogin_fastpath'`
 
-- [ ] **Step 3: 替换死代码为 `_try_secondlogin_fastpath`**
+- [ ] **Step 3: 新增 `_try_secondlogin_fastpath`**
 
-把整个 `_second_login_chain_from_pre_login` 方法（`async def _second_login_chain_from_pre_login(` 起，到该函数返回块结束、`async def _fallback_chain_after_verify_otp` 之前）整体替换为：
+当前 d7pay 实际没有旧 pre-login secondLogin chain 方法；直接在 `_pre_login_second_time_chain` 附近新增 `_try_secondlogin_fastpath`：
 
 ```python
     async def _try_secondlogin_fastpath(
@@ -330,12 +335,31 @@ Expected: FAIL — `AttributeError: 'EasyPaisa' object has no attribute '_try_se
         - None → 探测判定需重新上号，调用方回退 loginStep1
         """
         funcName = '_try_secondlogin_fastpath'
-        sl_result = await self._perform_second_login(session_data, with_pwd=True)
+        if not await self._hydrate_second_login_pin_from_db(session_data, bound_payment):
+            return None
+        sl_result = await self._call_second_login(session_data, with_pwd=True)
         outcome = sl_result.get('outcome')
 
         if outcome == 'success':
             self.logger.info(f'{self._log_key(funcName)} secondLogin 成功，续推 queryAccountList')
-            return await self._post_secondlogin_query_accts(redis_key, session_data)
+            qal_result = await self._call_query_account_list(session_data)
+            if qal_result.get('outcome') != 'success':
+                return None
+            await self._update_session_status(
+                redis_key,
+                session_data,
+                LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                {'account_entire': qal_result.get('accounts_json'), 'last_error': None},
+            )
+            return {
+                'status': 'success',
+                'message': '二次登录成功',
+                'data': {
+                    'id': session_data.get('id'),
+                    'next_step': 'select_accts',
+                    'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                },
+            }
 
         if outcome == 'needs_pin_change':
             session_data['status'] = LoginStatus.AWAITING_PIN_CHANGE
@@ -560,7 +584,7 @@ Expected: FAIL — 现 a9ed9428 代码调 `_send_otp` 而非 `_perform_loginstep
                         f'{self._log_key(funcName)} loginStep1 code=200 且本地指纹存在，'
                         f'服务端续推 upload_data/verifyFingerprint/secondLogin/queryAccountList'
                     )
-                    return await self._fallback_chain_after_verify_otp(redis_key, session_data, local_zip_path)
+                    return await self._reuse_local_fingerprint_after_otp(redis_key, session_data, local_zip_path)
 
                 result = {
                     'status': 'success',
@@ -863,18 +887,18 @@ git commit -m "test(easypaisa): loginStep1 error-code contract cases (501/423/re
 - [ ] **Step 1: 跑全量 easypaisa 套件，列出失败**
 
 Run: `(cd api && python3 -m pytest tests/ -q -k easypaisa)`
-Expected: 出现 FAIL，集中在引用已删除的 `_second_login_chain_from_pre_login` 或假定 `pre_login_http` 调 `_send_otp`/`_is_account_registered` 的旧用例（已知至少 `test_easypaisa_v19_pre_login.py::PreLoginV19Tests::test_wallet_offline_payment_id_can_start_relogin_session`）。
+Expected: 出现 FAIL，集中在引用旧 pre-login secondLogin chain 或假定 `pre_login_http` 调 `_send_otp`/`_is_account_registered` 的旧用例（已知至少 `test_easypaisa_v19_pre_login.py::PreLoginV19Tests::test_wallet_offline_payment_id_can_start_relogin_session`）。
 
 > **已知预存在失败（执行期实测确认）：** 以下 3 个 e2e 用例在 `a255f49e`（计划提交、实现开始前）即已 FAIL，根因是用户提交 `a9ed9428` 改写 pre_login 分流后这些 e2e fixture 未给 bound payment 提供 `pin`，触发 `pre_login_http` 抛 `NewApiError('Payment PIN missing for bound wallet')`。**非 T1/T2 引入的回归**，但 AC1 要求全绿，故必须在本任务一并修复：
 > - `test_easypaisa_v19_e2e.py::U3_SecondLoginDoesNotErrorTests::test_returns_ready_without_state_transition_error`
 > - `test_easypaisa_v19_e2e.py::U20_LocalZipMissingRoutesToFingerprintUpload::test_routes_to_fingerprint_reupload`
 > - `test_easypaisa_v19_e2e.py::U21_ResidualOtpVerifiedResumeTests::test_returns_resumed_envelope`
 >
-> 另：T2 已删除 `test_easypaisa_v19_pre_login.py` 中调用死方法的 `SecondLoginChainNoFingerprintPrefixTests`（commit `8b5fe78a`）；但 `test_easypaisa_v19_pre_login.py` 与 `test_easypaisa_business_flow_v2.py` 中仍有约 16 处 `ep._second_login_chain_from_pre_login = AsyncMock()` / `.assert_not_awaited()` 良性桩（当前因 MagicMock 自动建属性而 PASS），须在 Step 3 一并清理（AC6 要求全仓库零残留引用）。
+> 另：T2 已删除 `test_easypaisa_v19_pre_login.py` 中调用旧 pre-login secondLogin chain 的 `SecondLoginChainNoFingerprintPrefixTests`（commit `8b5fe78a`）；但 `test_easypaisa_v19_pre_login.py` 与 `test_easypaisa_business_flow_v2.py` 中仍有约 16 处旧链路良性桩（当前因 MagicMock 自动建属性而 PASS），须在 Step 3 一并清理（AC6 要求业务源码零残留引用）。
 
 - [ ] **Step 2: 修复 `test_wallet_offline_payment_id_can_start_relogin_session`**
 
-将该方法体替换为（去掉对 `_send_otp` / `_is_account_registered` / `_second_login_chain_from_pre_login` 的旧 mock 与断言，改用新分流符号；该用例的 `_check_payment` 返回 `wallet_status:0` 的 bound payment，故走 fastpath 回退 loginStep1）：
+将该方法体替换为（去掉对 `_send_otp` / `_is_account_registered` / 旧 pre-login secondLogin chain 的 mock 与断言，改用新分流符号；该用例的 `_check_payment` 返回 `wallet_status:0` 的 bound payment，故走 fastpath 回退 loginStep1）：
 
 ```python
     def test_wallet_offline_payment_id_can_start_relogin_session(self):
@@ -919,7 +943,7 @@ Expected: 出现 FAIL，集中在引用已删除的 `_second_login_chain_from_pr
 
 对 Step 1 列出的每个剩余 FAIL 套用以下规则：
 
-1. 断言/mock 引用 `_second_login_chain_from_pre_login` → 改为 `_try_secondlogin_fastpath`（含 Step 1 备注的约 16 处良性桩：`= AsyncMock()` / `.assert_not_awaited()`，逐处替换或删除，使全仓库 grep 该旧名零命中——AC6）。
+1. 断言/mock 引用旧 pre-login secondLogin chain → 改为 `_try_secondlogin_fastpath`（含 Step 1 备注的约 16 处良性桩：`= AsyncMock()` / `.assert_not_awaited()`，逐处替换或删除，使业务源码 grep 该旧名零命中——AC6）。
 2. 假定 `pre_login_http` 调 `_send_otp` → 改为 `_perform_loginstep1`（按 §4 outcome 形态返回 `{"outcome": ..., "code": ..., "message": ...}`）。
 3. 假定旧“新号 isAccountRegistered 分流” → 按 §3 新流程更新期望。
 4. **已知 3 个 e2e 用例**（U3 / U20 / U21，见 Step 1 备注）：根因是 fixture 的 bound payment 缺 `pin`，使 `pre_login_http` 在 §2 已绑定钱包 PIN 闸门处抛 `'Payment PIN missing for bound wallet'`。修复方式：在这些 e2e 用例构造 bound payment 的 fixture 处补 `"pin": "11223"`（与既有 `_make_easypaisa` 的 `fake_payment.pin` 一致），并按 §3 新分流更新断言（已绑定号先走 `_try_secondlogin_fastpath`；用例需 mock `_try_secondlogin_fastpath` / `_perform_loginstep1` 使其断言的目标流程成立）。逐个用例对照其原意（U3：secondLogin 成功不报状态机错误 → fastpath success 返回 ACCOUNT_SELECTION_REQUIRED；U20：本地 ZIP 缺失 → fastpath 回退 loginStep1 且 `_perform_loginstep1` 返回 `direct_success` 无本地指纹 → fingerprintUploadRequired；U21：残留 OTP_VERIFIED session 复用 → 走 `_check_residual_session` 路径，pin 闸门前即命中复用，确认补 pin 后断言仍成立）。
@@ -949,8 +973,8 @@ class BranchingInvariantTests(unittest.TestCase):
 
     def test_ac6_dead_chain_symbol_fully_removed(self):
         self.assertNotIn(
-            "_second_login_chain_from_pre_login", self.src,
-            "AC6: dead _second_login_chain_from_pre_login must be fully removed",
+            "旧 pre-login secondLogin chain symbol", self.src,
+            "AC6: dead pre-login secondLogin chain must be fully removed",
         )
 
     def test_ac2_pre_login_http_does_not_call_is_account_registered(self):
