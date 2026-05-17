@@ -55,6 +55,7 @@ async def test_force_terminal_returns_standard_envelope(ep_instance):
     assert result['message'] == 'custom msg'
     assert result['data']['code'] == 'SL_NEEDS_RELOGIN'
     assert result['data']['phase'] == LoginStatus.NEEDS_RELOGIN
+    assert result['data']['next_step'] == 'needs_relogin'
 
 
 @pytest.mark.asyncio

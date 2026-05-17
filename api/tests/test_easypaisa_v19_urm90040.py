@@ -65,7 +65,7 @@ async def test_urm90040_login_step1_direct_success_continues_fallback_chain(ep, 
         'message': 'fallback 续推成功',
         'data': {
             'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
-            'next_step': 'second_login',
+            'next_step': 'select_accts',
             'id': 533290,
         },
     })

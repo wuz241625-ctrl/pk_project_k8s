@@ -189,7 +189,7 @@ class PreLoginBranchingTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["data"]["phase"], LoginStatus.ACCOUNT_SELECTION_REQUIRED)
-            self.assertEqual(result["data"]["next_step"], "second_login")
+            self.assertEqual(result["data"]["next_step"], "select_accts")
             ep._call_upload_data.assert_awaited_once()
             ep._call_verify_fingerprint.assert_awaited_once()
             ep._call_second_login.assert_awaited_once()
@@ -226,7 +226,7 @@ class PreLoginBranchingTests(unittest.TestCase):
 
             self.assertEqual(result["status"], "success")
             self.assertEqual(result["data"]["phase"], LoginStatus.ACCOUNT_SELECTION_REQUIRED)
-            self.assertEqual(result["data"]["next_step"], "second_login")
+            self.assertEqual(result["data"]["next_step"], "select_accts")
             ep._call_upload_data.assert_awaited_once()
             ep._call_verify_fingerprint.assert_awaited_once()
             ep._call_second_login.assert_awaited_once()

@@ -580,6 +580,7 @@ class EasyPaisa:
             'data': {
                 'code': error_code,
                 'phase': LoginStatus.NEEDS_RELOGIN,
+                'next_step': self.NEXT_STEP_MAP[LoginStatus.NEEDS_RELOGIN],
             },
         }
 
@@ -591,6 +592,8 @@ class EasyPaisa:
         LoginStatus.FINGERPRINT_VERIFIED:       'second_login',
         LoginStatus.AWAITING_PIN_CHANGE:        'change_pin',
         LoginStatus.ACCOUNT_SELECTION_REQUIRED: 'select_accts',
+        LoginStatus.ACTIVE_SUCCESSFUL:          'ready',
+        LoginStatus.NEEDS_RELOGIN:              'needs_relogin',
     }
 
     async def _build_resumed_session_response(self, redis_key: str, session_data: dict) -> dict:
@@ -1198,7 +1201,7 @@ class EasyPaisa:
             'message': '二次上号续推成功',
             'data': {
                 'id': session_data['id'],
-                'next_step': 'second_login',
+                'next_step': 'select_accts',
                 'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
             },
         }
@@ -1950,7 +1953,7 @@ class EasyPaisa:
             'message': 'fallback 续推成功',
             'data': {
                 'id': session_data.get('id'),
-                'next_step': 'second_login',
+                'next_step': 'select_accts',
                 'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
             },
         }
@@ -1983,7 +1986,8 @@ class EasyPaisa:
             if cur_status in (LoginStatus.FINGERPRINT_VERIFIED, LoginStatus.ACCOUNT_SELECTION_REQUIRED,
                               LoginStatus.ACTIVE_SUCCESSFUL):
                 return {'status': 'success', 'message': '指纹已激活（幂等）',
-                        'data': {'ok': True, 'phase': 'fingerprintVerified'}}
+                        'data': {'ok': True, 'phase': cur_status,
+                                 'next_step': self.NEXT_STEP_MAP.get(cur_status, 'second_login')}}
             if cur_status != LoginStatus.OTP_VERIFIED:
                 raise NewApiError('INVALID_TRANSITION',
                                   f'verify_fingerprint expected OTP_VERIFIED, got {cur_status}')
@@ -2119,7 +2123,7 @@ class EasyPaisa:
                     'message': '二次登录已就绪（幂等）',
                     'data': {
                         'ok': True,
-                        'next_step': 'query_accts',
+                        'next_step': self.NEXT_STEP_MAP.get(cur, 'select_accts'),
                         'phase': cur,
                     },
                 }
@@ -2191,7 +2195,7 @@ class EasyPaisa:
                 'message': '二次登录成功',
                 'data': {
                     'ok': True,
-                    'next_step': 'query_accts',
+                    'next_step': 'select_accts',
                     'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
                 },
             }

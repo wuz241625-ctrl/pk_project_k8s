@@ -91,7 +91,7 @@ async def test_u2_second_time_login_success(ep_mock, tmp_path):
         'pre_login_easypaisa_533264', session_data, bound_payment
     )
     assert result['status'] == 'success'
-    assert result['data']['next_step'] == 'second_login'
+    assert result['data']['next_step'] == 'select_accts'
     assert session_data['status'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
     args, kwargs = ep_mock._call_second_login.await_args
     assert kwargs.get('with_pwd') is True
@@ -277,7 +277,7 @@ async def test_second_login_idempotent_after_pre_login_chain(ep_mock):
 
     assert result['status'] == 'success'
     assert result['data']['ok'] is True
-    assert result['data']['next_step'] == 'query_accts'
+    assert result['data']['next_step'] == 'select_accts'
     assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
 
 
@@ -440,7 +440,7 @@ async def test_pre_login_second_time_chain_skips_upload_and_verify_fingerprint(e
     )
 
     assert result['status'] == 'success'
-    assert result['data']['next_step'] == 'second_login'
+    assert result['data']['next_step'] == 'select_accts'
     assert session_data['status'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
     # 验证 0 次调用
     ep_mock._call_upload_data.assert_not_awaited()

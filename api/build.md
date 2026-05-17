@@ -52,6 +52,22 @@ python3 -m py_compile application/app/login/banks/easypaisa.py
 - `loginStep1 direct_success + local_zip_path` 不再调用缺失的 `_fallback_chain_after_verify_otp`。
 - 旧 ZIP 被拒绝时返回 `next_step=upload_fingerprint`。
 
+## EasyPaisa 状态响应闭环验收
+
+EasyPaisa 所有接口返回的 `phase` 与 `next_step` 必须能直接指导 App 下一步动作。`ACCOUNT_SELECTION_REQUIRED` 统一进入 `select_accts`，`NEEDS_RELOGIN` 统一进入 `needs_relogin`。
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_force_terminal.py tests/test_easypaisa_v19_fingerprint.py tests/test_easypaisa_v19_acceptance.py tests/test_easypaisa_v19_pre_login_branching.py tests/test_easypaisa_v19_urm90040.py -q
+python3 -m py_compile application/app/login/banks/easypaisa.py
+```
+
+验收重点：
+
+- `ACCOUNT_SELECTION_REQUIRED` 成功响应返回 `next_step=select_accts`。
+- `verify_fingerprint_http` 幂等响应返回真实 `phase`。
+- `needsRelogin` 响应返回 `next_step=needs_relogin`。
+
 ## EasyPaisa secondLogin 数据库 PIN 验收
 
 普通 `secondLogin` 需要带 `pwd`，但除 `change_pin` 外，`pwd` 必须从数据库 `payment.pin` 读取，不信任 App 请求里的 `pin/pwd`。

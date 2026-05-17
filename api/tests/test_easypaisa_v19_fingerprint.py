@@ -188,3 +188,33 @@ async def test_upload_fingerprint_stores_pending_zip_with_binary_redis(tmp_path)
     assert result['status'] == 'success'
     binary_redis.setex.assert_awaited_once_with('easypaisa:pending_fp:1', 600, zip_body)
     decoded_redis.setex.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_verify_fingerprint_idempotent_preserves_account_selection_phase(ep_fp):
+    """已进入选账户状态时重复 verify_fingerprint 不能降回 fingerprintVerified。"""
+    session = {
+        'id': 1,
+        'phone': '03445021275',
+        'bankname': 'easypaisa',
+        'status': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+        'status_history': [LoginStatus.OTP_VERIFIED, LoginStatus.ACCOUNT_SELECTION_REQUIRED],
+    }
+    ep_fp._resolve_session_context = AsyncMock(return_value={
+        'redis_key': 'k',
+        'session_data': session,
+        'resolved_payment_id': 1,
+    })
+    ep_fp._get_payment_interface_lock = AsyncMock(
+        return_value={'lock_id': 'lock', 'lock_value': 'value'}
+    )
+    ep_fp._release_payment_interface_lock = AsyncMock(return_value=True)
+
+    result = await ep_fp.verify_fingerprint_http({
+        'bankname': 'easypaisa',
+        'payment_id': 1,
+    })
+
+    assert result['status'] == 'success'
+    assert result['data']['phase'] == LoginStatus.ACCOUNT_SELECTION_REQUIRED
+    assert result['data']['next_step'] == 'select_accts'

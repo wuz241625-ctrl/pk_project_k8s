@@ -1,5 +1,34 @@
 # API 排错记录
 
+## 0.16 EasyPaisa 状态响应 envelope 不闭环
+
+现象：
+
+- `ACCOUNT_SELECTION_REQUIRED` 有些接口返回 `next_step=select_accts`，有些返回 `second_login` 或 `query_accts`。
+- `verify_fingerprint_http` 幂等短路在真实状态已经是 `ACCOUNT_SELECTION_REQUIRED` / `ACTIVE_SUCCESSFUL` 时，仍返回 `phase=fingerprintVerified`。
+- `_force_terminal_needs_relogin()` 直返没有 `next_step=needs_relogin`。
+
+根因：
+
+- 状态机邻接表已经收敛，但多个入口各自手写 response envelope。
+- 历史上 `query_accts` 和 `second_login` 曾作为中间下一步返回，后续自动续推到 `ACCOUNT_SELECTION_REQUIRED` 后没有同步改响应。
+
+处理：
+
+- 扩展 `NEXT_STEP_MAP`，补齐 `activeSuccessful -> ready` 与 `needsRelogin -> needs_relogin`。
+- 所有 `ACCOUNT_SELECTION_REQUIRED` 成功响应统一返回 `next_step=select_accts`。
+- `verify_fingerprint_http` 幂等短路返回真实 phase 和对应 next_step。
+- `_force_terminal_needs_relogin()` 返回 `next_step=needs_relogin`。
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_force_terminal.py tests/test_easypaisa_v19_fingerprint.py tests/test_easypaisa_v19_acceptance.py tests/test_easypaisa_v19_pre_login_branching.py tests/test_easypaisa_v19_urm90040.py -q
+python3 -m pytest tests/ -q -k easypaisa
+python3 -m py_compile application/app/login/banks/easypaisa.py
+```
+
 ## 0.15 EasyPaisa 已绑定账号旧指纹没有被复用
 
 现象：
