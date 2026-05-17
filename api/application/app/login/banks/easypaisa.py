@@ -1543,6 +1543,7 @@ class EasyPaisa:
                     'code': 'SL_COOLDOWN',
                     'cd_until': sl.get('cd_until', 0),
                     'phase': LoginStatus.OTP_VERIFIED,
+                    'next_step': 'upload_fingerprint',
                     'id': session_data.get('id'),
                 },
             }
@@ -1604,6 +1605,7 @@ class EasyPaisa:
             'message': '登录成功，请继续上传指纹',
             'data': {
                 'next_phase': 'fingerprintUploadRequired',
+                'next_step': 'upload_fingerprint',
                 'payment_id': real_payment_id,
                 'previous_payment_id': old_payment_id,
                 'phase': LoginStatus.OTP_VERIFIED,
@@ -1824,6 +1826,7 @@ class EasyPaisa:
                 'message': 'OTP 验证成功',
                 'data': {
                     'next_phase': 'fingerprintUploadRequired',
+                    'next_step': 'upload_fingerprint',
                     'payment_id': real_payment_id,
                     'previous_payment_id': old_payment_id,
                     'phase': LoginStatus.OTP_VERIFIED,
@@ -1872,6 +1875,7 @@ class EasyPaisa:
                 'status': 'error',
                 'message': '上传指纹失败',
                 'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'next_step': 'upload_fingerprint',
                          'phase': LoginStatus.OTP_VERIFIED,
                          'id': payment_id},
             }
@@ -1883,6 +1887,7 @@ class EasyPaisa:
                 'status': 'error',
                 'message': '指纹验证被拒',
                 'data': {'next_phase': 'fingerprintUploadRequired', 'code': 'FP_UPSTREAM_REJECTED',
+                         'next_step': 'upload_fingerprint',
                          'phase': LoginStatus.OTP_VERIFIED,
                          'id': payment_id},
             }
@@ -1917,6 +1922,7 @@ class EasyPaisa:
                 'status': 'error',
                 'message': 'secondLogin 冷却中',
                 'data': {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until', 0),
+                         'next_step': 'upload_fingerprint',
                          'phase': LoginStatus.OTP_VERIFIED,
                          'id': payment_id},
             }
@@ -2018,6 +2024,7 @@ class EasyPaisa:
                     'status': 'error',
                     'message': '当前处于冷却期',
                     'data': {'code': 'FP_COOLDOWN', 'cd_until': fp.get('cd_until', 0),
+                             'next_step': 'upload_fingerprint',
                              'phase': LoginStatus.OTP_VERIFIED},
                 }
             if fp.get('outcome') == 'session_expired':
@@ -2049,7 +2056,8 @@ class EasyPaisa:
                 return {
                     'status': 'error',
                     'message': '本地保存失败',
-                    'data': {'code': 'SL_UPSTREAM_ERROR', 'phase': LoginStatus.OTP_VERIFIED},
+                    'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'upload_fingerprint',
+                             'phase': LoginStatus.OTP_VERIFIED},
                 }
             # MySQL 写入成功才 atomic rename，失败回滚删 .new
             try:
@@ -2066,7 +2074,8 @@ class EasyPaisa:
                 return {
                     'status': 'error',
                     'message': 'MySQL 写入失败',
-                    'data': {'code': 'SL_UPSTREAM_ERROR', 'phase': LoginStatus.OTP_VERIFIED},
+                    'data': {'code': 'SL_UPSTREAM_ERROR', 'next_step': 'upload_fingerprint',
+                             'phase': LoginStatus.OTP_VERIFIED},
                 }
             os.rename(tmp_path, full_path)  # atomic 替换老 ZIP
             await self.redis.delete(pending_key)
@@ -2077,7 +2086,7 @@ class EasyPaisa:
             return {
                 'status': 'success',
                 'message': '指纹验证成功',
-                'data': {'ok': True, 'phase': 'fingerprintVerified'},
+                'data': {'ok': True, 'phase': 'fingerprintVerified', 'next_step': 'second_login'},
             }
         except NewApiError:
             raise
@@ -2163,6 +2172,7 @@ class EasyPaisa:
                     'status': 'error',
                     'message': '当前处于冷却期',
                     'data': {'code': 'SL_COOLDOWN', 'cd_until': sl.get('cd_until'),
+                             'next_step': 'second_login',
                              'phase': LoginStatus.FINGERPRINT_VERIFIED},
                 }
             if outcome == 'session_expired':
@@ -2287,6 +2297,7 @@ class EasyPaisa:
                     'message': e.message or 'PIN 修改被拒绝',
                     'data': {
                         'code': 'PIN_CHANGE_REJECTED',
+                        'next_step': 'change_pin',
                         'phase': LoginStatus.AWAITING_PIN_CHANGE,
                         'maximum': PIN_CHANGE_ATTEMPTS_MAXIMUM,
                         'current': session_pin_times,
@@ -2456,6 +2467,7 @@ class EasyPaisa:
                     'account_selected': session_data.get('account_accno', ''),
                     'account_entire': active,
                     'phase': LoginStatus.ACCOUNT_SELECTION_REQUIRED,
+                    'next_step': 'select_accts',
                 },
             }
         except NewApiError:
@@ -2666,6 +2678,7 @@ class EasyPaisa:
                 'status': 'success',
                 'data': {
                     'phase': LoginStatus.ACTIVE_SUCCESSFUL,
+                    'next_step': 'ready',
                 }
             }
             self.logger.info(f'{self._log_key(funcName)} 返回结果: {result}')
@@ -3154,6 +3167,7 @@ class EasyPaisa:
                     'data': {
                         'code': 'SL_UPSTREAM_ERROR',
                         'phase': 'failed',
+                        'next_step': 'pre_login',
                     }
                 }
             new_session = {
@@ -3187,6 +3201,7 @@ class EasyPaisa:
                 'data': {
                     'code': 'SL_RESTARTED',
                     'phase': 'otpSent',
+                    'next_step': 'verify_otp',
                 }
             }
         except Exception as e:
@@ -3200,6 +3215,7 @@ class EasyPaisa:
                 'data': {
                     'code': 'SL_UPSTREAM_ERROR',
                     'phase': 'failed',
+                    'next_step': 'pre_login',
                 }
             }
     def _get_payment_fingerprint_path(self, payment_id):

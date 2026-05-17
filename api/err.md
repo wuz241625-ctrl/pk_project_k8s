@@ -1,5 +1,36 @@
 # API 排错记录
 
+## 0.17 EasyPaisa phase 响应缺少 next_step
+
+现象：
+
+- 部分 EasyPaisa 返回体只有 `phase` 或 `next_phase`，没有 `next_step`。
+- 典型路径包括首次 OTP 成功、loginStep1 direct success、verify_fingerprint 成功、cooldown、本地保存失败、PIN 修改拒绝、query/select accounts 成功和历史 fallback。
+- App 在这些路径需要自己推断下一步，和状态响应闭环目标不一致。
+
+根因：
+
+- 多个接口手写 response envelope，前一轮只收敛了 `ACCOUNT_SELECTION_REQUIRED`、`ACTIVE_SUCCESSFUL` 幂等和 `NEEDS_RELOGIN` 直返。
+- 一些边缘错误路径和历史辅助方法仍保留旧 envelope。
+
+处理：
+
+- 新增 `test_easypaisa_v19_envelope_next_step.py`，用 AST 扫描守护：只要 `data` 中含 `phase` 或 `next_phase`，就必须含 `next_step`。
+- 给 `OTP_VERIFIED` 返回补 `next_step=upload_fingerprint`。
+- 给 `FINGERPRINT_VERIFIED` 返回补 `next_step=second_login`。
+- 给 `ACCOUNT_SELECTION_REQUIRED` 返回补 `next_step=select_accts`。
+- 给 `ACTIVE_SUCCESSFUL` 返回补 `next_step=ready`。
+- 给历史 fallback 的 `otpSent/failed` 返回补 `verify_otp/pre_login`。
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_envelope_next_step.py -q
+python3 -m pytest tests/ -q -k easypaisa
+python3 -m py_compile application/app/login/banks/easypaisa.py
+```
+
 ## 0.16 EasyPaisa 状态响应 envelope 不闭环
 
 现象：

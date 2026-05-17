@@ -137,6 +137,8 @@ async def test_verify_fingerprint_reads_pending_zip_from_binary_redis(tmp_path):
     })
 
     assert result['status'] == 'success'
+    assert result['data']['phase'] == LoginStatus.FINGERPRINT_VERIFIED
+    assert result['data']['next_step'] == 'second_login'
     ep._call_upload_data_bytes.assert_awaited_once_with(session, zip_body)
     binary_redis.get.assert_awaited_once_with('easypaisa:pending_fp:1')
     decoded_redis.get.assert_not_called()

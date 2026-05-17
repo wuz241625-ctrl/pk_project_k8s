@@ -58,15 +58,18 @@ EasyPaisa 所有接口返回的 `phase` 与 `next_step` 必须能直接指导 Ap
 
 ```bash
 cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_v19_envelope_next_step.py -q
 python3 -m pytest tests/test_easypaisa_v19_force_terminal.py tests/test_easypaisa_v19_fingerprint.py tests/test_easypaisa_v19_acceptance.py tests/test_easypaisa_v19_pre_login_branching.py tests/test_easypaisa_v19_urm90040.py -q
 python3 -m py_compile application/app/login/banks/easypaisa.py
 ```
 
 验收重点：
 
+- 任意 EasyPaisa 返回体只要 `data` 含 `phase` 或 `next_phase`，必须同时含 `next_step`。
 - `ACCOUNT_SELECTION_REQUIRED` 成功响应返回 `next_step=select_accts`。
 - `verify_fingerprint_http` 幂等响应返回真实 `phase`。
 - `needsRelogin` 响应返回 `next_step=needs_relogin`。
+- `activeSuccessful` 响应返回 `next_step=ready`。
 
 ## EasyPaisa secondLogin 数据库 PIN 验收
 

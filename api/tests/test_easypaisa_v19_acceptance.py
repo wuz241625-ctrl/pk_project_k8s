@@ -147,6 +147,7 @@ async def test_send_otp_http_direct_login_routes_to_fingerprint_upload(ep_mock):
 
     assert result['status'] == 'success'
     assert result['data']['next_phase'] == 'fingerprintUploadRequired'
+    assert result['data']['next_step'] == 'upload_fingerprint'
     assert result['data']['phase'] == LoginStatus.OTP_VERIFIED
     assert result['data']['payment_id'] == 533999
     assert session['status'] == LoginStatus.OTP_VERIFIED
@@ -305,6 +306,7 @@ async def test_second_login_idempotent_after_active(ep_mock):
 
     assert result['status'] == 'success'
     assert result['data']['phase'] == LoginStatus.ACTIVE_SUCCESSFUL
+    assert result['data']['next_step'] == 'ready'
 
 
 @pytest.mark.asyncio
