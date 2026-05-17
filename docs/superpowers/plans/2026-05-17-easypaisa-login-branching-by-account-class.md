@@ -1043,7 +1043,7 @@ git commit -m "chore(easypaisa): finalize account-class branching (AC1-AC6 green
 
 - 当前仓库没有 `api/tests/test_easypaisa_v19_pre_login.py`、`test_easypaisa_v19_second_login.py`、`test_easypaisa_business_flow_v2.py`，对应覆盖落到新增 `test_easypaisa_v19_pre_login_branching.py` 与既有 `test_easypaisa_v19_acceptance.py`。
 - 当前仓库没有 `_second_login_chain_from_pre_login` / `_post_secondlogin_query_accts`；新增 `_try_secondlogin_fastpath` 直接复用 `_call_second_login(with_pwd=True)`、`_call_query_account_list`、`_update_session_status`。旧 `_pre_login_second_time_chain` 保留但不再由 `pre_login_http` 调用。
-- `TimeOutGuard` 是 d7pay 既有回归测试依赖的兼容类，执行全量 easypaisa 验收时发现当前 `api/jobs/time_out.py` 缺失，已按历史实现恢复。
+- `TimeOutGuard` 曾作为 d7pay 既有回归测试依赖被临时恢复；后续确认 timeout jobs 已由 `/Users/tear/pk-go-worker` 接管，因此兼容类与旧语义测试已在 `2026-05-17-timeoutguard-retirement.md` 中退役。
 
 完成项：
 

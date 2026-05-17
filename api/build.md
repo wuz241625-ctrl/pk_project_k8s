@@ -18,6 +18,23 @@
 PYTHONPATH=api python3 -m py_compile main.py router.py router_lakshmi.py application/jazzcash_gateway.py application/pay/pay.py application/pay/order.py application/pay/thirdPart.py application/app/login/banks/easypaisa.py application/app/login/banks/jazzcash.py jobs/pakistanpay_v2.py jobs/easypaisa/auto_payout.py jobs/easypaisa/easypaisa_monitor.py jobs/jazzcash/jazzcash_auto_payout.py jobs/jazzcash/jazzcash_monitor.py jobs/Jazzcashpay_v2.py
 ```
 
+## Timeout job owner 检查
+
+D7pay timeout jobs 由 `/Users/tear/pk-go-worker` 承接。API Pod 不应恢复 Python `TimeOutGuard` 兼容类。
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_timeout_guard.py -q
+
+cd /Users/tear/pk-go-worker
+go test ./internal/timeout ./tasks
+```
+
+验收重点：
+
+- `api/jobs/time_out.py` 不包含 `class TimeOutGuard`。
+- Go worker 注册 `timeout:collect_order` 与 `timeout:payout_claim` handler。
+
 ## EasyPaisa secondLogin 数据库 PIN 验收
 
 普通 `secondLogin` 需要带 `pwd`，但除 `change_pin` 外，`pwd` 必须从数据库 `payment.pin` 读取，不信任 App 请求里的 `pin/pwd`。

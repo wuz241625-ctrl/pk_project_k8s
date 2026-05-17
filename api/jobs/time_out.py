@@ -21,31 +21,6 @@ logger.addHandler(fh)
 conf = get_config()
 
 
-class TimeOutGuard:
-    """运行态银行回压校验器。"""
-    EASYPAISA_INDEX_DISPATCH_DS = "easypaisa_runtime:index:dispatch_ds"
-    INDEX_DISPATCH_DS = EASYPAISA_INDEX_DISPATCH_DS
-    JAZZCASH_INDEX_DISPATCH_DS = "jazzcash_runtime:index:dispatch_ds"
-
-    def __init__(self, redis_client):
-        self.redis = redis_client
-
-    @staticmethod
-    def _is_easypaisa(bank_type_id=None, bank_type=None) -> bool:
-        return str(bank_type_id or "") == "97" or str(bank_type or "") == "97"
-
-    @staticmethod
-    def _is_jazzcash(bank_type_id=None, bank_type=None) -> bool:
-        return str(bank_type_id or "") == "98" or str(bank_type or "") == "98"
-
-    def check(self, payment_id, bank_type_id=None, bank_type=None) -> bool:
-        if self._is_easypaisa(bank_type_id=bank_type_id, bank_type=bank_type):
-            return bool(self.redis.sismember(self.EASYPAISA_INDEX_DISPATCH_DS, str(payment_id)))
-        if self._is_jazzcash(bank_type_id=bank_type_id, bank_type=bank_type):
-            return bool(self.redis.sismember(self.JAZZCASH_INDEX_DISPATCH_DS, str(payment_id)))
-        return True
-
-
 def main():
     try:
         connection = pymysql.connect(host=conf['mysql_host'],

@@ -143,5 +143,5 @@ pre_login_http (session 已建)
 
 - 新增测试：`test_easypaisa_v19_loginstep1_classifier.py`、`test_easypaisa_v19_fastpath.py`、`test_easypaisa_v19_pre_login_branching.py`、`test_easypaisa_v19_branching_invariants.py`。
 - 回归适配：`test_pre_login_ignores_cloud_registration_probe_and_uses_loginstep1` 明确断言 `pre_login_http` 不再调用 `_is_account_registered`。
-- 兼容修复：恢复 `jobs/time_out.py::TimeOutGuard`，用于通过现有 EasyPaisa timeout guard 回归。
+- 后续清理：`TimeOutGuard` 已确认由 `/Users/tear/pk-go-worker` 的 timeout jobs 接管，兼容类和旧语义测试已退役；见 `2026-05-17-timeoutguard-retirement-design.md`。
 - 验收命令：`cd api && python3 -m pytest tests/ -q -k easypaisa`，结果 `153 passed, 152 deselected`。

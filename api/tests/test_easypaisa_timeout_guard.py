@@ -1,44 +1,29 @@
-import os
-import sys
 import unittest
+from pathlib import Path
 
 
-CURRENT_DIR = os.path.dirname(__file__)
-API_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
-JOBS_ROOT = os.path.join(API_ROOT, "jobs")
-for path in (API_ROOT, JOBS_ROOT):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+API_ROOT = REPO_ROOT / "api"
+GO_WORKER_ROOT = Path("/Users/tear/pk-go-worker")
 
 
-class FakeRedis:
-    def __init__(self):
-        self.sets = {}
+class EasyPaisaTimeOutGuardRetirementTests(unittest.TestCase):
+    def test_python_timeout_guard_class_is_retired(self):
+        source = (API_ROOT / "jobs" / "time_out.py").read_text(encoding="utf-8")
 
-    def sadd(self, key, value):
-        self.sets.setdefault(key, set()).add(str(value))
+        self.assertNotIn("class " + "TimeOutGuard", source)
+        self.assertNotIn("INDEX_" + "DISPATCH_DS", source)
 
-    def sismember(self, key, value):
-        return str(value) in self.sets.get(key, set())
+    def test_go_worker_timeout_handlers_are_documented_owner(self):
+        readme = (GO_WORKER_ROOT / "README.md").read_text(encoding="utf-8")
+        task_types = (GO_WORKER_ROOT / "tasks" / "types.go").read_text(encoding="utf-8")
+        main = (GO_WORKER_ROOT / "cmd" / "worker" / "main.go").read_text(encoding="utf-8")
 
-
-class EasyPaisaTimeOutGuardTests(unittest.TestCase):
-    def test_bank_type_field_also_routes_to_mysql_dispatch_state(self):
-        from time_out import TimeOutGuard
-
-        redis = FakeRedis()
-        guard = TimeOutGuard(redis)
-
-        self.assertFalse(guard.check(533280, bank_type_id=14, bank_type=97))
-        redis.sadd(TimeOutGuard.INDEX_DISPATCH_DS, 533280)
-        self.assertTrue(guard.check(533280, bank_type_id=14, bank_type=97))
-
-    def test_non_easypaisa_still_allows_legacy_requeue(self):
-        from time_out import TimeOutGuard
-
-        guard = TimeOutGuard(FakeRedis())
-
-        self.assertTrue(guard.check(888888, bank_type_id=14, bank_type=14))
+        self.assertIn("timeout:collect_order", readme)
+        self.assertIn("TypeCollectOrderTimeout", task_types)
+        self.assertIn("timeout:collect_order", task_types)
+        self.assertIn("mux.HandleFunc(tasks.TypeCollectOrderTimeout", main)
+        self.assertIn("mux.HandleFunc(tasks.TypePayoutClaimTimeout", main)
 
 
 if __name__ == "__main__":

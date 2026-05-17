@@ -1,5 +1,32 @@
 # API 排错记录
 
+## 0.14 TimeOutGuard 不应恢复到 Python timeout job
+
+现象：
+
+- API EasyPaisa 回归曾依赖 `api/jobs/time_out.py::TimeOutGuard`。
+- 业务 jobs 已迁到 `/Users/tear/pk-go-worker` 后，继续保留该兼容类会误导后续同步把旧 Redis 回压逻辑带回。
+
+根因：
+
+- Python `time_out.py` 已不再是在线 timeout job owner。
+- 当前 timeout 任务类型由 Go worker 负责：`timeout:collect_order` 与 `timeout:payout_claim`。
+
+处理：
+
+- 删除 `api/jobs/time_out.py::TimeOutGuard` 兼容类。
+- 将 `api/tests/test_easypaisa_timeout_guard.py` 改为退役守护，断言 Python 旧脚本不再定义该类，并校验 Go worker timeout handler 注册。
+
+验证：
+
+```bash
+cd /Users/tear/pk_project_k8s/api
+python3 -m pytest tests/test_easypaisa_timeout_guard.py -q
+
+cd /Users/tear/pk-go-worker
+go test ./internal/timeout ./tasks
+```
+
 ## 0.13 EasyPaisa isAccountRegistered 403/false 被误判为上游异常
 
 现象：
