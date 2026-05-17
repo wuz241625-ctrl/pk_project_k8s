@@ -4,7 +4,7 @@
 
 **Goal:** 把 `pre_login_http` 改为按账号类别分流——已绑定 Payment 走 secondLogin-first（失败回退 loginStep1），新号走 loginStep1-first，硬性不再用 `isAccountRegistered` 做分流，并加固 loginStep1 非 100/200 返回码。
 
-**Architecture:** 新增两个 outcome 风格的辅助方法 `_perform_loginstep1`（loginStep1 非 raise 分类器）与 `_try_secondlogin_fastpath`（已绑定号 secondLogin 探测，复用既有 `_post_secondlogin_query_accts`）。`pre_login_http` 写完 session 后：`bound_payment` 命中先试 fastpath，命中即返回、否则回退 loginStep1；新号直接 loginStep1。死代码 `_second_login_chain_from_pre_login` 被 `_try_secondlogin_fastpath` 取代删除。
+**Architecture:** 新增两个 outcome 风格的辅助方法 `_perform_loginstep1`（loginStep1 非 raise 分类器）与 `_try_secondlogin_fastpath`（已绑定号 secondLogin 探测，复用当前已有 `_call_second_login(with_pwd=True)`、`_call_query_account_list`、`_update_session_status`）。`pre_login_http` 写完 session 后：`bound_payment` 命中先试 fastpath，命中即返回、否则回退 loginStep1；新号直接 loginStep1。当前 d7pay 没有 `_post_secondlogin_query_accts` 或 `_second_login_chain_from_pre_login`，旧 `_pre_login_second_time_chain` 仅作为历史辅助保留，不再由 `pre_login_http` 调用。
 
 **Tech Stack:** Python 3 / asyncio、`unittest` + `unittest.mock`、pytest 运行；改动单文件 `api/application/app/login/banks/easypaisa.py` 及 `api/tests/` 测试。
 
@@ -192,10 +192,12 @@ git commit -m "feat(easypaisa): add _perform_loginstep1 non-raising classifier"
 
 ---
 
-### Task 2: 用 `_try_secondlogin_fastpath` 取代死代码 `_second_login_chain_from_pre_login`
+### Task 2: 用 `_try_secondlogin_fastpath` 落地已绑定账号 fastpath
+
+> 落地差异说明：迁入计划早期版本提到替换 `_second_login_chain_from_pre_login`、复用 `_post_secondlogin_query_accts`。当前 d7pay 仓库实际没有这两个符号；实现直接新增 `_try_secondlogin_fastpath` 并复用 `_call_second_login(with_pwd=True)`、`_call_query_account_list`、`_update_session_status`。以下历史步骤只保留当时 TDD 设计脉络，不作为当前代码定位依据。
 
 **Files:**
-- Modify: `api/application/app/login/banks/easypaisa.py`（整体替换方法 `_second_login_chain_from_pre_login`；定位：`grep -n "async def _second_login_chain_from_pre_login" api/application/app/login/banks/easypaisa.py`，替换从该 `async def` 行到其函数体最后一行 `'id': session_data.get('id'),` 所在 return 块结束，即下一处 `async def _fallback_chain_after_verify_otp` 之前的全部内容）
+- Modify: `api/application/app/login/banks/easypaisa.py`（当前落地为新增 `_try_secondlogin_fastpath`；不存在 `_second_login_chain_from_pre_login`、`_post_secondlogin_query_accts` 或 `_fallback_chain_after_verify_otp`）
 - Test: `api/tests/test_easypaisa_v19_fastpath.py`（新建）
 
 - [ ] **Step 1: 写失败测试**

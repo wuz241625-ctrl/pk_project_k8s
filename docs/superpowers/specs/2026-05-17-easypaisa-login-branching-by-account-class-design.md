@@ -70,19 +70,19 @@ pre_login_http (session 已建)
         └─ 403/500/503 → 带 code 干净错误（状态留 PRE_LOGIN_CREATED）
 ```
 
-不变量：secondLogin 快路径任何非 `success/needs_pin_change/cooldown` 的结果都**不杀 session**，而是落到 loginStep1 重新上号。这替代了旧 `_urm90040_fallback_from_pre_login` 在 pre_login 链中的内部发 OTP hack（该函数在下游路径仍保留，见 §4）。
+不变量：secondLogin 快路径任何非 `success/needs_pin_change/cooldown` 的结果都**不杀 session**，而是落到 loginStep1 重新上号。这替代了旧 pre_login 链中的内部 URM90040 发 OTP hack；当前 d7pay 代码没有 `_urm90040_fallback_from_pre_login`，下游保留的是 `_urm90040_fallback` 与 `_verify_otp_fallback_chain`。
 
 ## 4. 组件改动
 
 | 组件 | 类型 | 说明 |
 |---|---|---|
-| `_try_secondlogin_fastpath(redis_key, session_data, bound_payment)` | 新增 fastpath | 当前仓库没有 `_post_secondlogin_query_accts`，落地实现复用既有 `_call_second_login(with_pwd=True)` + `_call_query_account_list` + `_update_session_status`。`success`→`ACCOUNT_SELECTION_REQUIRED`；`needs_pin_change`→AWAITING_PIN_CHANGE 信封；`cooldown`→SL_COOLDOWN 信封；其他一切（needs_relogin/session_expired/URM90040/upstream_error/queryAccountList失败）→返回哨兵 `None`，由调用方落 loginStep1。**不**再调 `_force_terminal_needs_relogin` / `_urm90040_fallback_from_pre_login`。 |
+| `_try_secondlogin_fastpath(redis_key, session_data, bound_payment)` | 新增 fastpath | 当前仓库没有 `_post_secondlogin_query_accts`，落地实现复用既有 `_call_second_login(with_pwd=True)` + `_call_query_account_list` + `_update_session_status`。`success`→`ACCOUNT_SELECTION_REQUIRED`；`needs_pin_change`→AWAITING_PIN_CHANGE 信封；`cooldown`→SL_COOLDOWN 信封；其他一切（needs_relogin/session_expired/URM90040/upstream_error/queryAccountList失败）→返回哨兵 `None`，由调用方落 loginStep1。**不**再调 `_force_terminal_needs_relogin`；也不存在旧 `_urm90040_fallback_from_pre_login`。 |
 | `_perform_loginstep1(session_data)` | 新增 | 平行 `_perform_second_login` 的 outcome 模式。复用 `_build_send_otp_request` + `_decode_indus_response`，**不 raise**，返回 `{'outcome': 'direct_success'｜'otp_sent'｜'offline_501'｜'server_busy'｜'rejected'｜'network_error', 'code': int, 'message': str}`。`code==501` 时内部仍调 `_mark_payment_official_501_offline`。 |
-| `_send_otp` | 不动 | 仍服务 `send_otp_http`（重发节流）与 `_urm90040_fallback_from_pre_login` 内部发 OTP。零回归。 |
+| `_send_otp` | 不动 | 仍服务 `send_otp_http`（重发节流）与 `_urm90040_fallback` 内部发 OTP。零回归。 |
 | `pre_login_http` 分流块（约 1865–1986 行） | 重写 | 按 §3 账号类别分流编排。loginStep1 的 200/100 happy path 逻辑与 a9ed9428 等价保留（save_payment、redis_key 迁移、双锁、续推链 / fingerprintUploadRequired 信封不变），仅把“非 100/200 → raise SendOTPFail”换成 `_perform_loginstep1` 的 outcome 分支。 |
 | `_second_login_chain_from_pre_login` | 消除 | a9ed9428 后唯一调用点已删，现为死代码（已 grep 确认仅自身定义）。改造为 `_try_secondlogin_fastpath`，不保留旧名。 |
 
-下游 URM90040 兜底不动：`_urm90040_fallback_from_pre_login` 仍被 `_fallback_chain_after_verify_otp`、`second_login_http`、`change_pin_http` 调用，本次不触碰。
+下游 URM90040 兜底不动：当前 d7pay 实际入口是 `_urm90040_fallback`，由 `_try_secondlogin_fastpath` / `_verify_otp_fallback_chain` 等链路在需要时触发；当前代码没有 `_fallback_chain_after_verify_otp`、`_urm90040_fallback_from_pre_login`、`_second_login_chain_from_pre_login` 或 `_post_secondlogin_query_accts`。
 
 > 落地记录（2026-05-17）：当前 d7pay 仓库实际保留的是旧辅助 `_pre_login_second_time_chain`，没有 `_second_login_chain_from_pre_login` 和 `_post_secondlogin_query_accts`。本次未删除 `_pre_login_second_time_chain`，只让 `pre_login_http` 不再调用它，避免扩大既有下游测试/历史辅助的变更面；AC2/AC6 由 `test_easypaisa_v19_branching_invariants.py` 守护。
 
@@ -137,7 +137,7 @@ pre_login_http (session 已建)
 
 - 假设：secondLogin 对已绑定账号的返回码语义符合 EasyPaisa v2.2 文档与现有 `_perform_second_login`（4015 行）的 outcome 映射。验收以 mock 单元/集成测试为准（用户已确认 e2e 不在本次验收范围）。
 - 风险：loginStep1 对健康号返回 200 的比例只影响“secondLogin 探测判定重上号后的回退路径”及新号上号体验；已绑定健康号走 secondLogin-first 零打扰，不依赖该比例。若比例显著偏低，仅回退/新号路径更多走 OTP，降级影响有限且可观测。
-- 范围边界：不改 `_send_otp`、不改下游 `_urm90040_fallback_from_pre_login`、不改 `STATUS_TRANSITIONS`、不改 verify_otp/verify_fingerprint/second_login/change_pin/select_accts 的对外契约。
+- 范围边界：不改 `_send_otp`、不改下游 `_urm90040_fallback`、不改 `STATUS_TRANSITIONS`、不改 verify_otp/verify_fingerprint/second_login/change_pin/select_accts 的对外契约。
 
 ## 10. 验收记录（2026-05-17）
 

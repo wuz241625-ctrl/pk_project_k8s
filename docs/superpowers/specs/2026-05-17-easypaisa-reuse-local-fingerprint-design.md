@@ -5,12 +5,14 @@
 
 ## 1. 背景
 
-已绑定 EasyPaisa 账号重新上号时，MySQL `payment.fingerprint_path` 代表该账号历史上已经完成过 `verifyFingerprint`，并且本地 ZIP 已经落盘。当前代码在 `pre_login_http` 中会识别本地 ZIP，并写入 `reuse_local_fingerprint_after_otp` / `local_fingerprint_path`，但 `verify_otp_http` 不消费这两个字段；另外 `loginStep1 direct_success + local_zip_path` 分支会调用不存在的 `_fallback_chain_after_verify_otp`。
+已绑定 EasyPaisa 账号重新上号时，MySQL `payment.fingerprint_path` 代表该账号历史上已经完成过 `verifyFingerprint`，并且本地 ZIP 已经落盘。修复前代码在 `pre_login_http` 中会识别本地 ZIP，并写入 `reuse_local_fingerprint_after_otp` / `local_fingerprint_path`，但 `verify_otp_http` 不消费这两个字段；另外 `loginStep1 direct_success + local_zip_path` 分支会调用不存在的 `_fallback_chain_after_verify_otp`。
 
 这会导致两个问题：
 
 - MySQL 有可用旧指纹时，OTP 成功后仍要求 App 重新 `upload_fingerprint`。
 - 极端直登分支会抛 `AttributeError`。
+
+> 落地记录（2026-05-17）：当前 d7pay 已新增 `_reuse_local_fingerprint_after_otp`，并由 `pre_login_http` 的 direct success 分支和 `verify_otp_http` 共同调用；当前代码不包含 `_fallback_chain_after_verify_otp`，该名字只作为历史缺陷背景保留。
 
 ## 2. 头脑风暴结论
 
@@ -23,7 +25,7 @@
 候选方案：
 
 - 在 `verify_otp_http` 内直接内联旧指纹链路：实现快，但会复制 fallback 逻辑。
-- 恢复旧计划里的 `_fallback_chain_after_verify_otp`：能修直登缺方法，但旧计划依赖过时的 `_perform_second_login` / `_post_secondlogin_query_accts`。
+- 恢复旧计划里的 `_fallback_chain_after_verify_otp`：能修直登缺方法，但旧计划依赖过时的 `_perform_second_login` / `_post_secondlogin_query_accts`，当前 d7pay 已明确不采用。
 - 新增当前代码口径的 `_reuse_local_fingerprint_after_otp` helper，并让直登和 OTP 成功都调用它。
 
 选定第三种：新增小 helper，复用当前已有 `_call_upload_data`、`_call_verify_fingerprint`、`_hydrate_second_login_pin_from_db`、`_call_second_login`、`_fallback_finish_with_query_accts`。
